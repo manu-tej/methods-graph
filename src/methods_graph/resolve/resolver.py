@@ -17,6 +17,8 @@ across repeated runs regardless of input ordering.
 """
 from __future__ import annotations
 
+from collections import defaultdict
+
 from methods_graph.types import (EdgeKind, EdgeRecord, MethodRecord, NodeKind,
                                   NodeRecord, Provenance)
 
@@ -124,7 +126,6 @@ def resolve(*, method_nodes: list[MethodRecord], other_nodes: list[NodeRecord],
     # 3. Group keyed records by their root index.
     #    Choose the lexicographically smallest original id as canonical id.
     # ------------------------------------------------------------------
-    from collections import defaultdict
     groups: dict[int, list[int]] = defaultdict(list)
     for idx in range(len(keyed)):
         groups[uf.find(idx)].append(idx)
@@ -135,7 +136,8 @@ def resolve(*, method_nodes: list[MethodRecord], other_nodes: list[NodeRecord],
     for root, members in sorted(groups.items()):  # sort for determinism
         # Canonical id = lexicographically smallest id in the group.
         canon_id = min(keyed[i].id for i in members)
-        canon = next(m for m in (keyed[i] for i in members) if m.id == canon_id)
+        canon_idx = min(members, key=lambda i: keyed[i].id)
+        canon = keyed[canon_idx]
         for i in members:
             m = keyed[i]
             id_remap[m.id] = canon_id
@@ -151,7 +153,13 @@ def resolve(*, method_nodes: list[MethodRecord], other_nodes: list[NodeRecord],
     #    without at least one anchor key).
     # ------------------------------------------------------------------
     edges: list[EdgeRecord] = []
-    by_name: dict[str, MethodRecord] = {m.name.lower(): m for m in canonical_methods}
+    # Build by_name in a deterministic order (sorted by id) so that on a
+    # lowercased-name collision the last entry (lexicographically-largest id)
+    # wins.  Acceptable because name-match is a low-confidence (0.5)
+    # SAME_AS candidate only — never a hard merge.
+    by_name: dict[str, MethodRecord] = {
+        m.name.lower(): m for m in sorted(canonical_methods, key=lambda m: m.id)
+    }
     for m in keyless:
         id_remap[m.id] = m.id
         canonical_methods.append(m)
@@ -194,5 +202,10 @@ def resolve(*, method_nodes: list[MethodRecord], other_nodes: list[NodeRecord],
         targets = ctrs if ctrs else [pkg.id]
         for tgt in targets:
             edges.append(EdgeRecord(m.id, tgt, EdgeKind.PACKAGED_AS, {}, prov))
+
+    # Sort canonical_methods by id for a deterministic, input-order-independent
+    # output list (satisfies the docstring's determinism claim and prevents
+    # non-deterministic snapshot diffs).
+    canonical_methods.sort(key=lambda m: m.id)
 
     return canonical_methods + list(other_nodes), edges

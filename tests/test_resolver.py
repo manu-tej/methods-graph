@@ -94,3 +94,28 @@ def test_two_independent_groups_stay_separate():
     nodes, edges = resolve(method_nodes=[a, b], other_nodes=[], src_edges=[])
     methods = [n for n in nodes if n.kind == NodeKind.METHOD]
     assert len(methods) == 2
+
+
+def test_resolver_output_order_is_deterministic():
+    """Output method list order must be id-sorted regardless of input order."""
+    def _make():
+        return [
+            _method("m:bwa", "bwa", pkg="bwa"),
+            _method("m:star", "star", pkg="star"),
+            _method("m:hisat2", "hisat2", pkg="hisat2"),
+            _method("m:alpha", "alpha"),      # keyless
+            _method("m:zeta", "zeta"),        # keyless
+        ]
+
+    order1 = _make()
+    order2 = list(reversed(_make()))
+
+    nodes1, _ = resolve(method_nodes=order1, other_nodes=[], src_edges=[])
+    nodes2, _ = resolve(method_nodes=order2, other_nodes=[], src_edges=[])
+
+    ids1 = [n.id for n in nodes1 if n.kind == NodeKind.METHOD]
+    ids2 = [n.id for n in nodes2 if n.kind == NodeKind.METHOD]
+
+    assert ids1 == ids2, f"Order differed: {ids1} vs {ids2}"
+    # Also verify the list is actually sorted by id.
+    assert ids1 == sorted(ids1)
