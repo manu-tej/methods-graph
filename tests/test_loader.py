@@ -31,3 +31,22 @@ def test_build_graph_is_idempotent(tmp_path):
     conn = kuzu.Connection(kuzu.Database(str(db_path)))
     count = [r for r in conn.execute("MATCH (n:Entity) RETURN count(n)")][0][0]
     assert count == 1
+
+
+def test_provenance_columns_load_into_correct_fields(tmp_path):
+    """Guard against silent corruption from positional COPY column mis-mapping."""
+    prov = Provenance("edam", "http://edam", "2026-06-08")
+    nodes = [NodeRecord("op:x", "X", NodeKind.OPERATION, {}, prov)]
+    db_path = tmp_path / "methods.kuzu"
+    build_graph(nodes, [], db_path, staging_dir=tmp_path / "stg")
+
+    conn = kuzu.Connection(kuzu.Database(str(db_path)))
+    res = conn.execute(
+        "MATCH (n:Entity {id:'op:x'}) RETURN n.source, n.source_url, n.ingested_at"
+    )
+    rows = [row for row in res]
+    assert len(rows) == 1
+    source, source_url, ingested_at = rows[0]
+    assert source == "edam"
+    assert source_url == "http://edam"
+    assert ingested_at == "2026-06-08"
