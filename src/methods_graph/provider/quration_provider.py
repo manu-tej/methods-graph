@@ -72,6 +72,17 @@ class KuzuMethodsGraphProvider:
             out.append(_neighborhood_to_method_dict(method_neighborhood(self._conn, mid)))
         return out
 
+    def retrieve_context(self, req, *, k_hops: int = 1) -> str:
+        """Spec-Protocol entry point. Duck-types a quration ParsedRequest:
+        uses req.keywords if present, else falls back to splitting req.original_query.
+        Delegates to retrieve_context_for_keywords so quration can inject this provider
+        without a hard dependency."""
+        keywords = list(getattr(req, "keywords", None) or [])
+        if not keywords:
+            query = getattr(req, "original_query", "") or ""
+            keywords = query.split()
+        return self.retrieve_context_for_keywords(keywords, k_hops=k_hops)
+
     def retrieve_context_for_keywords(self, keywords: list[str], *, k_hops: int = 1) -> str:
         seeds = self._method_ids_matching(keywords)
         if not seeds:

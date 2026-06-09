@@ -21,9 +21,9 @@ class NodeKind(str, Enum):
 
 
 class EdgeKind(str, Enum):
-    HAS_MODULE = "HAS_MODULE"
+    HAS_MODULE = "HAS_MODULE"          # Phase 2 — declared for the pipeline DAG; no emitter in MVP
     WRAPS = "WRAPS"
-    DOWNSTREAM_OF = "DOWNSTREAM_OF"
+    DOWNSTREAM_OF = "DOWNSTREAM_OF"   # Phase 2 — declared for the pipeline DAG; no emitter in MVP
     PACKAGED_AS = "PACKAGED_AS"
     FROM_PACKAGE = "FROM_PACKAGE"
     PERFORMS = "PERFORMS"

@@ -11,7 +11,7 @@ import kuzu
 import polars as pl
 
 from methods_graph.graph import schema
-from methods_graph.types import EdgeRecord, MethodRecord, NodeRecord
+from methods_graph.types import EdgeRecord, NodeRecord
 
 
 def _node_row(n: NodeRecord) -> dict:

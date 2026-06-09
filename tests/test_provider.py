@@ -1,4 +1,5 @@
 # tests/test_provider.py
+import types
 import kuzu
 import pytest
 from methods_graph.types import NodeRecord, MethodRecord, EdgeRecord, NodeKind, EdgeKind, Provenance
@@ -30,25 +31,40 @@ def db_path(tmp_path):
 
 
 def test_get_methods_returns_method_dicts(db_path):
-    provider = KuzuMethodsGraphProvider(db_path)
-    methods = provider.get_methods()
-    salmon = next(m for m in methods if m["name"] == "salmon")
-    assert salmon["id"] == "m:salmon"
-    assert salmon["implementation_type"] == "nextflow"
-    assert "RNA-Seq" in salmon["tags"]
-    assert salmon["compute_requirements"]["container_image"].endswith("salmon:1.10.0")
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        methods = provider.get_methods()
+        salmon = next(m for m in methods if m["name"] == "salmon")
+        assert salmon["id"] == "m:salmon"
+        assert salmon["implementation_type"] == "nextflow"
+        assert "RNA-Seq" in salmon["tags"]
+        assert salmon["compute_requirements"]["container_image"].endswith("salmon:1.10.0")
 
 
 def test_retrieve_context_grounds_on_keywords(db_path):
-    provider = KuzuMethodsGraphProvider(db_path)
-    ctx = provider.retrieve_context_for_keywords(["salmon"])
-    assert "salmon" in ctx
-    assert "Read summarisation" in ctx
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        ctx = provider.retrieve_context_for_keywords(["salmon"])
+        assert "salmon" in ctx
+        assert "Read summarisation" in ctx
 
 
 def test_score_method_is_neutral_in_mvp(db_path):
-    provider = KuzuMethodsGraphProvider(db_path)
-    assert provider.score_method("m:salmon", keywords=["salmon"]) == 0.0
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        assert provider.score_method("m:salmon", keywords=["salmon"]) == 0.0
+
+
+def test_retrieve_context_duck_types_parsed_request(db_path):
+    req = types.SimpleNamespace(keywords=["salmon"], original_query="")
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        result = provider.retrieve_context(req)
+    assert "salmon" in result
+
+
+def test_retrieve_context_falls_back_to_original_query(db_path):
+    req = types.SimpleNamespace(keywords=[], original_query="salmon quant")
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        result = provider.retrieve_context(req)
+    assert len(result) > 0
+    assert "salmon" in result
 
 
 def test_build_analysis_method_requires_quration():
