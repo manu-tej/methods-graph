@@ -71,3 +71,46 @@ def test_build_analysis_method_requires_quration():
     from methods_graph.provider.quration_provider import build_analysis_method
     with pytest.raises(RuntimeError, match="quration is not installed"):
         build_analysis_method({"id": "m:salmon", "name": "salmon"})
+
+
+# ---------------------------------------------------------------------------
+# Broad keyword retrieval tests (TDD — new behaviour)
+# ---------------------------------------------------------------------------
+
+def test_retrieve_matches_via_topic_label(db_path):
+    """'RNA-Seq' matches Topic node 'RNA-Seq'; should resolve back to salmon Method."""
+    with KuzuMethodsGraphProvider(db_path) as p:
+        ctx = p.retrieve_context_for_keywords(["RNA-Seq"])
+    assert ctx != "", "Expected non-empty context via topic match"
+    assert "salmon" in ctx, "Expected salmon to appear in context via HAS_TOPIC → RNA-Seq"
+
+
+def test_retrieve_matches_via_operation_label(db_path):
+    """'summarisation' is a substring of 'Read summarisation'; should resolve to salmon."""
+    with KuzuMethodsGraphProvider(db_path) as p:
+        ctx = p.retrieve_context_for_keywords(["summarisation"])
+    assert ctx != "", "Expected non-empty context via operation match"
+    assert "salmon" in ctx, "Expected salmon to appear in context via PERFORMS → Read summarisation"
+
+
+def test_retrieve_matches_via_description(db_path):
+    """'quant' is in the method properties description; direct property match."""
+    with KuzuMethodsGraphProvider(db_path) as p:
+        ctx = p.retrieve_context_for_keywords(["quant"])
+    assert ctx != "", "Expected non-empty context via description match"
+    assert "salmon" in ctx, "Expected salmon to appear in context via description containing 'quant'"
+
+
+def test_retrieve_matches_via_container_name(db_path):
+    """'biocontainers' is a substring of the container image name; should resolve to salmon."""
+    with KuzuMethodsGraphProvider(db_path) as p:
+        ctx = p.retrieve_context_for_keywords(["biocontainers"])
+    assert ctx != "", "Expected non-empty context via container name match"
+    assert "salmon" in ctx, "Expected salmon to appear in context via PACKAGED_AS → quay.io/biocontainers/salmon"
+
+
+def test_retrieve_no_match_returns_empty(db_path):
+    """A keyword that matches nothing should return empty string."""
+    with KuzuMethodsGraphProvider(db_path) as p:
+        ctx = p.retrieve_context_for_keywords(["zzznotarealthing"])
+    assert ctx == "", "Expected empty string when no keyword matches anything"

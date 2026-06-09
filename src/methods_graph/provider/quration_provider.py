@@ -92,10 +92,37 @@ class KuzuMethodsGraphProvider:
     def _method_ids_matching(self, keywords: list[str]) -> list[str]:
         ids: list[str] = []
         for kw in keywords:
-            rows = self._conn.execute(
-                "MATCH (m:Entity {kind:'Method'}) WHERE contains(lower(m.name), lower($kw)) "
-                "RETURN m.id", parameters={"kw": kw})
-            ids.extend(r[0] for r in rows)
+            # Step 1: find ALL entities whose name or properties contain the keyword.
+            all_rows = self._conn.execute(
+                "MATCH (n:Entity) "
+                "WHERE contains(lower(n.name), lower($kw)) "
+                "   OR contains(lower(n.properties), lower($kw)) "
+                "RETURN n.id, n.kind",
+                parameters={"kw": kw},
+            )
+            direct_method_ids: list[str] = []
+            non_method_ids: list[str] = []
+            for row in all_rows:
+                nid, kind = row[0], row[1]
+                if kind == "Method":
+                    direct_method_ids.append(nid)
+                else:
+                    non_method_ids.append(nid)
+
+            # Step 2: collect direct method hits.
+            ids.extend(direct_method_ids)
+
+            # Step 3: for non-method hits, walk outward from methods up to 2 hops to
+            # find any method that reaches the matched entity.
+            if non_method_ids:
+                resolved = self._conn.execute(
+                    "MATCH (meth:Entity {kind:'Method'})-[r:Rel*1..2]->(x:Entity) "
+                    "WHERE list_contains($matched, x.id) "
+                    "RETURN DISTINCT meth.id",
+                    parameters={"matched": non_method_ids},
+                )
+                ids.extend(row[0] for row in resolved)
+
         return list(dict.fromkeys(ids))
 
     def score_method(self, method_id: str, *, keywords: list[str]) -> float:
