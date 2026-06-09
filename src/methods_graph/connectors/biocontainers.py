@@ -17,7 +17,9 @@ def parse_biocontainer(data: dict[str, Any], *, ingested_at: str) -> tuple[list[
     for version in data.get("versions", []):
         ver = version.get("meta_version", "")
         for img in version.get("images", []):
-            image_name = img["image_name"]
+            image_name = img.get("image_name")
+            if not image_name:
+                continue
             container_id = f"ctr:{image_name}"
             nodes.append(NodeRecord(container_id, image_name, NodeKind.CONTAINER,
                                     {"image_name": image_name,
