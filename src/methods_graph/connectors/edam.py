@@ -1,0 +1,62 @@
+"""Parse the EDAM ontology TSV into typed nodes + IS_A edges."""
+from __future__ import annotations
+
+import csv
+from pathlib import Path
+
+from methods_graph.types import EdgeKind, EdgeRecord, NodeKind, NodeRecord, Provenance
+
+_PREFIX_TO_KIND = {
+    "operation_": NodeKind.OPERATION,
+    "topic_": NodeKind.TOPIC,
+    "data_": NodeKind.DATA,
+    "format_": NodeKind.FORMAT,
+}
+_KIND_TO_IDPREFIX = {
+    NodeKind.OPERATION: "op:",
+    NodeKind.TOPIC: "topic:",
+    NodeKind.DATA: "data:",
+    NodeKind.FORMAT: "fmt:",
+}
+
+
+def _classify(class_uri: str) -> tuple[NodeKind, str] | None:
+    local = class_uri.rsplit("/", 1)[-1]
+    for prefix, kind in _PREFIX_TO_KIND.items():
+        if local.startswith(prefix):
+            return kind, _KIND_TO_IDPREFIX[kind] + local
+    return None
+
+
+def parse_edam(tsv_path: Path, *, ingested_at: str) -> tuple[list[NodeRecord], list[EdgeRecord]]:
+    prov = Provenance("edam", "http://edamontology.org", ingested_at)
+    nodes: list[NodeRecord] = []
+    edges: list[EdgeRecord] = []
+    id_by_uri: dict[str, str] = {}
+
+    with tsv_path.open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh, delimiter="\t"))
+
+    # First pass: nodes + URI→id map (skip obsolete).
+    kept: list[dict] = []
+    for row in rows:
+        if (row.get("Obsolete") or "").strip().upper() == "TRUE":
+            continue
+        cls = _classify(row["Class ID"])
+        if cls is None:
+            continue
+        kind, node_id = cls
+        id_by_uri[row["Class ID"]] = node_id
+        nodes.append(NodeRecord(id=node_id, name=row["Preferred Label"].strip(),
+                                kind=kind, properties={"uri": row["Class ID"]},
+                                provenance=prov))
+        kept.append(row)
+
+    # Second pass: IS_A edges from Parents (space-separated URIs).
+    for row in kept:
+        child = id_by_uri[row["Class ID"]]
+        for parent_uri in (row.get("Parents") or "").split():
+            parent = id_by_uri.get(parent_uri)
+            if parent:
+                edges.append(EdgeRecord(child, parent, EdgeKind.IS_A, {}, prov))
+    return nodes, edges
