@@ -42,6 +42,10 @@ def build_graph(nodes: list[NodeRecord], edges: list[EdgeRecord],
     for sib in db_path.parent.glob(db_path.name + ".*"):
         sib.unlink(missing_ok=True)
 
+    node_ids = {n.id for n in nodes}
+    # Drop dangling edges whose endpoints are not in the current node set.
+    valid_edges = [e for e in edges if e.from_id in node_ids and e.to_id in node_ids]
+
     nodes_pq = staging_dir / "nodes.parquet"
     edges_pq = staging_dir / "edges.parquet"
     pl.DataFrame([_node_row(n) for n in nodes],
@@ -53,8 +57,8 @@ def build_graph(nodes: list[NodeRecord], edges: list[EdgeRecord],
         conn.execute(schema.NODE_TABLE)
         conn.execute(schema.REL_TABLE)
         conn.execute(f'COPY Entity FROM "{nodes_pq.as_posix()}"')
-        if edges:
-            pl.DataFrame([_edge_row(e) for e in edges],
+        if valid_edges:
+            pl.DataFrame([_edge_row(e) for e in valid_edges],
                          schema=schema.REL_COLUMNS).write_parquet(edges_pq)
             conn.execute(f'COPY Rel FROM "{edges_pq.as_posix()}"')
     finally:
