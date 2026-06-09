@@ -49,3 +49,9 @@ def test_retrieve_context_grounds_on_keywords(db_path):
 def test_score_method_is_neutral_in_mvp(db_path):
     provider = KuzuMethodsGraphProvider(db_path)
     assert provider.score_method("m:salmon", keywords=["salmon"]) == 0.0
+
+
+def test_build_analysis_method_requires_quration():
+    from methods_graph.provider.quration_provider import build_analysis_method
+    with pytest.raises(RuntimeError, match="quration is not installed"):
+        build_analysis_method({"id": "m:salmon", "name": "salmon"})

@@ -41,12 +41,31 @@ def _neighborhood_to_method_dict(nb: dict[str, Any]) -> dict[str, Any]:
 
 class KuzuMethodsGraphProvider:
     def __init__(self, db_path: Path):
-        self._conn = kuzu.Connection(kuzu.Database(str(db_path)))
+        self._db = kuzu.Database(str(db_path))
+        self._conn = kuzu.Connection(self._db)
+
+    # --- context manager support ---
+
+    def close(self) -> None:
+        """Close the connection and database."""
+        self._conn.close()
+        self._db.close()
+
+    def __enter__(self) -> "KuzuMethodsGraphProvider":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    # --- internal helpers ---
 
     def _all_method_ids(self) -> list[str]:
         return [r[0] for r in self._conn.execute(
             "MATCH (m:Entity {kind:'Method'}) RETURN m.id")]
 
+    # NOTE: get_methods issues ~4 queries per method (one for operations, one for topics,
+    # one for containers, and one for the method itself via method_neighborhood).
+    # This N+1 pattern is acceptable for small graphs; batching is a Phase 2 optimisation.
     def get_methods(self) -> list[dict[str, Any]]:
         out = []
         for mid in self._all_method_ids():
@@ -74,9 +93,17 @@ class KuzuMethodsGraphProvider:
 
 
 def build_analysis_method(method_dict: dict[str, Any]):
-    """Upgrade a method dict to a quration AnalysisMethod if quration is installed."""
+    """Upgrade a method dict to a quration AnalysisMethod if quration is installed.
+
+    MVP LIMITATION: the dict from get_methods() is a partial AnalysisMethod.
+    Constructing a valid quration AnalysisMethod additionally requires Phase 2 enrichment —
+    ``category``, ``inputs``/``outputs`` (from EDAM Data/Format), ``quality_metrics``
+    (from Papers), and mapping ``supported_modalities`` from EDAM topic labels (e.g. "RNA-Seq")
+    to quration ``DataModality`` enum values (e.g. "rna_seq").  Until then this raises
+    ``pydantic.ValidationError`` on a real quration install.
+    """
     try:
         from quration.broker.models import AnalysisMethod   # type: ignore
-    except ImportError as e:                                 # pragma: no cover
+    except ImportError as e:
         raise RuntimeError("quration is not installed; install methods-graph[quration]") from e
     return AnalysisMethod(**method_dict)
