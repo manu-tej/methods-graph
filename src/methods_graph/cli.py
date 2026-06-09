@@ -186,15 +186,29 @@ def cmd_fetch(
         if pkg_names:
             print(f"Fetching BioContainers records for {len(pkg_names)} tools …")
             bc_dir = dest / "biocontainers"
-            biocontainers_manifest = fetch_biocontainers(
-                pkg_names, bc_dir, fetched_at=fetched_at
-            )
-            n_tools = len(biocontainers_manifest.get("tools", {}))
-            print(f"  BioContainers: {n_tools} tools fetched.")
+            try:
+                biocontainers_manifest = fetch_biocontainers(
+                    pkg_names, bc_dir, fetched_at=fetched_at
+                )
+            except Exception as exc:
+                # Wholesale failure (e.g. network down before first iteration).
+                # Record partial progress so edam + nfcore are not lost.
+                _log.error("BioContainers fetch raised unexpectedly: %s", exc)
+                biocontainers_manifest = {
+                    "api": "https://api.biocontainers.pro/ga4gh/trs/v2/tools",
+                    "fetched_at": fetched_at,
+                    "tools": {},
+                    "failed": list(pkg_names),
+                    "n_failed": len(pkg_names),
+                    "error": str(exc),
+                }
+            n_ok = len(biocontainers_manifest.get("tools", {}))
+            n_fail = biocontainers_manifest.get("n_failed", 0)
+            print(f"  BioContainers: {n_ok} tools fetched, {n_fail} failed.")
         else:
             print("  BioContainers: no package names — skipping.")
 
-    # --- Manifest ---
+    # --- Manifest (always written, even on partial failures) ---
     manifest_path = write_manifest(
         dest,
         edam=edam_manifest,

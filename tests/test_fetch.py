@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import json
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
 
 from methods_graph.fetch import (
+    _build_request,
     _transform_biocontainer,
     bioconda_packages_from_nfcore,
+    fetch_biocontainers,
     write_manifest,
 )
 
@@ -214,6 +218,100 @@ def test_write_manifest_with_nulls(tmp_path: Path) -> None:
     assert data["sources"]["edam"] is None
     assert data["sources"]["nfcore_modules"] is None
     assert data["sources"]["biocontainers"] is None
+
+
+# ---------------------------------------------------------------------------
+# _build_request — offline header inspection (no network)
+# ---------------------------------------------------------------------------
+
+
+def test_build_request_sets_user_agent() -> None:
+    """_build_request returns a Request with 'methods-graph' in User-Agent and correct Accept."""
+    url = "https://example.com/api"
+    req = _build_request(url, accept_json=True)
+
+    assert isinstance(req, urllib.request.Request)
+    # urllib stores headers with first-letter capitalised.
+    ua = req.get_header("User-agent")
+    assert ua is not None, "User-Agent header must be set"
+    assert "methods-graph" in ua, f"Expected 'methods-graph' in User-Agent, got {ua!r}"
+
+    accept = req.get_header("Accept")
+    assert accept == "application/json", f"Expected Accept: application/json, got {accept!r}"
+
+
+def test_build_request_no_accept_json_by_default() -> None:
+    """_build_request with accept_json=False does not set Accept header."""
+    req = _build_request("https://example.com/file.tsv", accept_json=False)
+    ua = req.get_header("User-agent")
+    assert ua is not None and "methods-graph" in ua
+    # Accept header should NOT be set when accept_json=False
+    assert req.get_header("Accept") is None
+
+
+# ---------------------------------------------------------------------------
+# fetch_biocontainers — per-tool resilience (offline, injected http_get_json)
+# ---------------------------------------------------------------------------
+
+_GOOD_API_RECORD = {
+    "name": "good",
+    "versions": [{"id": "good-1.0", "meta_version": "1.0"}],
+    "description": "A good tool",
+    "tool_url": "https://biocontainers.pro/tools/good",
+}
+
+
+def test_fetch_biocontainers_skips_failures(tmp_path: Path) -> None:
+    """fetch_biocontainers writes good.json, skips bad, records failed list — no exception."""
+
+    def _fake_http_get_json(url: str):
+        if "name=good" in url:
+            return [_GOOD_API_RECORD]
+        if "name=bad" in url:
+            raise urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    result = fetch_biocontainers(
+        ["good", "bad"],
+        tmp_path,
+        fetched_at="2026-06-09T00:00:00+00:00",
+        http_get_json=_fake_http_get_json,
+    )
+
+    # good.json written
+    good_path = tmp_path / "good.json"
+    assert good_path.exists(), "good.json should be written for successful fetch"
+    good_data = json.loads(good_path.read_text())
+    assert good_data["name"] == "good"
+
+    # bad.json NOT written
+    bad_path = tmp_path / "bad.json"
+    assert not bad_path.exists(), "bad.json must not be written on fetch failure"
+
+    # manifest tools has "good", failed list has "bad"
+    assert "good" in result["tools"], "'good' must appear in tools"
+    assert "bad" not in result["tools"], "'bad' must not appear in tools"
+    assert "bad" in result["failed"], "'bad' must appear in failed list"
+    assert result["n_failed"] == 1
+    assert result["n_failed"] == len(result["failed"])
+
+
+def test_fetch_biocontainers_skips_generic_exception(tmp_path: Path) -> None:
+    """fetch_biocontainers also handles non-urllib exceptions (e.g. JSON parse errors)."""
+
+    def _fake_http_get_json(url: str):
+        raise ValueError("Unexpected JSON structure")
+
+    result = fetch_biocontainers(
+        ["broken"],
+        tmp_path,
+        fetched_at="2026-06-09T00:00:00+00:00",
+        http_get_json=_fake_http_get_json,
+    )
+
+    assert "broken" in result["failed"]
+    assert result["n_failed"] == 1
+    assert (tmp_path / "broken.json").exists() is False
 
 
 # ---------------------------------------------------------------------------

@@ -28,13 +28,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import subprocess
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
 import yaml
+
+_log = logging.getLogger(__name__)
 
 # Reuse the same dep-parsing regex as the nf-core connector.
 _DEP_RE = re.compile(r"(?:(?P<chan>[\w-]+)::)?(?P<pkg>[\w.-]+)=(?P<ver>[\w.+-]+)")
@@ -185,10 +189,35 @@ def write_manifest(
 # Network wrappers
 # ---------------------------------------------------------------------------
 
+_UA = "methods-graph/0.1 (+https://github.com/manu-tej/methods-graph)"
+
+
+def _build_request(url: str, *, accept_json: bool = False) -> urllib.request.Request:
+    """Build a :class:`urllib.request.Request` with an explicit User-Agent header.
+
+    Using an explicit User-Agent avoids 403 responses from servers that block
+    the default ``Python-urllib/3.x`` agent (e.g. api.biocontainers.pro).
+
+    Args:
+        url:         The URL to request.
+        accept_json: When *True*, an ``Accept: application/json`` header is also
+                     added.  Use for API endpoints that return JSON.
+
+    Returns:
+        A :class:`urllib.request.Request` ready to be passed to
+        ``urllib.request.urlopen``.  The request is NOT opened here, so this
+        helper can be unit-tested without any network I/O.
+    """
+    headers: dict[str, str] = {"User-Agent": _UA}
+    if accept_json:
+        headers["Accept"] = "application/json"
+    return urllib.request.Request(url, headers=headers)
+
 
 def _stdlib_http_get(url: str) -> tuple[bytes, dict[str, str]]:
     """Download *url* and return (body_bytes, response_headers)."""
-    with urllib.request.urlopen(url) as resp:
+    req = _build_request(url, accept_json=False)
+    with urllib.request.urlopen(req) as resp:
         body = resp.read()
         headers = {k.lower(): v for k, v in resp.headers.items()}
     return body, headers
@@ -294,7 +323,8 @@ def fetch_nfcore(
 
 def _stdlib_http_get_json(url: str) -> Any:
     """GET *url* and parse the response body as JSON."""
-    with urllib.request.urlopen(url) as resp:
+    req = _build_request(url, accept_json=True)
+    with urllib.request.urlopen(req) as resp:
         return json.loads(resp.read())
 
 
@@ -336,20 +366,30 @@ def fetch_biocontainers(
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
     tools_versions: dict[str, list[str]] = {}
+    failed: list[str] = []
     for name in sorted(names):
         url = f"{api_base}?name={name}&limit=1"
-        records = http_get_json(url)
-        if not records:
-            continue
-        transformed = _transform_biocontainer(records[0])
-        meta_versions = [v["meta_version"] for v in transformed.get("versions", [])]
-        if not meta_versions:
-            continue
-        out_path = dest_dir / f"{name}.json"
-        out_path.write_text(json.dumps(transformed, indent=2))
-        tools_versions[name] = meta_versions
+        try:
+            records = http_get_json(url)
+            if not records:
+                continue
+            transformed = _transform_biocontainer(records[0])
+            meta_versions = [v["meta_version"] for v in transformed.get("versions", [])]
+            if not meta_versions:
+                continue
+            out_path = dest_dir / f"{name}.json"
+            out_path.write_text(json.dumps(transformed, indent=2))
+            tools_versions[name] = meta_versions
+        except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+            _log.warning("BioContainers fetch failed for %r: %s", name, exc)
+            failed.append(name)
+        except Exception as exc:  # JSON parse errors, unexpected API shapes, etc.
+            _log.warning("BioContainers unexpected error for %r: %s", name, exc)
+            failed.append(name)
     return {
         "api": api_base,
         "fetched_at": fetched_at,
         "tools": tools_versions,
+        "failed": failed,
+        "n_failed": len(failed),
     }
