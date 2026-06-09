@@ -1,4 +1,21 @@
-"""Parse an nf-core module directory into Module + Method nodes and edges."""
+"""Parse an nf-core module directory into Module + Method nodes and edges.
+
+Each module's ``meta.yml`` may declare multiple tools under the ``tools:`` key.
+``parse_module`` emits one ``Module`` node and one ``Method`` node per tool,
+connected by a ``WRAPS`` edge.  All EDAM PERFORMS / HAS_TOPIC edges are also
+emitted per tool.  This captures **intra-module composition** — a module that
+wraps both ``samtools`` and ``bcftools`` will have two WRAPS edges, one to each
+Method.
+
+Pipeline-level DAG gap (Phase 2)
+---------------------------------
+Intra-module multi-tool composition is now captured via multiple WRAPS edges
+from a Module to its Methods.  The PIPELINE-LEVEL DAG — i.e. the
+``DOWNSTREAM_OF`` ordering between modules across a pipeline's ``main.nf``
+workflow file — is STILL NOT ingested and remains Phase 2.  ``parse_module``
+operates on a single module directory and does not read pipeline workflow files.
+The ``DOWNSTREAM_OF`` EdgeKind stays declared-but-unemitted.
+"""
 from __future__ import annotations
 
 import re
@@ -15,24 +32,35 @@ _DEP_RE = re.compile(r"(?:(?P<chan>[\w-]+)::)?(?P<pkg>[\w.-]+)=(?P<ver>[\w.+-]+)
 def _bioconda_dep(env_path: Path, prefer_pkg: str | None = None) -> tuple[str | None, str | None]:
     """Return (pkg, version) for the bioconda dependency in *env_path*.
 
-    When *prefer_pkg* is given, prefer the dep whose parsed package name
-    matches it (case-insensitive); fall back to the first bioconda dep found.
+    Matching rules (in priority order):
+
+    1. If *prefer_pkg* matches a dep's package name (case-insensitive) →
+       return that dep immediately.  This ensures each tool gets its own
+       package even in a multi-dep environment.yml.
+    2. Elif there is exactly ONE bioconda dep in the file → return it.
+       (Unambiguous single-tool / single-dep case; preserves existing behaviour.)
+    3. Else → return ``(None, None)``.  Multiple deps exist but none matches
+       *prefer_pkg*; refusing to guess avoids mis-assignment.
     """
     if not env_path.exists():
         return None, None
     env = yaml.safe_load(env_path.read_text()) or {}
-    first_match: tuple[str, str] | None = None
+    bioconda_deps: list[tuple[str, str]] = []
     for dep in env.get("dependencies", []):
         if not isinstance(dep, str):
             continue
         m = _DEP_RE.match(dep)
         if m and (m.group("chan") in (None, "bioconda")):
             pkg, ver = m.group("pkg"), m.group("ver")
-            if first_match is None:
-                first_match = (pkg, ver)
+            # Rule 1: prefer-match wins immediately.
             if prefer_pkg and pkg.lower() == prefer_pkg.lower():
                 return pkg, ver
-    return first_match if first_match else (None, None)
+            bioconda_deps.append((pkg, ver))
+    # Rule 2: unambiguous single dep.
+    if len(bioconda_deps) == 1:
+        return bioconda_deps[0]
+    # Rule 3: ambiguous — don't guess.
+    return None, None
 
 
 def parse_module(module_dir: Path, *, ingested_at: str) -> tuple[list[NodeRecord], list[EdgeRecord]]:
@@ -42,14 +70,7 @@ def parse_module(module_dir: Path, *, ingested_at: str) -> tuple[list[NodeRecord
     if not isinstance(meta, dict):
         meta = {}
     module_name = meta.get("name", module_dir.name)
-
-    # Resolve tool name first so _bioconda_dep can prefer-match against it.
-    tools = meta.get("tools") or []
-    tool_name: str | None = None
-    if tools:
-        tool_name = next(iter(tools[0].keys()))
-
-    pkg, ver = _bioconda_dep(module_dir / "environment.yml", prefer_pkg=tool_name)
+    env_path = module_dir / "environment.yml"
 
     nodes: list[NodeRecord] = []
     edges: list[EdgeRecord] = []
@@ -58,21 +79,35 @@ def parse_module(module_dir: Path, *, ingested_at: str) -> tuple[list[NodeRecord
     nodes.append(NodeRecord(module_id, module_name, NodeKind.MODULE,
                             {"description": meta.get("description", "")}, prov))
 
-    # First tool entry is the primary wrapped method.
-    if tools:
-        tool_name, tool_meta = next(iter(tools[0].items()))
-        biotools_id = (tool_meta.get("identifier") or "").replace("biotools:", "") or None
+    tools = meta.get("tools") or []
+
+    # Dedupe: track emitted method ids within this module so that if two tool
+    # entries share the same name we emit one Method + one WRAPS.
+    emitted_method_ids: set[str] = set()
+
+    for tool_entry in tools:
+        tool_name, tool_meta = next(iter(tool_entry.items()))
         method_id = f"m:{tool_name}"
-        nodes.append(MethodRecord(
-            id=method_id, name=tool_name, kind=NodeKind.METHOD,
-            properties={
-                "description": tool_meta.get("description", ""),
-                "homepage": tool_meta.get("homepage", ""),
-                "version": ver or "",
-                "implementation_type": "nextflow",
-            },
-            provenance=prov, bioconda_pkg=pkg, biotools_id=biotools_id,
-        ))
+
+        # Per-tool bioconda resolution: prefer_pkg=tool_name guarantees the
+        # correct package is selected even in multi-dep environment.yml files.
+        pkg, ver = _bioconda_dep(env_path, prefer_pkg=tool_name)
+
+        biotools_id = (tool_meta.get("identifier") or "").replace("biotools:", "") or None
+
+        if method_id not in emitted_method_ids:
+            emitted_method_ids.add(method_id)
+            nodes.append(MethodRecord(
+                id=method_id, name=tool_name, kind=NodeKind.METHOD,
+                properties={
+                    "description": tool_meta.get("description", ""),
+                    "homepage": tool_meta.get("homepage", ""),
+                    "version": ver or "",
+                    "implementation_type": "nextflow",
+                },
+                provenance=prov, bioconda_pkg=pkg, biotools_id=biotools_id,
+            ))
+
         edges.append(EdgeRecord(module_id, method_id, EdgeKind.WRAPS, {}, prov))
         for op in tool_meta.get("edam_operations", []):
             edges.append(EdgeRecord(method_id, f"op:{op}", EdgeKind.PERFORMS, {}, prov))
