@@ -96,6 +96,49 @@ def test_two_independent_groups_stay_separate():
     assert len(methods) == 2
 
 
+def test_property_merge_order_is_deterministic():
+    """When multiple records share a bioconda_pkg and the canonical lacks a
+    property, the smallest-id provider must win deterministically — regardless
+    of input list order.
+
+    Group: A (no description), B (description="from-b"), C (description="from-c").
+    Canonical id must be "m:a" (lexicographically smallest).
+    B's description should win over C's because "m:b" < "m:c".
+    Both input orderings [A,B,C] and [C,B,A] must yield identical results.
+    """
+    def _make_abc():
+        a = MethodRecord(id="m:a", name="tool", kind=NodeKind.METHOD,
+                         properties={}, provenance=P,
+                         bioconda_pkg="x", biotools_id=None)
+        b = MethodRecord(id="m:b", name="tool", kind=NodeKind.METHOD,
+                         properties={"description": "from-b"}, provenance=P,
+                         bioconda_pkg="x", biotools_id=None)
+        c = MethodRecord(id="m:c", name="tool", kind=NodeKind.METHOD,
+                         properties={"description": "from-c"}, provenance=P,
+                         bioconda_pkg="x", biotools_id=None)
+        return a, b, c
+
+    a1, b1, c1 = _make_abc()
+    nodes1, _ = resolve(method_nodes=[a1, b1, c1], other_nodes=[], src_edges=[])
+    methods1 = [n for n in nodes1 if n.kind == NodeKind.METHOD]
+
+    a2, b2, c2 = _make_abc()
+    nodes2, _ = resolve(method_nodes=[c2, b2, a2], other_nodes=[], src_edges=[])
+    methods2 = [n for n in nodes2 if n.kind == NodeKind.METHOD]
+
+    # Both orderings collapse to exactly one canonical method.
+    assert len(methods1) == 1
+    assert len(methods2) == 1
+
+    # Canonical id is always the lexicographically smallest.
+    assert methods1[0].id == "m:a"
+    assert methods2[0].id == "m:a"
+
+    # Smallest-id non-canon provider (m:b) fills the missing description first.
+    assert methods1[0].properties["description"] == "from-b"
+    assert methods2[0].properties["description"] == "from-b"
+
+
 def test_resolver_output_order_is_deterministic():
     """Output method list order must be id-sorted regardless of input order."""
     def _make():

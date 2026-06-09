@@ -133,12 +133,16 @@ def resolve(*, method_nodes: list[MethodRecord], other_nodes: list[NodeRecord],
     canonical_methods: list[MethodRecord] = []
     id_remap: dict[str, str] = {}  # original method id -> canonical id
 
-    for root, members in sorted(groups.items()):  # sort for determinism
-        # Canonical id = lexicographically smallest id in the group.
-        canon_id = min(keyed[i].id for i in members)
-        canon_idx = min(members, key=lambda i: keyed[i].id)
-        canon = keyed[canon_idx]
-        for i in members:
+    for root, members in sorted(groups.items()):
+        # Sort members by their original method id so that merge order is
+        # fully deterministic regardless of input list order.  The first
+        # element (smallest id) becomes the canonical record; subsequent
+        # members are merged in id order, so the smallest-id provider fills
+        # any missing property first and deterministically wins.
+        members_sorted = sorted(members, key=lambda i: keyed[i].id)
+        canon = keyed[members_sorted[0]]   # smallest id = canonical
+        canon_id = canon.id
+        for i in members_sorted:
             m = keyed[i]
             id_remap[m.id] = canon_id
             if m is not canon:
