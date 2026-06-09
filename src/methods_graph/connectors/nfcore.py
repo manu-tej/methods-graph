@@ -15,11 +15,22 @@ from a Module to its Methods.  The PIPELINE-LEVEL DAG — i.e. the
 workflow file — is STILL NOT ingested and remains Phase 2.  ``parse_module``
 operates on a single module directory and does not read pipeline workflow files.
 The ``DOWNSTREAM_OF`` EdgeKind stays declared-but-unemitted.
+
+I/O Ontology edges (INPUT / OUTPUT)
+------------------------------------
+Real nf-core ``meta.yml`` files carry EDAM URIs on the ``input``/``output``
+channel dicts under the ``ontologies`` key rather than on the tool entry.
+``parse_module`` walks both sections and emits ``EdgeKind.INPUT`` /
+``EdgeKind.OUTPUT`` edges from each wrapped Method to the corresponding EDAM
+node.  For single-tool modules this is exact; for multi-tool modules the
+module-level I/O is attributed to every wrapped method — a documented
+approximation until per-tool I/O is available in meta.yml.
 """
 from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -27,6 +38,64 @@ from methods_graph.types import (EdgeKind, EdgeRecord, MethodRecord, NodeKind,
                                   NodeRecord, Provenance)
 
 _DEP_RE = re.compile(r"(?:(?P<chan>[\w-]+)::)?(?P<pkg>[\w.-]+)=(?P<ver>[\w.+-]+)")
+
+# Mapping from EDAM local-name prefix to the graph id prefix used in edam.py.
+_EDAM_PREFIX_MAP = {
+    "operation_": "op:",
+    "topic_": "topic:",
+    "data_": "data:",
+    "format_": "fmt:",
+}
+
+
+def _collect_ontology_edam_uris(section: Any) -> list[str]:
+    """Recursively walk *section* (the raw input or output YAML value) and
+    collect every ``edam`` URI string found inside any ``ontologies`` list.
+
+    The nf-core meta.yml shape is deliberately irregular:
+    - ``input``/``output`` may be a list of channel-dicts OR a list-of-lists
+      (grouped channels, from ``- -`` YAML syntax), or None.
+    - Each channel-dict is ``{channel_name: {type: ..., ontologies: [...]}}``.
+    - ``ontologies`` items are ``{edam: "<URI>"}`` mappings.
+
+    This function is purely structural — it recurses into all dict values and
+    list items, so it tolerates any nesting depth without assumptions.
+    Returns a flat list of URI strings; may contain duplicates.
+    """
+    uris: list[str] = []
+    if isinstance(section, list):
+        for item in section:
+            uris.extend(_collect_ontology_edam_uris(item))
+    elif isinstance(section, dict):
+        ontologies = section.get("ontologies")
+        if isinstance(ontologies, list):
+            for entry in ontologies:
+                if isinstance(entry, dict):
+                    val = entry.get("edam")
+                    if isinstance(val, str) and val:
+                        uris.append(val)
+        # Recurse into all values regardless (handles nested channel dicts).
+        for v in section.values():
+            if isinstance(v, (dict, list)):
+                uris.extend(_collect_ontology_edam_uris(v))
+    return uris
+
+
+def _edam_uri_to_node_id(uri: str) -> str | None:
+    """Convert a full EDAM URI to a graph node id matching the edam.py scheme.
+
+    Examples::
+        http://edamontology.org/format_1930  →  fmt:format_1930
+        http://edamontology.org/data_3494    →  data:data_3494
+        http://edamontology.org/operation_3798 → op:operation_3798
+        http://edamontology.org/topic_3170   →  topic:topic_3170
+        <anything unclassifiable>            →  None
+    """
+    local = uri.rsplit("/", 1)[-1]
+    for prefix, id_prefix in _EDAM_PREFIX_MAP.items():
+        if local.startswith(prefix):
+            return id_prefix + local
+    return None
 
 
 def _bioconda_dep(env_path: Path, prefer_pkg: str | None = None, *,
@@ -99,6 +168,20 @@ def parse_module(module_dir: Path, *, ingested_at: str) -> tuple[list[NodeRecord
     # entries share the same name we emit one Method + one WRAPS.
     emitted_method_ids: set[str] = set()
 
+    # Collect module-level I/O EDAM node ids from input/output channel ontologies.
+    # These are attributed to every wrapped method: exact for single-tool modules;
+    # an approximation for multi-tool modules (module-level I/O is ambiguous per tool).
+    def _io_edam_ids(section_key: str) -> list[str]:
+        raw_uris = _collect_ontology_edam_uris(meta.get(section_key))
+        node_ids = sorted({
+            nid for uri in raw_uris
+            if (nid := _edam_uri_to_node_id(uri)) is not None
+        })
+        return node_ids
+
+    input_edam_ids = _io_edam_ids("input")
+    output_edam_ids = _io_edam_ids("output")
+
     for tool_entry in valid_tools:
         tool_name, tool_meta = next(iter(tool_entry.items()))
         method_id = f"m:{tool_name}"
@@ -128,9 +211,16 @@ def parse_module(module_dir: Path, *, ingested_at: str) -> tuple[list[NodeRecord
             # repeated tool name yields exactly one Method + one WRAPS + one
             # set of EDAM edges (no duplicates).
             edges.append(EdgeRecord(module_id, method_id, EdgeKind.WRAPS, {}, prov))
+            # edam_operations / edam_topics — supported legacy shape used in some
+            # test fixtures and occasionally in real modules.
             for op in tool_meta.get("edam_operations", []):
                 edges.append(EdgeRecord(method_id, f"op:{op}", EdgeKind.PERFORMS, {}, prov))
             for tp in tool_meta.get("edam_topics", []):
                 edges.append(EdgeRecord(method_id, f"topic:{tp}", EdgeKind.HAS_TOPIC, {}, prov))
+            # I/O ontology edges — parsed from input/output channel ontologies.
+            for edam_id in input_edam_ids:
+                edges.append(EdgeRecord(method_id, edam_id, EdgeKind.INPUT, {}, prov))
+            for edam_id in output_edam_ids:
+                edges.append(EdgeRecord(method_id, edam_id, EdgeKind.OUTPUT, {}, prov))
 
     return nodes, edges

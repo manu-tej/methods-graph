@@ -1,5 +1,9 @@
 from pathlib import Path
-from methods_graph.connectors.nfcore import parse_module
+from methods_graph.connectors.nfcore import (
+    parse_module,
+    _collect_ontology_edam_uris,
+    _edam_uri_to_node_id,
+)
 from methods_graph.types import NodeKind, EdgeKind
 
 MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "salmon_quant"
@@ -7,6 +11,7 @@ MULTIDEP_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "multidep_quan
 MULTI_TOOL_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "samtools_stats"
 SAMTOOLS_HELPER_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "samtools_helper"
 FASTQC_MOD_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "fastqc_mod"
+FASTP_IO_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "fastp_io"
 
 
 def test_parse_module_creates_method_with_join_keys():
@@ -146,6 +151,99 @@ def test_multitool_single_dep_only_matching_tool_gets_pkg():
 # ---------------------------------------------------------------------------
 # Malformed tool entry in meta.yml tools list
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# I/O ontology (INPUT / OUTPUT) edge tests
+# ---------------------------------------------------------------------------
+
+def test_parse_module_links_edam_via_io_ontologies():
+    """fastp_io fixture: INPUT edge m:fastp->fmt:format_1930, OUTPUT m:fastp->fmt:format_3464."""
+    _, edges = parse_module(FASTP_IO_MODULE, ingested_at="2026-06-09")
+    input_edges = [e for e in edges if e.kind == EdgeKind.INPUT]
+    output_edges = [e for e in edges if e.kind == EdgeKind.OUTPUT]
+    assert any(
+        e.from_id == "m:fastp" and e.to_id == "fmt:format_1930" for e in input_edges
+    ), f"INPUT edge missing; got: {[(e.from_id, e.to_id) for e in input_edges]}"
+    assert any(
+        e.from_id == "m:fastp" and e.to_id == "fmt:format_3464" for e in output_edges
+    ), f"OUTPUT edge missing; got: {[(e.from_id, e.to_id) for e in output_edges]}"
+
+
+def test_collect_ontology_edam_uris_walks_nested():
+    """_collect_ontology_edam_uris handles list-of-lists, plain dicts, empty/absent ontologies."""
+    # Mirrors real nf-core grouped input (- - YAML syntax → list of lists)
+    section = [
+        # grouped channels: outer list item is itself a list
+        [
+            {"meta": {"type": "map", "description": "sample info"}},
+            {
+                "reads": {
+                    "type": "file",
+                    "description": "fastq",
+                    "ontologies": [
+                        {"edam": "http://edamontology.org/format_1930"},
+                    ],
+                }
+            },
+        ],
+        # plain channel dict with no ontologies key
+        {"index": {"type": "file", "description": "index"}},
+        # channel with empty ontologies list
+        {"bam": {"type": "file", "ontologies": []}},
+    ]
+    uris = _collect_ontology_edam_uris(section)
+    assert uris == ["http://edamontology.org/format_1930"]
+
+    # None / absent section → empty
+    assert _collect_ontology_edam_uris(None) == []
+    assert _collect_ontology_edam_uris([]) == []
+
+
+def test_edam_uri_to_node_id_classifies():
+    """_edam_uri_to_node_id maps each EDAM prefix to the correct graph id prefix."""
+    assert _edam_uri_to_node_id("http://edamontology.org/format_1930") == "fmt:format_1930"
+    assert _edam_uri_to_node_id("http://edamontology.org/data_3494") == "data:data_3494"
+    assert _edam_uri_to_node_id("http://edamontology.org/operation_3798") == "op:operation_3798"
+    assert _edam_uri_to_node_id("http://edamontology.org/topic_3170") == "topic:topic_3170"
+    # Unclassifiable inputs must return None
+    assert _edam_uri_to_node_id("http://example.com/garbage") is None
+    assert _edam_uri_to_node_id("not_a_uri") is None
+
+
+def test_io_ontologies_attributed_to_all_wrapped_tools(tmp_path):
+    """Multi-tool module: both wrapped methods get INPUT edges from module-level ontologies."""
+    meta_yml = tmp_path / "meta.yml"
+    meta_yml.write_text(
+        "name: dual_tool_io\n"
+        "tools:\n"
+        "  - samtools:\n"
+        "      description: SAM utilities\n"
+        "      identifier: biotools:samtools\n"
+        "  - bcftools:\n"
+        "      description: BCF utilities\n"
+        "      identifier: biotools:bcftools\n"
+        "input:\n"
+        "  - - reads:\n"
+        "          type: file\n"
+        "          ontologies:\n"
+        "            - edam: http://edamontology.org/format_2572\n"
+        "output: []\n"
+    )
+    env_yml = tmp_path / "environment.yml"
+    env_yml.write_text(
+        "name: dual_tool_io\n"
+        "dependencies:\n"
+        "  - bioconda::samtools=1.19\n"
+        "  - bioconda::bcftools=1.19\n"
+    )
+
+    _, edges = parse_module(tmp_path, ingested_at="2026-06-09")
+    input_edges = [e for e in edges if e.kind == EdgeKind.INPUT]
+    from_ids = {e.from_id for e in input_edges}
+    assert "m:samtools" in from_ids, "samtools must get INPUT edge"
+    assert "m:bcftools" in from_ids, "bcftools must get INPUT edge"
+    assert all(e.to_id == "fmt:format_2572" for e in input_edges)
+
 
 def test_malformed_tool_entry_is_skipped(tmp_path):
     """A bare string / None / empty-dict entry in tools: must not raise; valid tool still emitted."""
