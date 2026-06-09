@@ -33,6 +33,16 @@ def test_build_graph_is_idempotent(tmp_path):
     assert count == 1
 
 
+def test_dangling_edge_is_dropped_not_errored(tmp_path):
+    nodes = [NodeRecord("op:x", "X", NodeKind.OPERATION, {}, P)]
+    dangling = EdgeRecord("op:x", "op:missing", EdgeKind.PERFORMS, {}, P)
+    db_path = tmp_path / "methods.kuzu"
+    build_graph(nodes, [dangling], db_path, staging_dir=tmp_path / "stg")
+    conn = kuzu.Connection(kuzu.Database(str(db_path)))
+    count = [r for r in conn.execute("MATCH ()-[r:Rel]->() RETURN count(r)")][0][0]
+    assert count == 0
+
+
 def test_provenance_columns_load_into_correct_fields(tmp_path):
     """Guard against silent corruption from positional COPY column mis-mapping."""
     prov = Provenance("edam", "http://edam", "2026-06-08")

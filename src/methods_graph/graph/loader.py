@@ -1,8 +1,11 @@
 """Build a fresh Kùzu DB from canonical node/edge records via Parquet COPY."""
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 import kuzu
 import polars as pl
@@ -45,6 +48,12 @@ def build_graph(nodes: list[NodeRecord], edges: list[EdgeRecord],
     node_ids = {n.id for n in nodes}
     # Drop dangling edges whose endpoints are not in the current node set.
     valid_edges = [e for e in edges if e.from_id in node_ids and e.to_id in node_ids]
+    dropped = len(edges) - len(valid_edges)
+    if dropped:
+        _log.warning(
+            "build_graph: dropped %d dangling edge(s) whose endpoints are not in the node set",
+            dropped,
+        )
 
     nodes_pq = staging_dir / "nodes.parquet"
     edges_pq = staging_dir / "edges.parquet"
