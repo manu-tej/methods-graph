@@ -35,7 +35,17 @@ def parse_edam(tsv_path: Path, *, ingested_at: str) -> tuple[list[NodeRecord], l
     id_by_uri: dict[str, str] = {}
 
     with tsv_path.open(newline="", encoding="utf-8") as fh:
-        rows = list(csv.DictReader(fh, delimiter="\t"))
+        reader = csv.DictReader(fh, delimiter="\t")
+        rows = list(reader)
+        fieldnames = reader.fieldnames or []
+
+    _REQUIRED = {"Class ID", "Preferred Label", "Parents", "Obsolete"}
+    if rows:
+        missing = _REQUIRED - set(fieldnames)
+        if missing:
+            raise ValueError(
+                f"EDAM TSV missing required columns: {missing}; got {fieldnames}"
+            )
 
     # First pass: nodes + URI→id map (skip obsolete).
     kept: list[dict] = []
@@ -46,8 +56,11 @@ def parse_edam(tsv_path: Path, *, ingested_at: str) -> tuple[list[NodeRecord], l
         if cls is None:
             continue
         kind, node_id = cls
+        name = row["Preferred Label"].strip()
+        if not name:
+            continue
         id_by_uri[row["Class ID"]] = node_id
-        nodes.append(NodeRecord(id=node_id, name=row["Preferred Label"].strip(),
+        nodes.append(NodeRecord(id=node_id, name=name,
                                 kind=kind, properties={"uri": row["Class ID"]},
                                 provenance=prov))
         kept.append(row)
