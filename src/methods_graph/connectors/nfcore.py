@@ -29,7 +29,8 @@ from methods_graph.types import (EdgeKind, EdgeRecord, MethodRecord, NodeKind,
 _DEP_RE = re.compile(r"(?:(?P<chan>[\w-]+)::)?(?P<pkg>[\w.-]+)=(?P<ver>[\w.+-]+)")
 
 
-def _bioconda_dep(env_path: Path, prefer_pkg: str | None = None) -> tuple[str | None, str | None]:
+def _bioconda_dep(env_path: Path, prefer_pkg: str | None = None, *,
+                  allow_single_fallback: bool = False) -> tuple[str | None, str | None]:
     """Return (pkg, version) for the bioconda dependency in *env_path*.
 
     Matching rules (in priority order):
@@ -37,10 +38,15 @@ def _bioconda_dep(env_path: Path, prefer_pkg: str | None = None) -> tuple[str | 
     1. If *prefer_pkg* matches a dep's package name (case-insensitive) →
        return that dep immediately.  This ensures each tool gets its own
        package even in a multi-dep environment.yml.
-    2. Elif there is exactly ONE bioconda dep in the file → return it.
-       (Unambiguous single-tool / single-dep case; preserves existing behaviour.)
+    2. Elif there is exactly ONE bioconda dep AND either no *prefer_pkg* was
+       given OR *allow_single_fallback* is True → return it.
+       The *allow_single_fallback* flag is set by the caller when the module
+       has exactly one valid tool, making it unambiguous to assign the sole
+       dep to that tool even when the tool key name differs from the package
+       name (e.g. tool key ``fastqc_check``, package ``fastqc``).
     3. Else → return ``(None, None)``.  Multiple deps exist but none matches
-       *prefer_pkg*; refusing to guess avoids mis-assignment.
+       *prefer_pkg*, or this is a multi-tool module and no name match was
+       found; refusing to guess avoids mis-assignment.
     """
     if not env_path.exists():
         return None, None
@@ -56,10 +62,10 @@ def _bioconda_dep(env_path: Path, prefer_pkg: str | None = None) -> tuple[str | 
             if prefer_pkg and pkg.lower() == prefer_pkg.lower():
                 return pkg, ver
             bioconda_deps.append((pkg, ver))
-    # Rule 2: unambiguous single dep — only when no prefer_pkg was requested.
-    # If prefer_pkg was given and didn't match rule 1, the tool has no bioconda
-    # package; returning the lone dep would mis-assign it to the wrong tool.
-    if len(bioconda_deps) == 1 and not prefer_pkg:
+    # Rule 2: unambiguous single dep — fires when there is no prefer_pkg at
+    # all, OR when the caller explicitly allows the single-tool fallback (i.e.
+    # a single-tool module with a single dep, even if names differ).
+    if len(bioconda_deps) == 1 and (allow_single_fallback or not prefer_pkg):
         return bioconda_deps[0]
     # Rule 3: ambiguous — don't guess.
     return None, None
@@ -83,20 +89,26 @@ def parse_module(module_dir: Path, *, ingested_at: str) -> tuple[list[NodeRecord
 
     tools = meta.get("tools") or []
 
+    # Count valid (non-empty dict) tool entries to detect single-tool modules.
+    # Note: if the same tool name appears twice, single_tool will be False and
+    # only an exact name-match can assign the dep — degenerate but safe.
+    valid_tools = [t for t in tools if isinstance(t, dict) and t]
+    single_tool = len(valid_tools) == 1
+
     # Dedupe: track emitted method ids within this module so that if two tool
     # entries share the same name we emit one Method + one WRAPS.
     emitted_method_ids: set[str] = set()
 
-    for tool_entry in tools:
-        # Guard: skip bare strings, None, empty dicts, or any non-dict entry.
-        if not isinstance(tool_entry, dict) or not tool_entry:
-            continue
+    for tool_entry in valid_tools:
         tool_name, tool_meta = next(iter(tool_entry.items()))
         method_id = f"m:{tool_name}"
 
         # Per-tool bioconda resolution: prefer_pkg=tool_name guarantees the
         # correct package is selected even in multi-dep environment.yml files.
-        pkg, ver = _bioconda_dep(env_path, prefer_pkg=tool_name)
+        # allow_single_fallback lets a single-tool module claim the sole dep
+        # even when the tool key name differs from the package name.
+        pkg, ver = _bioconda_dep(env_path, prefer_pkg=tool_name,
+                                 allow_single_fallback=single_tool)
 
         biotools_id = (tool_meta.get("identifier") or "").replace("biotools:", "") or None
 

@@ -6,6 +6,7 @@ MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "salmon_quant"
 MULTIDEP_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "multidep_quant"
 MULTI_TOOL_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "samtools_stats"
 SAMTOOLS_HELPER_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "samtools_helper"
+FASTQC_MOD_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "fastqc_mod"
 
 
 def test_parse_module_creates_method_with_join_keys():
@@ -106,6 +107,40 @@ def test_secondary_tool_without_dep_gets_no_pkg():
 
     assert samtools.bioconda_pkg == "samtools"
     assert helperscript.bioconda_pkg is None
+
+
+# ---------------------------------------------------------------------------
+# Malformed tool entry in meta.yml tools list
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Single-tool module where tool key differs from bioconda package name
+# ---------------------------------------------------------------------------
+
+def test_single_tool_dep_assigned_even_when_names_differ():
+    """A single-tool module with a single bioconda dep must get pkg/version
+    even when the tools: key (fastqc_check) differs from the package name (fastqc).
+    """
+    nodes, _ = parse_module(FASTQC_MOD_MODULE, ingested_at="2026-06-09")
+    method = next(n for n in nodes if n.kind == NodeKind.METHOD)
+    assert method.id == "m:fastqc_check"
+    assert method.bioconda_pkg == "fastqc"
+    assert method.properties["version"] == "0.12.1"
+
+
+def test_multitool_single_dep_only_matching_tool_gets_pkg():
+    """In a multi-tool module with ONE bioconda dep, only the name-matching
+    tool gets bioconda_pkg; sibling tools with no matching dep get None/empty.
+    """
+    nodes, _ = parse_module(SAMTOOLS_HELPER_MODULE, ingested_at="2026-06-09")
+    samtools = next(n for n in nodes if n.id == "m:samtools")
+    helperscript = next(n for n in nodes if n.id == "m:helperscript")
+
+    assert samtools.bioconda_pkg == "samtools"
+    assert samtools.properties["version"] == "1.19"
+
+    assert helperscript.bioconda_pkg is None
+    assert helperscript.properties["version"] == ""
 
 
 # ---------------------------------------------------------------------------
