@@ -192,11 +192,52 @@ def test_collect_ontology_edam_uris_walks_nested():
         {"bam": {"type": "file", "ontologies": []}},
     ]
     uris = _collect_ontology_edam_uris(section)
-    assert uris == ["http://edamontology.org/format_1930"]
+    # Compare as a set so future fixture additions don't break on ordering.
+    assert set(uris) == {"http://edamontology.org/format_1930"}
 
     # None / absent section → empty
     assert _collect_ontology_edam_uris(None) == []
     assert _collect_ontology_edam_uris([]) == []
+
+
+def test_collect_ontology_edam_uris_no_spurious_nested():
+    """A channel edam entry that itself contains an 'ontologies' sub-key must
+    not cause the nested URIs to be collected a second time.
+
+    Shape under test:
+        channel -> {type: file, ontologies: [{edam: "format_1930",
+                                              ontologies: [{edam: "format_9999"}]}]}
+
+    Only format_1930 (the top-level channel ontologies entry) should be
+    collected; format_9999 (nested inside the edam entry) must be ignored.
+    """
+    section = [
+        {
+            "reads": {
+                "type": "file",
+                "description": "fastq reads",
+                "ontologies": [
+                    {
+                        "edam": "http://edamontology.org/format_1930",
+                        # Spurious nested ontologies key — simulates a
+                        # malformed/future edam entry carrying its own
+                        # ontologies child.
+                        "ontologies": [
+                            {"edam": "http://edamontology.org/format_9999"}
+                        ],
+                    }
+                ],
+            }
+        }
+    ]
+    uris = _collect_ontology_edam_uris(section)
+    assert "http://edamontology.org/format_1930" in uris, (
+        "format_1930 must be collected from the top-level ontologies list"
+    )
+    assert "http://edamontology.org/format_9999" not in uris, (
+        "format_9999 must NOT be collected — it is nested inside an edam entry, "
+        "not inside a top-level channel ontologies list"
+    )
 
 
 def test_edam_uri_to_node_id_classifies():

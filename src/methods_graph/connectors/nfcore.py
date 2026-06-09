@@ -74,9 +74,12 @@ def _collect_ontology_edam_uris(section: Any) -> list[str]:
                     val = entry.get("edam")
                     if isinstance(val, str) and val:
                         uris.append(val)
-        # Recurse into all values regardless (handles nested channel dicts).
-        for v in section.values():
-            if isinstance(v, (dict, list)):
+        # Recurse into all values except 'ontologies' (already consumed above).
+        # Skipping the 'ontologies' key prevents spurious collection of edam
+        # URIs that are nested *inside* an ontologies entry (e.g. a malformed
+        # or future entry like {edam: "URI", ontologies: [{edam: "URI2"}]}).
+        for k, v in section.items():
+            if k != "ontologies" and isinstance(v, (dict, list)):
                 uris.extend(_collect_ontology_edam_uris(v))
     return uris
 
