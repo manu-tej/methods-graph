@@ -92,12 +92,17 @@ class KuzuMethodsGraphProvider:
     def _method_ids_matching(self, keywords: list[str]) -> list[str]:
         ids: list[str] = []
         for kw in keywords:
+            # NOTE: n.properties is a JSON string, so this matches both keys and values.
+            # Keywords coinciding with property KEY names (e.g. "version", "description")
+            # will false-positive on every node at scale. Phase 2 should index specific
+            # fields (description, labels) instead of substring-scanning the whole blob.
+
             # Step 1: find ALL entities whose name or properties contain the keyword.
             all_rows = self._conn.execute(
                 "MATCH (n:Entity) "
                 "WHERE contains(lower(n.name), lower($kw)) "
                 "   OR contains(lower(n.properties), lower($kw)) "
-                "RETURN n.id, n.kind",
+                "RETURN n.id, n.kind ORDER BY n.id",
                 parameters={"kw": kw},
             )
             direct_method_ids: list[str] = []
@@ -114,11 +119,16 @@ class KuzuMethodsGraphProvider:
 
             # Step 3: for non-method hits, walk outward from methods up to 2 hops to
             # find any method that reaches the matched entity.
+            # NOTE: *1..2 is intentionally asymmetric — it covers
+            #   Method -PERFORMS-> ChildOp -IS_A-> ParentOp
+            # so searching a parent EDAM concept surfaces methods that perform its
+            # specializations.  The reverse (child keyword matching parent's methods)
+            # is NOT covered; that wider expansion is deferred to Phase 2.
             if non_method_ids:
                 resolved = self._conn.execute(
                     "MATCH (meth:Entity {kind:'Method'})-[r:Rel*1..2]->(x:Entity) "
                     "WHERE list_contains($matched, x.id) "
-                    "RETURN DISTINCT meth.id",
+                    "RETURN DISTINCT meth.id ORDER BY meth.id",
                     parameters={"matched": non_method_ids},
                 )
                 ids.extend(row[0] for row in resolved)

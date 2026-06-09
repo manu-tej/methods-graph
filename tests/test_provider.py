@@ -114,3 +114,13 @@ def test_retrieve_no_match_returns_empty(db_path):
     with KuzuMethodsGraphProvider(db_path) as p:
         ctx = p.retrieve_context_for_keywords(["zzznotarealthing"])
     assert ctx == "", "Expected empty string when no keyword matches anything"
+
+
+def test_method_ids_matching_is_deterministic(db_path):
+    """Two successive calls to _method_ids_matching must return identical lists."""
+    with KuzuMethodsGraphProvider(db_path) as p:
+        first = p._method_ids_matching(["RNA-Seq"])
+        second = p._method_ids_matching(["RNA-Seq"])
+    assert first == second, (
+        f"_method_ids_matching returned different results across calls: {first!r} vs {second!r}"
+    )
