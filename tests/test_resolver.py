@@ -216,10 +216,12 @@ def test_two_keyless_same_id_merge():
     assert len(methods2) == 1
     assert methods2[0].id == "m:y"
 
-    # Description must be stable and from one of the two inputs.
+    # Description must be the lexicographically-smaller provider's value.
+    # Both records share the same id "m:y" so members_sorted puts "desc-a"
+    # first (tiebreak: sorted(properties.items()) → "desc-a" < "desc-b").
     desc1 = methods1[0].properties.get("description")
     desc2 = methods2[0].properties.get("description")
-    assert desc1 in {"desc-a", "desc-b"}
+    assert desc1 == "desc-a", f"Expected 'desc-a' (lex-smaller tiebreak), got {desc1!r}"
     assert desc1 == desc2, f"Non-deterministic: {desc1} vs {desc2}"
 
 

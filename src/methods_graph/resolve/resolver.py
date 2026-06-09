@@ -226,13 +226,28 @@ def resolve(*, method_nodes: list[MethodRecord], other_nodes: list[NodeRecord],
         seen.add(sig)
         edges.append(EdgeRecord(f, t, e.kind, e.properties, e.provenance))
 
+    # Sort canonical_methods by id for a deterministic, input-order-independent
+    # output list (satisfies the docstring's determinism claim and prevents
+    # non-deterministic snapshot diffs).
+    canonical_methods.sort(key=lambda m: m.id)
+
+    # Deduplicate other_nodes by id (first-seen wins) so that duplicate Package
+    # or Container records emitted by connectors do not propagate into the loader
+    # as duplicate primary keys.  Sort by id for full input-order independence.
+    seen_other: dict[str, NodeRecord] = {}
+    for node in other_nodes:
+        seen_other.setdefault(node.id, node)
+    deduped_other = sorted(seen_other.values(), key=lambda node: node.id)
+
     # ------------------------------------------------------------------
     # 6. Method -[:PACKAGED_AS]-> Container (or Package if no container).
     #    Intentionally links the method to ALL container variants of its
     #    package — version selectivity (e.g., linking only a specific tag)
     #    is Phase 2.
+    #    pkg_by_name is built from deduped_other so the lookup is consistent
+    #    with what actually ends up in the graph.
     # ------------------------------------------------------------------
-    pkg_by_name = {n.name.lower(): n for n in other_nodes if n.kind == NodeKind.PACKAGE}
+    pkg_by_name = {node.name.lower(): node for node in deduped_other if node.kind == NodeKind.PACKAGE}
     containers_by_pkg: dict[str, list[str]] = {}
     for e in src_edges:
         if e.kind == EdgeKind.FROM_PACKAGE:
@@ -247,18 +262,5 @@ def resolve(*, method_nodes: list[MethodRecord], other_nodes: list[NodeRecord],
         targets = sorted(ctrs) if ctrs else [pkg.id]
         for tgt in targets:
             edges.append(EdgeRecord(m.id, tgt, EdgeKind.PACKAGED_AS, {}, prov))
-
-    # Sort canonical_methods by id for a deterministic, input-order-independent
-    # output list (satisfies the docstring's determinism claim and prevents
-    # non-deterministic snapshot diffs).
-    canonical_methods.sort(key=lambda m: m.id)
-
-    # Deduplicate other_nodes by id (first-seen wins) so that duplicate Package
-    # or Container records emitted by connectors do not propagate into the loader
-    # as duplicate primary keys.
-    seen_other: dict[str, NodeRecord] = {}
-    for n in other_nodes:
-        seen_other.setdefault(n.id, n)
-    deduped_other = list(seen_other.values())
 
     return canonical_methods + deduped_other, edges
