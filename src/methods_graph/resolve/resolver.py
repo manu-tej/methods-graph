@@ -1,19 +1,33 @@
 """Deterministic entity resolution: merge methods on join keys; emit SAME_AS candidates.
 
-Resolution uses **union-find (disjoint-set)** over strong identifiers so that
-method records sharing ANY strong id key collapse into one canonical Method —
-including transitively through a bridge record.
+Resolution uses **union-find (disjoint-set)** over strong identifiers AND over
+each record's own id so that:
+
+  1. Method records sharing ANY strong id key collapse into one canonical Method —
+     including transitively through a bridge record.
+  2. Two records with the SAME ``m:<name>`` id ALWAYS land in the same component,
+     because ``id`` is the Kùzu primary key.  Without this guarantee a keyed and a
+     keyless record that happen to share an id would each emit their own canonical
+     node → duplicate primary key → load crash.
 
 Strong identifiers are namespaced to avoid false cross-namespace unification:
   - bioconda_pkg  → key "pkg::<name>"
   - biotools_id   → key "bt::<name>"
+  - own record id → key "id::<id>"   (exact-equality only — NOT fuzzy)
 
-A record that carries BOTH keys acts as a bridge: it links the pkg:: group to
-the bt:: group so that any record in either group merges with the other.
+A record that carries BOTH bioconda/biotools keys acts as a bridge: it links the
+pkg:: group to the bt:: group so that any record in either group merges with the
+other.
 
 Canonical id rule: the lexicographically smallest original id in each connected
 component is chosen as the canonical id.  This is deterministic and stable
 across repeated runs regardless of input ordering.
+
+SAME_AS candidates: a component whose members contributed NO strong key
+(purely keyless) may share a lowercased name with a keyed-component canonical.
+When that happens a SAME_AS edge is emitted (confidence 0.5, basis "name") but
+the two components are never hard-merged.  Keyless-vs-keyless name matches are
+intentionally skipped (confidence too low without at least one anchor key).
 """
 from __future__ import annotations
 
@@ -93,80 +107,107 @@ def resolve(*, method_nodes: list[MethodRecord], other_nodes: list[NodeRecord],
     other_nodes:    Non-method nodes (packages, containers, …).
     src_edges:      Raw edges from connectors (will be remapped and deduped).
     ingested_at:    ISO-8601 timestamp for resolver provenance; defaults to "".
+
+    Uniqueness guarantee
+    --------------------
+    Each record's own id is used as an additional union key (``id::<m.id>``).
+    This ensures two records sharing the same ``m:<name>`` id always land in
+    the same component, producing exactly one canonical node per id — no
+    duplicate primary keys in the output.
     """
     # Build provenance for all edges emitted by this resolver run.
     prov = Provenance("resolver", "internal", ingested_at)
 
     # ------------------------------------------------------------------
-    # 1. Partition into keyed and keyless records.
+    # 1. Run union-find over ALL method records.
+    #    Union keys per record: _strong_keys(m) PLUS "id::<m.id>".
+    #    The id:: key guarantees same-id records land in the same component
+    #    (exact equality — not fuzzy); strong keys give transitive cross-id
+    #    merges (bridge behaviour) as before.
     # ------------------------------------------------------------------
-    keyed: list[MethodRecord] = []
-    keyless: list[MethodRecord] = []
-    for m in method_nodes:
-        if _strong_keys(m):
-            keyed.append(m)
-        else:
-            keyless.append(m)
-
-    # ------------------------------------------------------------------
-    # 2. Union-find over keyed records by shared namespaced key strings.
-    #    A record carrying two keys acts as a bridge between their groups.
-    # ------------------------------------------------------------------
-    uf = _UnionFind(len(keyed))
+    all_methods = list(method_nodes)
+    n = len(all_methods)
+    uf = _UnionFind(n)
     key_to_idx: dict[str, int] = {}  # first record index that introduced each key
 
-    for idx, m in enumerate(keyed):
-        for key in _strong_keys(m):
+    for idx, m in enumerate(all_methods):
+        # Collect all union keys: strong keys + own-id key.
+        union_keys = _strong_keys(m) + [f"id::{m.id}"]
+        for key in union_keys:
             if key in key_to_idx:
                 uf.union(idx, key_to_idx[key])
             else:
                 key_to_idx[key] = idx
 
     # ------------------------------------------------------------------
-    # 3. Group keyed records by their root index.
-    #    Choose the lexicographically smallest original id as canonical id.
+    # 2. Group ALL records by their root index.
+    #    For each component track whether ANY member contributed a strong key
+    #    (needed to decide SAME_AS vs. hard-merge semantics later).
     # ------------------------------------------------------------------
     groups: dict[int, list[int]] = defaultdict(list)
-    for idx in range(len(keyed)):
-        groups[uf.find(idx)].append(idx)
+    component_has_strong_key: dict[int, bool] = defaultdict(bool)
 
+    for idx in range(n):
+        root = uf.find(idx)
+        groups[root].append(idx)
+        if _strong_keys(all_methods[idx]):
+            component_has_strong_key[root] = True
+
+    # ------------------------------------------------------------------
+    # 3. Build canonical methods.
+    #    Canonical id = lexicographically smallest id in the component.
+    #    Members are merged in id-sorted order into the canonical so that the
+    #    smallest-id provider deterministically fills missing properties first.
+    #    Record root→has_strong_key for use in SAME_AS logic below.
+    # ------------------------------------------------------------------
     canonical_methods: list[MethodRecord] = []
-    id_remap: dict[str, str] = {}  # original method id -> canonical id
+    id_remap: dict[str, str] = {}        # original method id -> canonical id
+    # Map canonical_id -> whether its component had any strong key.
+    canon_has_strong_key: dict[str, bool] = {}
 
     for root, members in sorted(groups.items()):
-        # Sort members by their original method id so that merge order is
-        # fully deterministic regardless of input list order.  The first
-        # element (smallest id) becomes the canonical record; subsequent
-        # members are merged in id order, so the smallest-id provider fills
-        # any missing property first and deterministically wins.
-        members_sorted = sorted(members, key=lambda i: keyed[i].id)
-        canon = keyed[members_sorted[0]]   # smallest id = canonical
+        # Sort members by (original method id, serialised properties) for full
+        # determinism.  The properties tiebreak ensures that when two records
+        # share the same id the result is stable regardless of input order
+        # (content-based ordering, not arrival-order ordering).
+        members_sorted = sorted(
+            members,
+            key=lambda i: (all_methods[i].id,
+                           str(sorted(all_methods[i].properties.items())))
+        )
+        canon = all_methods[members_sorted[0]]   # smallest id = canonical
         canon_id = canon.id
         for i in members_sorted:
-            m = keyed[i]
+            m = all_methods[i]
             id_remap[m.id] = canon_id
             if m is not canon:
                 _merge_into(canon, m)
         canonical_methods.append(canon)
+        canon_has_strong_key[canon_id] = component_has_strong_key[root]
 
     # ------------------------------------------------------------------
-    # 4. Keyless records are never hard-merged by union-find.
-    #    A keyless method whose name matches a keyed canonical emits a
-    #    SAME_AS candidate edge (confidence 0.5, basis "name") — no merge.
-    #    Keyless-vs-keyless is intentionally skipped (confidence too low
-    #    without at least one anchor key).
+    # 4. SAME_AS candidates.
+    #    A canonical method whose ENTIRE component had NO strong key
+    #    ("purely keyless") that shares a lowercased NAME with a keyed-
+    #    component canonical → emit a SAME_AS candidate edge (confidence 0.5,
+    #    basis "name"), never a hard merge.
+    #    Keyless-vs-keyless name matches stay skipped, as before.
     # ------------------------------------------------------------------
     edges: list[EdgeRecord] = []
-    # Build by_name in a deterministic order (sorted by id) so that on a
-    # lowercased-name collision the last entry (lexicographically-largest id)
-    # wins.  Acceptable because name-match is a low-confidence (0.5)
-    # SAME_AS candidate only — never a hard merge.
+
+    # Build by_name from keyed-component canonicals only.
+    # Sorted by id for determinism; on a name collision the last entry
+    # (lex-largest id) wins — acceptable: this is low-confidence (0.5) only.
     by_name: dict[str, MethodRecord] = {
-        m.name.lower(): m for m in sorted(canonical_methods, key=lambda m: m.id)
+        m.name.lower(): m
+        for m in sorted(canonical_methods, key=lambda m: m.id)
+        if canon_has_strong_key.get(m.id, False)
     }
-    for m in keyless:
-        id_remap[m.id] = m.id
-        canonical_methods.append(m)
+
+    for m in canonical_methods:
+        if canon_has_strong_key.get(m.id, False):
+            # Keyed component — never emits a SAME_AS from this side.
+            continue
         match = by_name.get(m.name.lower())
         if match and match.id != m.id:
             edges.append(EdgeRecord(m.id, match.id, EdgeKind.SAME_AS,
@@ -212,4 +253,12 @@ def resolve(*, method_nodes: list[MethodRecord], other_nodes: list[NodeRecord],
     # non-deterministic snapshot diffs).
     canonical_methods.sort(key=lambda m: m.id)
 
-    return canonical_methods + list(other_nodes), edges
+    # Deduplicate other_nodes by id (first-seen wins) so that duplicate Package
+    # or Container records emitted by connectors do not propagate into the loader
+    # as duplicate primary keys.
+    seen_other: dict[str, NodeRecord] = {}
+    for n in other_nodes:
+        seen_other.setdefault(n.id, n)
+    deduped_other = list(seen_other.values())
+
+    return canonical_methods + deduped_other, edges

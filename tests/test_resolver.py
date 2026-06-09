@@ -162,3 +162,85 @@ def test_resolver_output_order_is_deterministic():
     assert ids1 == ids2, f"Order differed: {ids1} vs {ids2}"
     # Also verify the list is actually sorted by id.
     assert ids1 == sorted(ids1)
+
+
+# ---------------------------------------------------------------------------
+# Tests for the id-union fix (duplicate-primary-key bug)
+# ---------------------------------------------------------------------------
+
+def test_same_id_keyed_and_keyless_merge_to_one_node():
+    """A keyed record and a keyless record sharing the same id must produce
+    exactly ONE canonical method (not two nodes with duplicate primary key).
+    The merged canonical must carry the strong key from the keyed member.
+    """
+    a = _method("m:x", "pygenprop", pkg="x")   # keyed: has bioconda_pkg
+    b = _method("m:x", "pygenprop")             # keyless: no strong keys, same id
+    b.properties["description"] = "from-keyless"
+
+    nodes, edges = resolve(method_nodes=[a, b], other_nodes=[], src_edges=[])
+    methods = [n for n in nodes if n.kind == NodeKind.METHOD]
+
+    # Must be exactly one canonical node, not two.
+    assert len(methods) == 1, f"Expected 1 method, got {len(methods)}: {[m.id for m in methods]}"
+    canon = methods[0]
+    assert canon.id == "m:x"
+
+    # bioconda_pkg must be preserved from the keyed member.
+    assert canon.bioconda_pkg == "x"
+
+    # No duplicate ids in entire returned node list.
+    all_ids = [n.id for n in nodes]
+    assert len(all_ids) == len(set(all_ids)), f"Duplicate ids: {all_ids}"
+
+
+def test_two_keyless_same_id_merge():
+    """Two keyless records sharing an id must collapse into ONE canonical method."""
+    a = _method("m:y", "toolY")
+    a.properties["description"] = "desc-a"
+    b = _method("m:y", "toolY")
+    b.properties["description"] = "desc-b"
+
+    nodes1, _ = resolve(method_nodes=[a, b], other_nodes=[], src_edges=[])
+    methods1 = [n for n in nodes1 if n.kind == NodeKind.METHOD]
+    assert len(methods1) == 1, f"Expected 1, got {len(methods1)}"
+    assert methods1[0].id == "m:y"
+
+    # Stable across reversed input order.
+    a2 = _method("m:y", "toolY")
+    a2.properties["description"] = "desc-a"
+    b2 = _method("m:y", "toolY")
+    b2.properties["description"] = "desc-b"
+
+    nodes2, _ = resolve(method_nodes=[b2, a2], other_nodes=[], src_edges=[])
+    methods2 = [n for n in nodes2 if n.kind == NodeKind.METHOD]
+    assert len(methods2) == 1
+    assert methods2[0].id == "m:y"
+
+    # Description must be stable and from one of the two inputs.
+    desc1 = methods1[0].properties.get("description")
+    desc2 = methods2[0].properties.get("description")
+    assert desc1 in {"desc-a", "desc-b"}
+    assert desc1 == desc2, f"Non-deterministic: {desc1} vs {desc2}"
+
+
+def test_output_ids_are_unique():
+    """Mixed batch with same-id collision plus normal distinct methods:
+    output canonical ids must be unique (no duplicate primary keys).
+    """
+    # Two records share id "m:pygenprop" — one keyed, one keyless.
+    a = _method("m:pygenprop", "pygenprop", pkg="pygenprop")
+    b = _method("m:pygenprop", "pygenprop")
+
+    # Normal distinct methods.
+    c = _method("m:bwa", "bwa", pkg="bwa")
+    d = _method("m:star", "star", pkg="star")
+    e = _method("m:keyless-only", "keyless")
+
+    nodes, _ = resolve(method_nodes=[a, b, c, d, e], other_nodes=[], src_edges=[])
+    methods = [n for n in nodes if n.kind == NodeKind.METHOD]
+
+    ids = [m.id for m in methods]
+    assert len(ids) == len(set(ids)), f"Duplicate ids in output: {ids}"
+
+    # The collision should have merged to one; total should be 4 distinct methods.
+    assert len(ids) == 4, f"Expected 4 canonical methods, got {ids}"
