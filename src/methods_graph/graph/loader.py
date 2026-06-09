@@ -33,10 +33,16 @@ def _edge_row(e: EdgeRecord) -> dict:
 
 
 def build_graph(nodes: list[NodeRecord], edges: list[EdgeRecord],
-                db_path: Path, *, staging_dir: Path) -> None:
+                db_path: Path, *, staging_dir: Path) -> dict:
+    """Build a fresh Kùzu DB.
+
+    Returns a summary dict with keys ``nodes``, ``edges_loaded``, and
+    ``edges_dropped`` so callers can report honest counts.
+    """
     db_path = Path(db_path)
     staging_dir = Path(staging_dir)
     staging_dir.mkdir(parents=True, exist_ok=True)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Idempotent: drop any prior DB so a rebuild yields an identical graph.
     if db_path.exists():
@@ -73,3 +79,5 @@ def build_graph(nodes: list[NodeRecord], edges: list[EdgeRecord],
     finally:
         conn.close()
         db.close()
+
+    return {"nodes": len(nodes), "edges_loaded": len(valid_edges), "edges_dropped": dropped}

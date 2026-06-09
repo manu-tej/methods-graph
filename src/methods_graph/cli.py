@@ -14,9 +14,12 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import logging
 from pathlib import Path
 
 from methods_graph.provider.quration_provider import KuzuMethodsGraphProvider
+
+_log = logging.getLogger(__name__)
 
 
 def cmd_query(*, db_path: Path, keywords: list[str], k_hops: int) -> None:
@@ -52,6 +55,12 @@ def cmd_build(
     all_nodes: list = []
     all_edges: list = []
 
+    # --- guard: fail loudly on non-existent source paths ---
+    if nfcore_modules is not None and not Path(nfcore_modules).exists():
+        raise FileNotFoundError(f"--nfcore-modules path does not exist: {nfcore_modules}")
+    if biocontainers is not None and not Path(biocontainers).exists():
+        raise FileNotFoundError(f"--biocontainers path does not exist: {biocontainers}")
+
     # --- EDAM ---
     if edam is not None:
         nodes, edges = parse_edam(edam, ingested_at=ingested_at)
@@ -60,7 +69,7 @@ def cmd_build(
 
     # --- nf-core modules ---
     if nfcore_modules is not None:
-        for subdir in sorted(p for p in nfcore_modules.iterdir() if p.is_dir()):
+        for subdir in sorted(p for p in Path(nfcore_modules).iterdir() if p.is_dir()):
             if not (subdir / "meta.yml").exists():
                 continue
             nodes, edges = parse_module(subdir, ingested_at=ingested_at)
@@ -69,7 +78,7 @@ def cmd_build(
 
     # --- biocontainers ---
     if biocontainers is not None:
-        for json_path in sorted(biocontainers.glob("*.json")):
+        for json_path in sorted(Path(biocontainers).glob("*.json")):
             data = json.loads(json_path.read_text())
             nodes, edges = parse_biocontainer(data, ingested_at=ingested_at)
             all_nodes.extend(nodes)
@@ -78,6 +87,10 @@ def cmd_build(
     # --- partition method vs other nodes ---
     method_nodes = [n for n in all_nodes if isinstance(n, MethodRecord)]
     other_nodes = [n for n in all_nodes if not isinstance(n, MethodRecord)]
+
+    # --- warn on empty build ---
+    if not all_nodes:
+        _log.warning("build produced an empty graph; no sources resolved to any nodes")
 
     # --- resolve ---
     resolved_nodes, resolved_edges = resolve(
@@ -88,13 +101,14 @@ def cmd_build(
     )
 
     # --- load ---
-    build_graph(resolved_nodes, resolved_edges, db_path, staging_dir=staging_dir)
+    summary = build_graph(resolved_nodes, resolved_edges, db_path, staging_dir=staging_dir)
 
     # --- summary ---
     n_methods = sum(1 for n in resolved_nodes if isinstance(n, MethodRecord))
     print(
-        f"Built graph: {n_methods} methods, {len(resolved_nodes)} nodes, "
-        f"{len(resolved_edges)} edges -> {db_path}"
+        f"Built graph: {n_methods} methods, {summary['nodes']} nodes, "
+        f"{summary['edges_loaded']} edges loaded "
+        f"({summary['edges_dropped']} dangling dropped) -> {db_path}"
     )
 
 

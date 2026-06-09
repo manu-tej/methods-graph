@@ -1,5 +1,6 @@
 """Tests for the CLI entry points (query, methods, and build subcommands)."""
 import json
+import pytest
 from pathlib import Path
 from methods_graph.cli import cmd_query, cmd_build, main
 from methods_graph.types import MethodRecord, NodeKind, Provenance
@@ -40,13 +41,8 @@ def test_cmd_build_end_to_end(tmp_path):
     # salmon should exist with RNA-Seq tag and container image
     assert "salmon" in method_by_name, f"salmon not found; methods: {list(method_by_name)}"
     salmon = method_by_name["salmon"]
-    assert any("RNA-Seq" in t or "rna" in t.lower() for t in salmon["tags"]) or \
-           any("salmon" in t.lower() for t in salmon["tags"]) or \
-           salmon["compute_requirements"].get("container_image", "").find("salmon") != -1, \
-        f"Expected salmon tags or container_image to mention salmon: tags={salmon['tags']}, compute={salmon['compute_requirements']}"
-    container_image = salmon["compute_requirements"].get("container_image", "")
-    assert "salmon:1.10.0" in container_image, \
-        f"Expected container_image to contain 'salmon:1.10.0', got: {container_image!r}"
+    assert "RNA-Seq" in salmon["tags"], f"expected EDAM RNA-Seq tag; got {salmon['tags']}"
+    assert "salmon:1.10.0" in salmon["compute_requirements"]["container_image"]
 
     # samtools and bcftools should exist from the multi-tool samtools_stats module
     assert "samtools" in method_by_name, f"samtools not found; methods: {list(method_by_name)}"
@@ -58,16 +54,22 @@ def test_cmd_build_is_deterministic(tmp_path):
     db_path_1 = tmp_path / "methods1.kuzu"
     db_path_2 = tmp_path / "methods2.kuzu"
 
-    kwargs = dict(
+    cmd_build(
         edam=FX / "edam_sample.tsv",
         nfcore_modules=FX / "nfcore",
         biocontainers=FX / "biocontainers",
-        staging_dir=tmp_path / "stg",
+        staging_dir=tmp_path / "stg1",
+        db_path=db_path_1,
         ingested_at="2026-06-08",
     )
-
-    cmd_build(db_path=db_path_1, **kwargs)
-    cmd_build(db_path=db_path_2, **kwargs)
+    cmd_build(
+        edam=FX / "edam_sample.tsv",
+        nfcore_modules=FX / "nfcore",
+        biocontainers=FX / "biocontainers",
+        staging_dir=tmp_path / "stg2",
+        db_path=db_path_2,
+        ingested_at="2026-06-08",
+    )
 
     with KuzuMethodsGraphProvider(db_path_1) as p1:
         ids_1 = sorted(m["id"] for m in p1.get_methods())
@@ -92,6 +94,29 @@ def test_cmd_build_partial_sources(tmp_path):
         methods = provider.get_methods()
     method_names = {m["name"] for m in methods}
     assert "salmon" in method_names, f"Expected salmon in methods: {method_names}"
+
+
+def test_cmd_build_missing_path_raises(tmp_path):
+    """Passing a non-existent --biocontainers or --nfcore-modules dir raises FileNotFoundError."""
+    bogus = tmp_path / "does_not_exist"
+    with pytest.raises(FileNotFoundError):
+        cmd_build(
+            edam=None,
+            nfcore_modules=None,
+            biocontainers=bogus,
+            db_path=tmp_path / "m.kuzu",
+            staging_dir=tmp_path / "stg",
+            ingested_at="2026-06-08",
+        )
+    with pytest.raises(FileNotFoundError):
+        cmd_build(
+            edam=None,
+            nfcore_modules=bogus,
+            biocontainers=None,
+            db_path=tmp_path / "m.kuzu",
+            staging_dir=tmp_path / "stg",
+            ingested_at="2026-06-08",
+        )
 
 
 def test_main_build_subcommand(tmp_path):
