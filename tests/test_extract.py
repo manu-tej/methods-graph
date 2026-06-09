@@ -39,3 +39,20 @@ def test_method_neighborhood_groups_by_edge_kind(conn):
     assert any(o["id"] == "op:operation_3798" for o in nb["operations"])
     assert any(t["id"] == "topic:topic_3170" for t in nb["topics"])
     assert any(c["id"] == "ctr:salmon" for c in nb["containers"])
+
+
+def test_seed_empty_returns_empty(conn):
+    sg = seed(conn, [])
+    assert sg.nodes == []
+    assert sg.edges == []
+
+
+def test_seed_missing_id_is_graceful(conn):
+    sg = seed(conn, ["nonexistent"])
+    assert sg.nodes == []
+    assert sg.edges == []
+
+
+def test_method_neighborhood_missing_raises(conn):
+    with pytest.raises(KeyError):
+        method_neighborhood(conn, "m:nope")

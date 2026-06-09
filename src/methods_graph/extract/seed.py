@@ -16,8 +16,13 @@ class Subgraph:
 
 def _node_dict(row_id: str, row_name: str, row_kind: str, row_properties: str) -> dict[str, Any]:
     """Build a clean node dict from positional query columns."""
-    props_raw = row_properties or "{}"
-    props = json.loads(props_raw) if isinstance(props_raw, str) else {}
+    props_raw = row_properties
+    if isinstance(props_raw, str):
+        props = json.loads(props_raw or "{}")
+    elif isinstance(props_raw, dict):
+        props = props_raw
+    else:
+        props = {}
     return {"id": row_id, "name": row_name, "kind": row_kind, "properties": props}
 
 
@@ -26,6 +31,9 @@ def seed(conn: kuzu.Connection, seed_ids: list[str], *, k_hops: int = 1) -> Subg
 
     Returns a Subgraph with all nodes reachable within k_hops of any seed (including
     the seeds themselves) and all edges between those gathered nodes.
+
+    Values of k_hops less than 1 are treated as 1; seeds-only (0-hop) extraction is
+    not supported — the minimum expansion is always 1 hop.
 
     Cypher notes (kuzu 0.11.3):
     - Variable-length syntax: ``-[r:Rel*1..k]-`` (undirected, no named edge variable needed).
