@@ -140,6 +140,31 @@ def test_cmd_build_missing_path_raises(tmp_path):
         )
 
 
+def test_cmd_build_discovers_nested_modules(tmp_path):
+    """Recursive rglob discovery finds modules at any nesting depth.
+
+    nfcore_nested/ layout:
+      salmon/quant/meta.yml   -- 2-level nested module (tool: salmon)
+      fastqc/meta.yml         -- 1-level nested module (tool: fastqc)
+
+    Both must be discovered and loaded into the graph.
+    """
+    db_path = tmp_path / "nested.kuzu"
+    cmd_build(
+        edam=None,
+        nfcore_modules=FX / "nfcore_nested",
+        biocontainers=None,
+        db_path=db_path,
+        staging_dir=tmp_path / "stg",
+        ingested_at="2026-06-09",
+    )
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        methods = provider.get_methods()
+    method_names = {m["name"] for m in methods}
+    assert "salmon" in method_names, f"Expected salmon in methods from nested fixture; got {method_names}"
+    assert "fastqc" in method_names, f"Expected fastqc in methods from nested fixture; got {method_names}"
+
+
 def test_main_build_subcommand(tmp_path):
     """main() with build subcommand returns 0 and creates the db."""
     db_path = tmp_path / "m.kuzu"

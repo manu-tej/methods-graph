@@ -70,11 +70,16 @@ def cmd_build(
         all_edges.extend(edges)
 
     # --- nf-core modules ---
+    # Discover recursively: any directory that directly contains a meta.yml is a module dir.
+    # Sorted for deterministic, reproducible builds. De-duplicated via dict-keyed set.
     if nfcore_modules is not None:
-        for subdir in sorted(p for p in Path(nfcore_modules).iterdir() if p.is_dir()):
-            if not (subdir / "meta.yml").exists():
+        seen_dirs: set[Path] = set()
+        for meta_file in sorted(Path(nfcore_modules).rglob("meta.yml")):
+            module_dir = meta_file.parent
+            if module_dir in seen_dirs:
                 continue
-            nodes, edges = parse_module(subdir, ingested_at=ingested_at)
+            seen_dirs.add(module_dir)
+            nodes, edges = parse_module(module_dir, ingested_at=ingested_at)
             all_nodes.extend(nodes)
             all_edges.extend(edges)
 
