@@ -3,6 +3,7 @@ from methods_graph.connectors.nfcore import parse_module
 from methods_graph.types import NodeKind, EdgeKind
 
 MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "salmon_quant"
+MULTIDEP_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "multidep_quant"
 
 
 def test_parse_module_creates_method_with_join_keys():
@@ -28,3 +29,12 @@ def test_parse_module_emits_module_and_wraps_edge():
     module = next(n for n in nodes if n.kind == NodeKind.MODULE)
     assert module.name == "salmon_quant"
     assert any(e.kind == EdgeKind.WRAPS and e.from_id == module.id for e in edges)
+
+
+def test_parse_module_matches_dep_to_tool_name():
+    """When environment.yml lists a secondary dep (htslib) before salmon,
+    the resolver must pick salmon — not htslib — as bioconda_pkg/version."""
+    nodes, _ = parse_module(MULTIDEP_MODULE, ingested_at="2026-06-08")
+    method = next(n for n in nodes if n.kind == NodeKind.METHOD)
+    assert method.bioconda_pkg == "salmon"
+    assert method.properties["version"] == "1.10.0"

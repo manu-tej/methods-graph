@@ -1,0 +1,7 @@
+name: multidep_quant
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - "bioconda::htslib=1.20"
+  - "bioconda::salmon=1.10.0"
