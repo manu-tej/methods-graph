@@ -17,7 +17,9 @@ import argparse
 import datetime
 import json
 import logging
+import subprocess
 from pathlib import Path
+from typing import Any, Callable
 
 from methods_graph.provider.quration_provider import KuzuMethodsGraphProvider
 
@@ -128,6 +130,10 @@ def cmd_fetch(
     do_nfcore: bool,
     do_biocontainers: bool,
     fetched_at: str,
+    # Injectable network seams (default to real stdlib helpers; override in tests).
+    _edam_http_get: Callable[[str], tuple[bytes, dict[str, str]]] | None = None,
+    _nfcore_runner: Callable[..., Any] | None = None,
+    _bc_http_get_json: Callable[[str], Any] | None = None,
 ) -> None:
     """Download source snapshots and write a snapshot.json manifest.
 
@@ -137,6 +143,11 @@ def cmd_fetch(
       3. Derive bioconda package names from the cloned modules tree.
       4. Fetch BioContainers records for those packages (if --no-biocontainers not set).
       5. Write snapshot.json manifest.
+
+    The ``_edam_http_get``, ``_nfcore_runner``, and ``_bc_http_get_json`` parameters
+    are optional injectable seams for unit testing.  When *None* (the default used
+    by ``main()``), the real stdlib helpers are used.  Do not pass these from the
+    CLI; they exist solely to make the function testable without a network.
     """
     from methods_graph.fetch import (
         bioconda_packages_from_nfcore,
@@ -144,7 +155,14 @@ def cmd_fetch(
         fetch_edam,
         fetch_nfcore,
         write_manifest,
+        _stdlib_http_get,
+        _stdlib_http_get_json,
     )
+
+    # Resolve injectable seams to defaults if not provided.
+    edam_http_get = _edam_http_get if _edam_http_get is not None else _stdlib_http_get
+    nfcore_runner = _nfcore_runner if _nfcore_runner is not None else subprocess.run
+    bc_http_get_json = _bc_http_get_json if _bc_http_get_json is not None else _stdlib_http_get_json
 
     dest.mkdir(parents=True, exist_ok=True)
 
@@ -155,13 +173,13 @@ def cmd_fetch(
     # --- EDAM ---
     if do_edam:
         print("Fetching EDAM ontology TSV …")
-        edam_manifest = fetch_edam(dest, fetched_at=fetched_at)
+        edam_manifest = fetch_edam(dest, fetched_at=fetched_at, http_get=edam_http_get)
         print(f"  EDAM: {edam_manifest['rows']} rows, sha256={edam_manifest['sha256'][:12]}…")
 
     # --- nf-core/modules clone ---
     if do_nfcore:
         print("Cloning nf-core/modules (shallow) …")
-        nfcore_manifest = fetch_nfcore(dest, fetched_at=fetched_at)
+        nfcore_manifest = fetch_nfcore(dest, fetched_at=fetched_at, runner=nfcore_runner)
         print(f"  nf-core: commit {nfcore_manifest['commit'][:12]}…")
 
     # --- BioContainers ---
@@ -188,7 +206,7 @@ def cmd_fetch(
             bc_dir = dest / "biocontainers"
             try:
                 biocontainers_manifest = fetch_biocontainers(
-                    pkg_names, bc_dir, fetched_at=fetched_at
+                    pkg_names, bc_dir, fetched_at=fetched_at, http_get_json=bc_http_get_json
                 )
             except Exception as exc:
                 # Wholesale failure (e.g. network down before first iteration).

@@ -258,7 +258,7 @@ def fetch_edam(
     dest_path.write_bytes(body)
     sha256 = hashlib.sha256(body).hexdigest()
     last_modified = headers.get("last-modified", "")
-    rows = body.decode("utf-8", errors="replace").count("\n")
+    rows = len(body.decode("utf-8", "replace").splitlines())
     return {
         "url": url,
         "sha256": sha256,

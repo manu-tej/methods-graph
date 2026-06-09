@@ -1,10 +1,12 @@
 """Tests for methods_graph.fetch — all offline, no network I/O."""
 from __future__ import annotations
 
+import hashlib
 import json
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any, Callable
 
 import pytest
 
@@ -13,6 +15,8 @@ from methods_graph.fetch import (
     _transform_biocontainer,
     bioconda_packages_from_nfcore,
     fetch_biocontainers,
+    fetch_edam,
+    fetch_nfcore,
     write_manifest,
 )
 
@@ -330,3 +334,247 @@ def test_fetch_module_has_no_import_time_network() -> None:
     # Re-importing from cache should be instant and side-effect-free.
     reloaded = importlib.reload(fetch_mod)
     assert reloaded is not None
+
+
+# ---------------------------------------------------------------------------
+# fetch_edam — offline via injected http_get
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_edam_writes_file_and_returns_manifest(tmp_path: Path) -> None:
+    """fetch_edam writes EDAM.tsv and returns a manifest with correct sha256/rows/last_modified."""
+    fake_body = b"term_id\tterm_label\nop:0001\tSequence analysis\nop:0002\tAlignment\n"
+    fake_last_modified = "Mon, 09 Jun 2026 00:00:00 GMT"
+    expected_sha256 = hashlib.sha256(fake_body).hexdigest()
+    expected_rows = len(fake_body.decode("utf-8", "replace").splitlines())
+
+    def _fake_http_get(url: str) -> tuple[bytes, dict[str, str]]:
+        assert "EDAM" in url or "edamontology" in url, f"Unexpected URL: {url}"
+        return fake_body, {"last-modified": fake_last_modified, "content-type": "text/tab-separated-values"}
+
+    result = fetch_edam(
+        tmp_path,
+        fetched_at="2026-06-09T00:00:00Z",
+        http_get=_fake_http_get,
+    )
+
+    # File written with exact bytes
+    out_path = tmp_path / "EDAM.tsv"
+    assert out_path.exists(), "EDAM.tsv must be written"
+    assert out_path.read_bytes() == fake_body
+
+    # Manifest fields
+    assert result["sha256"] == expected_sha256, f"sha256 mismatch: {result['sha256']!r}"
+    assert result["last_modified"] == fake_last_modified
+    assert result["fetched_at"] == "2026-06-09T00:00:00Z"
+    assert result["rows"] == expected_rows, f"rows={result['rows']}, expected {expected_rows}"
+    assert result["url"] is not None
+
+
+def test_fetch_edam_rows_counts_lines_without_trailing_newline(tmp_path: Path) -> None:
+    """rows is computed via splitlines(), so no trailing newline does not undercount."""
+    # Body with NO trailing newline — count("\n") would give 1, splitlines() gives 2.
+    fake_body = b"header\tcolumn\nrow1\tvalue1"
+    expected_rows = 2  # "header\tcolumn" and "row1\tvalue1"
+
+    def _fake_http_get(url: str) -> tuple[bytes, dict[str, str]]:
+        return fake_body, {}
+
+    result = fetch_edam(tmp_path, fetched_at="2026-06-09T00:00:00Z", http_get=_fake_http_get)
+    assert result["rows"] == expected_rows, (
+        f"Expected rows=2 (splitlines), got {result['rows']} — count('\\n') would give 1"
+    )
+
+
+# ---------------------------------------------------------------------------
+# fetch_nfcore — offline via injected runner
+# ---------------------------------------------------------------------------
+
+_FAKE_COMMIT_SHA = "a" * 40  # 40-char hex string
+
+
+def test_fetch_nfcore_clones_and_returns_manifest(tmp_path: Path) -> None:
+    """fetch_nfcore issues clone + rev-parse, returns manifest with repo/commit/modules_path."""
+    clone_dir = tmp_path / "modules"
+    issued_commands: list[list[str]] = []
+
+    def _fake_runner(cmd: list[str], **kwargs: Any) -> Any:
+        issued_commands.append(list(cmd))
+        if cmd[0] == "git" and "clone" in cmd:
+            # Simulate the clone by creating the directory.
+            clone_dir.mkdir(parents=True, exist_ok=True)
+            return None
+        if cmd[0] == "git" and "rev-parse" in cmd:
+            # Return fake stdout for HEAD commit.
+            class _FakeResult:
+                stdout = _FAKE_COMMIT_SHA + "\n"
+            return _FakeResult()
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    result = fetch_nfcore(
+        tmp_path,
+        fetched_at="2026-06-09T00:00:00Z",
+        runner=_fake_runner,
+    )
+
+    # Manifest fields
+    assert result["repo"] is not None
+    assert result["commit"] == _FAKE_COMMIT_SHA, f"commit={result['commit']!r}"
+    assert "modules_path" in result
+    assert result["fetched_at"] == "2026-06-09T00:00:00Z"
+
+    # Both commands were issued: clone + rev-parse
+    clone_cmds = [c for c in issued_commands if "clone" in c]
+    revparse_cmds = [c for c in issued_commands if "rev-parse" in c]
+    assert len(clone_cmds) == 1, f"Expected exactly 1 clone command; got {clone_cmds}"
+    assert len(revparse_cmds) == 1, f"Expected exactly 1 rev-parse command; got {revparse_cmds}"
+
+
+def test_fetch_nfcore_skips_clone_if_dir_exists(tmp_path: Path) -> None:
+    """If clone dir already exists, the clone command is skipped but rev-parse still runs."""
+    clone_dir = tmp_path / "modules"
+    clone_dir.mkdir(parents=True)  # Pre-create to simulate existing clone.
+    issued_commands: list[list[str]] = []
+
+    def _fake_runner(cmd: list[str], **kwargs: Any) -> Any:
+        issued_commands.append(list(cmd))
+        if "clone" in cmd:
+            raise AssertionError("clone should NOT be called when dir already exists")
+        if "rev-parse" in cmd:
+            class _FakeResult:
+                stdout = _FAKE_COMMIT_SHA
+            return _FakeResult()
+        raise AssertionError(f"Unexpected: {cmd}")
+
+    result = fetch_nfcore(tmp_path, fetched_at="2026-06-09T00:00:00Z", runner=_fake_runner)
+    assert result["commit"] == _FAKE_COMMIT_SHA
+    clone_cmds = [c for c in issued_commands if "clone" in c]
+    assert len(clone_cmds) == 0, "clone must not run if dir exists"
+
+
+# ---------------------------------------------------------------------------
+# cmd_fetch — end-to-end offline with all network injected
+# ---------------------------------------------------------------------------
+
+_FAKE_EDAM_BODY = b"term_id\tterm_label\nop:0001\tSequence analysis\n"
+_FAKE_NFCORE_COMMIT = "b" * 40
+
+_BC_API_RECORD = {
+    "name": "salmon",
+    "versions": [{"id": "salmon-1.10.0", "meta_version": "1.10.0"}],
+    "description": "Salmon tool",
+    "tool_url": "https://biocontainers.pro/tools/salmon",
+}
+
+
+def _make_nfcore_tree(base: Path) -> None:
+    """Create a minimal nf-core modules tree under base/modules/modules/nf-core."""
+    nfcore_dir = base / "modules" / "modules" / "nf-core" / "salmon_quant"
+    nfcore_dir.mkdir(parents=True, exist_ok=True)
+    (nfcore_dir / "environment.yml").write_text(
+        "name: salmon_quant\nchannels:\n  - bioconda\ndependencies:\n  - \"bioconda::salmon=1.10.0\"\n"
+    )
+
+
+def _make_fake_nfcore_runner(modules_base: Path) -> tuple[Callable[..., Any], list[list[str]]]:
+    """Return (runner_fn, issued_commands_list) that simulates git clone + rev-parse."""
+    issued: list[list[str]] = []
+
+    def _runner(cmd: list[str], **kwargs: Any) -> Any:
+        issued.append(list(cmd))
+        if "clone" in cmd:
+            _make_nfcore_tree(modules_base)
+            return None
+        if "rev-parse" in cmd:
+            class _R:
+                stdout = _FAKE_NFCORE_COMMIT
+            return _R()
+        raise AssertionError(f"Unexpected: {cmd}")
+
+    return _runner, issued
+
+
+def test_cmd_fetch_end_to_end_all_sources(tmp_path: Path) -> None:
+    """cmd_fetch with injected fakes writes snapshot.json with all three source sections."""
+    from methods_graph.cli import cmd_fetch
+
+    runner, _ = _make_fake_nfcore_runner(tmp_path / "snap")
+    dest = tmp_path / "snap"
+
+    def _fake_edam_http_get(url: str) -> tuple[bytes, dict[str, str]]:
+        return _FAKE_EDAM_BODY, {"last-modified": "Mon, 09 Jun 2026 00:00:00 GMT"}
+
+    def _fake_bc_http_get_json(url: str) -> Any:
+        return [_BC_API_RECORD]
+
+    cmd_fetch(
+        dest=dest,
+        do_edam=True,
+        do_nfcore=True,
+        do_biocontainers=True,
+        fetched_at="2026-06-09T00:00:00Z",
+        _edam_http_get=_fake_edam_http_get,
+        _nfcore_runner=runner,
+        _bc_http_get_json=_fake_bc_http_get_json,
+    )
+
+    snap_path = dest / "snapshot.json"
+    assert snap_path.exists(), "snapshot.json must be written"
+    data = json.loads(snap_path.read_text())
+
+    # EDAM section
+    edam = data["sources"]["edam"]
+    assert edam is not None, "edam source must be present"
+    expected_sha = hashlib.sha256(_FAKE_EDAM_BODY).hexdigest()
+    assert edam["sha256"] == expected_sha
+
+    # nfcore section
+    nfcore = data["sources"]["nfcore_modules"]
+    assert nfcore is not None, "nfcore_modules source must be present"
+    assert nfcore["commit"] == _FAKE_NFCORE_COMMIT
+
+    # biocontainers section
+    bc = data["sources"]["biocontainers"]
+    assert bc is not None, "biocontainers source must be present"
+    assert "salmon" in bc["tools"], f"Expected 'salmon' in tools; got {bc['tools']}"
+
+
+def test_cmd_fetch_bc_wholesale_failure_still_writes_snapshot(tmp_path: Path) -> None:
+    """When BioContainers raises wholesale, snapshot.json is still written with edam+nfcore."""
+    from methods_graph.cli import cmd_fetch
+
+    runner, _ = _make_fake_nfcore_runner(tmp_path / "snap")
+    dest = tmp_path / "snap"
+
+    def _fake_edam_http_get(url: str) -> tuple[bytes, dict[str, str]]:
+        return _FAKE_EDAM_BODY, {}
+
+    def _fake_bc_http_get_json_raises(url: str) -> Any:
+        raise RuntimeError("Simulated wholesale network failure")
+
+    cmd_fetch(
+        dest=dest,
+        do_edam=True,
+        do_nfcore=True,
+        do_biocontainers=True,
+        fetched_at="2026-06-09T00:00:00Z",
+        _edam_http_get=_fake_edam_http_get,
+        _nfcore_runner=runner,
+        _bc_http_get_json=_fake_bc_http_get_json_raises,
+    )
+
+    snap_path = dest / "snapshot.json"
+    assert snap_path.exists(), "snapshot.json must be written even on BC failure"
+    data = json.loads(snap_path.read_text())
+
+    # EDAM and nfcore must be present
+    assert data["sources"]["edam"] is not None, "edam must be recorded despite BC failure"
+    assert data["sources"]["nfcore_modules"] is not None, "nfcore must be recorded despite BC failure"
+
+    # biocontainers section should exist (error or empty tools), not raise
+    bc = data["sources"]["biocontainers"]
+    assert bc is not None, "biocontainers section must be written even on failure"
+    # Either an error key or empty tools — both are acceptable failure records.
+    has_error = "error" in bc
+    has_empty_tools = isinstance(bc.get("tools"), dict)
+    assert has_error or has_empty_tools, f"BC failure manifest shape unexpected: {bc}"
