@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+data/staging/
+data/canonical/
+data/*.kuzu
+*.egg-info/
