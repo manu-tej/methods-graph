@@ -37,6 +37,7 @@ def test_cmd_build_end_to_end(tmp_path):
     with KuzuMethodsGraphProvider(db_path) as provider:
         methods = provider.get_methods()
     method_by_name = {m["name"]: m for m in methods}
+    method_names = {m["name"] for m in methods}
 
     # salmon should exist with RNA-Seq tag and container image
     assert "salmon" in method_by_name, f"salmon not found; methods: {list(method_by_name)}"
@@ -44,9 +45,20 @@ def test_cmd_build_end_to_end(tmp_path):
     assert "RNA-Seq" in salmon["tags"], f"expected EDAM RNA-Seq tag; got {salmon['tags']}"
     assert "salmon:1.10.0" in salmon["compute_requirements"]["container_image"]
 
-    # samtools and bcftools should exist from the multi-tool samtools_stats module
-    assert "samtools" in method_by_name, f"samtools not found; methods: {list(method_by_name)}"
-    assert "bcftools" in method_by_name, f"bcftools not found; methods: {list(method_by_name)}"
+    # Cross-module dedup: samtools appears in BOTH samtools_stats and samtools_helper;
+    # union-find must collapse them to exactly ONE canonical samtools method.
+    assert sum(1 for m in methods if m["name"] == "samtools") == 1, (
+        f"expected exactly 1 samtools after cross-module merge; got methods: {list(method_by_name)}"
+    )
+
+    # All four expected methods must be present:
+    #   - salmon (from salmon_quant)
+    #   - samtools (merged from samtools_stats + samtools_helper)
+    #   - bcftools (from samtools_stats)
+    #   - helperscript (keyless method from samtools_helper — must NOT be dropped)
+    assert {"salmon", "samtools", "bcftools", "helperscript"} <= method_names, (
+        f"expected {{salmon, samtools, bcftools, helperscript}} in methods; got {method_names}"
+    )
 
 
 def test_cmd_build_is_deterministic(tmp_path):
@@ -97,7 +109,7 @@ def test_cmd_build_partial_sources(tmp_path):
 
 
 def test_cmd_build_missing_path_raises(tmp_path):
-    """Passing a non-existent --biocontainers or --nfcore-modules dir raises FileNotFoundError."""
+    """Passing a non-existent path for any source raises FileNotFoundError."""
     bogus = tmp_path / "does_not_exist"
     with pytest.raises(FileNotFoundError):
         cmd_build(
@@ -112,6 +124,15 @@ def test_cmd_build_missing_path_raises(tmp_path):
         cmd_build(
             edam=None,
             nfcore_modules=bogus,
+            biocontainers=None,
+            db_path=tmp_path / "m.kuzu",
+            staging_dir=tmp_path / "stg",
+            ingested_at="2026-06-08",
+        )
+    with pytest.raises(FileNotFoundError):
+        cmd_build(
+            edam=bogus,
+            nfcore_modules=None,
             biocontainers=None,
             db_path=tmp_path / "m.kuzu",
             staging_dir=tmp_path / "stg",

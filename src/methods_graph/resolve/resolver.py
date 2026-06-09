@@ -199,7 +199,7 @@ def resolve(*, method_nodes: list[MethodRecord], other_nodes: list[NodeRecord],
         if not pkg:
             continue
         ctrs = containers_by_pkg.get(pkg.id)
-        targets = ctrs if ctrs else [pkg.id]
+        targets = sorted(ctrs) if ctrs else [pkg.id]
         for tgt in targets:
             edges.append(EdgeRecord(m.id, tgt, EdgeKind.PACKAGED_AS, {}, prov))
 

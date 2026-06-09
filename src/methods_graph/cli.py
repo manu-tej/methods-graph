@@ -44,7 +44,7 @@ def cmd_build(
     ingested_at: str,
 ) -> None:
     """Build a Kùzu graph from local source snapshots: connectors → resolver → loader."""
-    # Import building blocks here (not at module level) to keep CLI import cheap
+    # Grouped here for readability (build is the only subcommand that needs these).
     from methods_graph.connectors.edam import parse_edam
     from methods_graph.connectors.nfcore import parse_module
     from methods_graph.connectors.biocontainers import parse_biocontainer
@@ -56,6 +56,8 @@ def cmd_build(
     all_edges: list = []
 
     # --- guard: fail loudly on non-existent source paths ---
+    if edam is not None and not Path(edam).exists():
+        raise FileNotFoundError(f"--edam path does not exist: {edam}")
     if nfcore_modules is not None and not Path(nfcore_modules).exists():
         raise FileNotFoundError(f"--nfcore-modules path does not exist: {nfcore_modules}")
     if biocontainers is not None and not Path(biocontainers).exists():
