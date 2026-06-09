@@ -1,24 +1,81 @@
-"""Deterministic entity resolution: merge methods on join keys; emit SAME_AS candidates."""
+"""Deterministic entity resolution: merge methods on join keys; emit SAME_AS candidates.
+
+Resolution uses **union-find (disjoint-set)** over strong identifiers so that
+method records sharing ANY strong id key collapse into one canonical Method —
+including transitively through a bridge record.
+
+Strong identifiers are namespaced to avoid false cross-namespace unification:
+  - bioconda_pkg  → key "pkg::<name>"
+  - biotools_id   → key "bt::<name>"
+
+A record that carries BOTH keys acts as a bridge: it links the pkg:: group to
+the bt:: group so that any record in either group merges with the other.
+
+Canonical id rule: the lexicographically smallest original id in each connected
+component is chosen as the canonical id.  This is deterministic and stable
+across repeated runs regardless of input ordering.
+"""
 from __future__ import annotations
 
 from methods_graph.types import (EdgeKind, EdgeRecord, MethodRecord, NodeKind,
                                   NodeRecord, Provenance)
 
 
-def _merge_key(m: MethodRecord) -> str | None:
+# ---------------------------------------------------------------------------
+# Union-Find (path-compressed, union-by-rank)
+# ---------------------------------------------------------------------------
+
+class _UnionFind:
+    """Disjoint-set over integer indices."""
+
+    def __init__(self, n: int) -> None:
+        self._parent = list(range(n))
+        self._rank = [0] * n
+
+    def find(self, x: int) -> int:
+        while self._parent[x] != x:
+            self._parent[x] = self._parent[self._parent[x]]  # path compression
+            x = self._parent[x]
+        return x
+
+    def union(self, x: int, y: int) -> None:
+        rx, ry = self.find(x), self.find(y)
+        if rx == ry:
+            return
+        if self._rank[rx] < self._rank[ry]:
+            rx, ry = ry, rx
+        self._parent[ry] = rx
+        if self._rank[rx] == self._rank[ry]:
+            self._rank[rx] += 1
+
+
+# ---------------------------------------------------------------------------
+# Key helpers
+# ---------------------------------------------------------------------------
+
+def _strong_keys(m: MethodRecord) -> list[str]:
+    """Return namespaced strong-id keys for m (0, 1, or 2 entries)."""
+    keys = []
     if m.bioconda_pkg:
-        return f"pkg::{m.bioconda_pkg.lower()}"
+        keys.append(f"pkg::{m.bioconda_pkg.lower()}")
     if m.biotools_id:
-        return f"bt::{m.biotools_id.lower()}"
-    return None
+        keys.append(f"bt::{m.biotools_id.lower()}")
+    return keys
 
 
 def _merge_into(canon: MethodRecord, other: MethodRecord) -> None:
+    """Fill missing-only fields on *canon* from *other* (mutation in place)."""
     for k, v in other.properties.items():
         canon.properties.setdefault(k, v)
     canon.bioconda_pkg = canon.bioconda_pkg or other.bioconda_pkg
+    # If the group somehow has two different non-empty values for biotools_id,
+    # the first (deterministically chosen canonical) wins — acceptable for MVP.
     canon.biotools_id = canon.biotools_id or other.biotools_id
 
+
+# ---------------------------------------------------------------------------
+# Public resolver
+# ---------------------------------------------------------------------------
 
 def resolve(*, method_nodes: list[MethodRecord], other_nodes: list[NodeRecord],
             src_edges: list[EdgeRecord],
@@ -38,28 +95,62 @@ def resolve(*, method_nodes: list[MethodRecord], other_nodes: list[NodeRecord],
     # Build provenance for all edges emitted by this resolver run.
     prov = Provenance("resolver", "internal", ingested_at)
 
-    canon_by_key: dict[str, MethodRecord] = {}
+    # ------------------------------------------------------------------
+    # 1. Partition into keyed and keyless records.
+    # ------------------------------------------------------------------
+    keyed: list[MethodRecord] = []
     keyless: list[MethodRecord] = []
-    id_remap: dict[str, str] = {}     # original method id -> canonical id
-
     for m in method_nodes:
-        key = _merge_key(m)
-        if key is None:
-            keyless.append(m)
-            continue
-        if key in canon_by_key:
-            _merge_into(canon_by_key[key], m)
-            id_remap[m.id] = canon_by_key[key].id
+        if _strong_keys(m):
+            keyed.append(m)
         else:
-            canon_by_key[key] = m
-            id_remap[m.id] = m.id
+            keyless.append(m)
 
-    canonical_methods = list(canon_by_key.values())
+    # ------------------------------------------------------------------
+    # 2. Union-find over keyed records by shared namespaced key strings.
+    #    A record carrying two keys acts as a bridge between their groups.
+    # ------------------------------------------------------------------
+    uf = _UnionFind(len(keyed))
+    key_to_idx: dict[str, int] = {}  # first record index that introduced each key
+
+    for idx, m in enumerate(keyed):
+        for key in _strong_keys(m):
+            if key in key_to_idx:
+                uf.union(idx, key_to_idx[key])
+            else:
+                key_to_idx[key] = idx
+
+    # ------------------------------------------------------------------
+    # 3. Group keyed records by their root index.
+    #    Choose the lexicographically smallest original id as canonical id.
+    # ------------------------------------------------------------------
+    from collections import defaultdict
+    groups: dict[int, list[int]] = defaultdict(list)
+    for idx in range(len(keyed)):
+        groups[uf.find(idx)].append(idx)
+
+    canonical_methods: list[MethodRecord] = []
+    id_remap: dict[str, str] = {}  # original method id -> canonical id
+
+    for root, members in sorted(groups.items()):  # sort for determinism
+        # Canonical id = lexicographically smallest id in the group.
+        canon_id = min(keyed[i].id for i in members)
+        canon = next(m for m in (keyed[i] for i in members) if m.id == canon_id)
+        for i in members:
+            m = keyed[i]
+            id_remap[m.id] = canon_id
+            if m is not canon:
+                _merge_into(canon, m)
+        canonical_methods.append(canon)
+
+    # ------------------------------------------------------------------
+    # 4. Keyless records are never hard-merged by union-find.
+    #    A keyless method whose name matches a keyed canonical emits a
+    #    SAME_AS candidate edge (confidence 0.5, basis "name") — no merge.
+    #    Keyless-vs-keyless is intentionally skipped (confidence too low
+    #    without at least one anchor key).
+    # ------------------------------------------------------------------
     edges: list[EdgeRecord] = []
-
-    # SAME_AS candidates are only generated between a keyless method and an
-    # already-keyed canonical (keyless-vs-keyless is intentionally skipped —
-    # confidence is too low without at least one anchor key).
     by_name: dict[str, MethodRecord] = {m.name.lower(): m for m in canonical_methods}
     for m in keyless:
         id_remap[m.id] = m.id
@@ -69,7 +160,9 @@ def resolve(*, method_nodes: list[MethodRecord], other_nodes: list[NodeRecord],
             edges.append(EdgeRecord(m.id, match.id, EdgeKind.SAME_AS,
                                     {"confidence": 0.5, "basis": "name"}, prov))
 
-    # Remap and dedupe source edges against merged ids.
+    # ------------------------------------------------------------------
+    # 5. Remap and dedupe source edges against merged ids.
+    # ------------------------------------------------------------------
     seen: set[tuple] = set()
     for e in src_edges:
         f = id_remap.get(e.from_id, e.from_id)
@@ -80,9 +173,12 @@ def resolve(*, method_nodes: list[MethodRecord], other_nodes: list[NodeRecord],
         seen.add(sig)
         edges.append(EdgeRecord(f, t, e.kind, e.properties, e.provenance))
 
-    # Method -[:PACKAGED_AS]-> Container (or Package if no container) via bioconda pkg.
-    # Intentionally links the method to ALL container variants of its package —
-    # version selectivity (e.g., linking only a specific tag) is Phase 2.
+    # ------------------------------------------------------------------
+    # 6. Method -[:PACKAGED_AS]-> Container (or Package if no container).
+    #    Intentionally links the method to ALL container variants of its
+    #    package — version selectivity (e.g., linking only a specific tag)
+    #    is Phase 2.
+    # ------------------------------------------------------------------
     pkg_by_name = {n.name.lower(): n for n in other_nodes if n.kind == NodeKind.PACKAGE}
     containers_by_pkg: dict[str, list[str]] = {}
     for e in src_edges:
