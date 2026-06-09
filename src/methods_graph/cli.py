@@ -4,10 +4,12 @@ Implemented subcommands:
   query    -- seed a subgraph by keyword and print RAG text
   methods  -- dump all methods as AnalysisMethod-shaped JSON
   build    -- build the Kùzu DB from local source snapshots (connectors → resolver → loader)
+  fetch    -- download real source snapshots (EDAM, nf-core/modules, BioContainers)
+              and record a versioned snapshot.json manifest for seamless upgrades
 
 Deferred subcommands:
-  resolve  -- enrich method nodes from external registries (bioconda, bio.tools, etc.)
-              (pipeline-DAG / external-registry enrichment is Phase 2)
+  resolve  -- enrich method nodes with pipeline-DAG ordering and external-registry
+              enrichment (bio.tools cross-linking etc.)  (Phase 2)
 """
 from __future__ import annotations
 
@@ -119,6 +121,90 @@ def cmd_build(
     )
 
 
+def cmd_fetch(
+    *,
+    dest: Path,
+    do_edam: bool,
+    do_nfcore: bool,
+    do_biocontainers: bool,
+    fetched_at: str,
+) -> None:
+    """Download source snapshots and write a snapshot.json manifest.
+
+    Order of operations:
+      1. Fetch EDAM TSV (if --no-edam not set).
+      2. Shallow-clone nf-core/modules (if --no-nfcore not set).
+      3. Derive bioconda package names from the cloned modules tree.
+      4. Fetch BioContainers records for those packages (if --no-biocontainers not set).
+      5. Write snapshot.json manifest.
+    """
+    from methods_graph.fetch import (
+        bioconda_packages_from_nfcore,
+        fetch_biocontainers,
+        fetch_edam,
+        fetch_nfcore,
+        write_manifest,
+    )
+
+    dest.mkdir(parents=True, exist_ok=True)
+
+    edam_manifest: dict | None = None
+    nfcore_manifest: dict | None = None
+    biocontainers_manifest: dict | None = None
+
+    # --- EDAM ---
+    if do_edam:
+        print("Fetching EDAM ontology TSV …")
+        edam_manifest = fetch_edam(dest, fetched_at=fetched_at)
+        print(f"  EDAM: {edam_manifest['rows']} rows, sha256={edam_manifest['sha256'][:12]}…")
+
+    # --- nf-core/modules clone ---
+    if do_nfcore:
+        print("Cloning nf-core/modules (shallow) …")
+        nfcore_manifest = fetch_nfcore(dest, fetched_at=fetched_at)
+        print(f"  nf-core: commit {nfcore_manifest['commit'][:12]}…")
+
+    # --- BioContainers ---
+    if do_biocontainers:
+        # Derive package names from the cloned modules tree (or dest_dir if
+        # nfcore was not fetched this run but a previous clone exists).
+        if nfcore_manifest is not None:
+            modules_path = Path(nfcore_manifest["modules_path"])
+        else:
+            # Best-effort: look for an existing clone under dest.
+            modules_path = dest / "modules" / "modules" / "nf-core"
+
+        if modules_path.exists():
+            pkg_names = bioconda_packages_from_nfcore(modules_path)
+            print(f"  Derived {len(pkg_names)} bioconda package names from nf-core modules.")
+        else:
+            pkg_names = []
+            _log.warning(
+                "No nf-core modules path found at %s; skipping BioContainers fetch.", modules_path
+            )
+
+        if pkg_names:
+            print(f"Fetching BioContainers records for {len(pkg_names)} tools …")
+            bc_dir = dest / "biocontainers"
+            biocontainers_manifest = fetch_biocontainers(
+                pkg_names, bc_dir, fetched_at=fetched_at
+            )
+            n_tools = len(biocontainers_manifest.get("tools", {}))
+            print(f"  BioContainers: {n_tools} tools fetched.")
+        else:
+            print("  BioContainers: no package names — skipping.")
+
+    # --- Manifest ---
+    manifest_path = write_manifest(
+        dest,
+        edam=edam_manifest,
+        nfcore=nfcore_manifest,
+        biocontainers=biocontainers_manifest,
+        created_at=fetched_at,
+    )
+    print(f"Manifest written: {manifest_path}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="methods-graph",
@@ -156,6 +242,27 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--ingested-at", type=str, default=None, dest="ingested_at",
                    help="ISO date string for provenance (default: today)")
 
+    f = sub.add_parser(
+        "fetch",
+        help="download source snapshots (EDAM, nf-core/modules, BioContainers) and write a manifest",
+    )
+    f.add_argument(
+        "--dest", type=Path, required=True,
+        help="destination directory for downloaded snapshots and snapshot.json",
+    )
+    f.add_argument(
+        "--no-edam", action="store_false", dest="do_edam",
+        help="skip fetching the EDAM TSV",
+    )
+    f.add_argument(
+        "--no-nfcore", action="store_false", dest="do_nfcore",
+        help="skip cloning nf-core/modules",
+    )
+    f.add_argument(
+        "--no-biocontainers", action="store_false", dest="do_biocontainers",
+        help="skip fetching BioContainers tool records",
+    )
+
     args = parser.parse_args(argv)
     if args.cmd == "query":
         cmd_query(db_path=args.db, keywords=args.keywords, k_hops=args.hops)
@@ -171,6 +278,15 @@ def main(argv: list[str] | None = None) -> int:
             db_path=args.db,
             staging_dir=staging_dir,
             ingested_at=ingested_at,
+        )
+    elif args.cmd == "fetch":
+        fetched_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        cmd_fetch(
+            dest=args.dest,
+            do_edam=args.do_edam,
+            do_nfcore=args.do_nfcore,
+            do_biocontainers=args.do_biocontainers,
+            fetched_at=fetched_at,
         )
     return 0
 
