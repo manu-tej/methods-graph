@@ -5,6 +5,7 @@ from methods_graph.types import NodeKind, EdgeKind
 MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "salmon_quant"
 MULTIDEP_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "multidep_quant"
 MULTI_TOOL_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "samtools_stats"
+SAMTOOLS_HELPER_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "samtools_helper"
 
 
 def test_parse_module_creates_method_with_join_keys():
@@ -86,3 +87,58 @@ def test_parse_module_per_tool_edam():
 
     assert any(e.from_id == "m:samtools" and e.to_id == "op:operation_2403" for e in performs)
     assert any(e.from_id == "m:bcftools" and e.to_id == "topic:topic_3168" for e in has_topic)
+
+
+# ---------------------------------------------------------------------------
+# Secondary tool without matching bioconda dep (bug fix: rule 2 guard)
+# ---------------------------------------------------------------------------
+
+def test_secondary_tool_without_dep_gets_no_pkg():
+    """When environment.yml lists ONLY samtools, helperscript must get bioconda_pkg=None.
+
+    Before the fix, rule 2 (single bioconda dep fallback) would incorrectly
+    assign 'samtools' to helperscript because prefer_pkg='helperscript' didn't
+    match rule 1, then fell through to the single-dep rule.
+    """
+    nodes, _ = parse_module(SAMTOOLS_HELPER_MODULE, ingested_at="2026-06-09")
+    samtools = next(n for n in nodes if n.id == "m:samtools")
+    helperscript = next(n for n in nodes if n.id == "m:helperscript")
+
+    assert samtools.bioconda_pkg == "samtools"
+    assert helperscript.bioconda_pkg is None
+
+
+# ---------------------------------------------------------------------------
+# Malformed tool entry in meta.yml tools list
+# ---------------------------------------------------------------------------
+
+def test_malformed_tool_entry_is_skipped(tmp_path):
+    """A bare string / None / empty-dict entry in tools: must not raise; valid tool still emitted."""
+    meta_yml = tmp_path / "meta.yml"
+    meta_yml.write_text(
+        "name: test_malformed\n"
+        "tools:\n"
+        "  - salmon:\n"
+        "      description: Selective alignment and quantification\n"
+        "      homepage: https://salmon.readthedocs.io\n"
+        "      identifier: biotools:salmon\n"
+        "      edam_operations: []\n"
+        "      edam_topics: []\n"
+        "  - just_a_string\n"
+    )
+    env_yml = tmp_path / "environment.yml"
+    env_yml.write_text(
+        "name: test_malformed\n"
+        "channels:\n"
+        "  - bioconda\n"
+        "dependencies:\n"
+        "  - 'bioconda::salmon=1.10.0'\n"
+    )
+
+    # Must not raise despite the malformed entry
+    nodes, edges = parse_module(tmp_path, ingested_at="2026-06-09")
+
+    method_ids = {n.id for n in nodes if n.kind == NodeKind.METHOD}
+    assert "m:salmon" in method_ids
+    # The bare string should NOT have produced a Method node
+    assert len(method_ids) == 1

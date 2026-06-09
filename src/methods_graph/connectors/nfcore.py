@@ -56,8 +56,10 @@ def _bioconda_dep(env_path: Path, prefer_pkg: str | None = None) -> tuple[str | 
             if prefer_pkg and pkg.lower() == prefer_pkg.lower():
                 return pkg, ver
             bioconda_deps.append((pkg, ver))
-    # Rule 2: unambiguous single dep.
-    if len(bioconda_deps) == 1:
+    # Rule 2: unambiguous single dep — only when no prefer_pkg was requested.
+    # If prefer_pkg was given and didn't match rule 1, the tool has no bioconda
+    # package; returning the lone dep would mis-assign it to the wrong tool.
+    if len(bioconda_deps) == 1 and not prefer_pkg:
         return bioconda_deps[0]
     # Rule 3: ambiguous — don't guess.
     return None, None
@@ -86,6 +88,9 @@ def parse_module(module_dir: Path, *, ingested_at: str) -> tuple[list[NodeRecord
     emitted_method_ids: set[str] = set()
 
     for tool_entry in tools:
+        # Guard: skip bare strings, None, empty dicts, or any non-dict entry.
+        if not isinstance(tool_entry, dict) or not tool_entry:
+            continue
         tool_name, tool_meta = next(iter(tool_entry.items()))
         method_id = f"m:{tool_name}"
 
@@ -107,11 +112,13 @@ def parse_module(module_dir: Path, *, ingested_at: str) -> tuple[list[NodeRecord
                 },
                 provenance=prov, bioconda_pkg=pkg, biotools_id=biotools_id,
             ))
-
-        edges.append(EdgeRecord(module_id, method_id, EdgeKind.WRAPS, {}, prov))
-        for op in tool_meta.get("edam_operations", []):
-            edges.append(EdgeRecord(method_id, f"op:{op}", EdgeKind.PERFORMS, {}, prov))
-        for tp in tool_meta.get("edam_topics", []):
-            edges.append(EdgeRecord(method_id, f"topic:{tp}", EdgeKind.HAS_TOPIC, {}, prov))
+            # Keep WRAPS and EDAM edges inside the dedup guard so that a
+            # repeated tool name yields exactly one Method + one WRAPS + one
+            # set of EDAM edges (no duplicates).
+            edges.append(EdgeRecord(module_id, method_id, EdgeKind.WRAPS, {}, prov))
+            for op in tool_meta.get("edam_operations", []):
+                edges.append(EdgeRecord(method_id, f"op:{op}", EdgeKind.PERFORMS, {}, prov))
+            for tp in tool_meta.get("edam_topics", []):
+                edges.append(EdgeRecord(method_id, f"topic:{tp}", EdgeKind.HAS_TOPIC, {}, prov))
 
     return nodes, edges
