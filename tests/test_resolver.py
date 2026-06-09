@@ -45,3 +45,15 @@ def test_name_only_match_becomes_same_as_candidate():
     assert len(methods) == 2            # NOT hard-merged
     assert len(same_as) == 1
     assert 0.0 < same_as[0].properties["confidence"] < 1.0
+
+
+# MVP: cross-key (pkg vs biotools) unification is Phase 2 (needs union-find).
+def test_partial_key_overlap_not_merged():
+    # Method A has only a bioconda_pkg key; method B has only a biotools_id key.
+    # Both resolve to the same logical tool ("salmon") but share no *identical* key,
+    # so the MVP resolver intentionally leaves them as two separate canonical methods.
+    a = _method("m:salmon-bioconda", "salmon", pkg="salmon")   # keyed by bioconda
+    b = _method("m:salmon-biotools", "salmon", bt="salmon")    # keyed by biotools
+    nodes, edges = resolve(method_nodes=[a, b], other_nodes=[], src_edges=[])
+    methods = [n for n in nodes if n.kind == NodeKind.METHOD]
+    assert len(methods) == 2           # cross-key merge not yet implemented
