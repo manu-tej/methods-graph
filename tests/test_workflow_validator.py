@@ -245,6 +245,45 @@ def test_evidence_missing_no_edge_to_node(conn):
 
 
 # ---------------------------------------------------------------------------
+# Test 5c: evidence via non-semantic edge is rejected
+# ---------------------------------------------------------------------------
+
+
+def test_evidence_via_non_semantic_edge_fails(conn):
+    """Container node linked only by PACKAGED_AS cannot serve as evidence.
+
+    m:salmon -PACKAGED_AS-> ctr:salmon  (non-semantic edge)
+    Step with evidence=["ctr:salmon"] must yield evidence_missing, NOT ok.
+    """
+    step = Step(
+        id="step1",
+        method_id="m:salmon",
+        evidence=["ctr:salmon"],  # exists, but linked only by PACKAGED_AS
+    )
+    wf = Workflow(id="wf:5c", steps=[step])
+    result = validate_workflow(conn, wf, allowed_method_ids={"m:salmon"})
+    assert result.ok is False, (
+        "A container reachable only via PACKAGED_AS must not satisfy evidence"
+    )
+    codes = {i.code for i in result.issues}
+    assert "evidence_missing" in codes, f"Expected evidence_missing, got: {codes}"
+
+
+def test_evidence_via_performs_edge_passes(conn):
+    """op:operation_3800 is linked by a real PERFORMS edge → evidence is valid."""
+    step = Step(
+        id="step1",
+        method_id="m:salmon",
+        evidence=["op:operation_3800"],  # linked by PERFORMS — genuine grounding
+    )
+    wf = Workflow(id="wf:5d", steps=[step])
+    result = validate_workflow(conn, wf, allowed_method_ids={"m:salmon"})
+    assert result.ok is True, (
+        f"A PERFORMS-grounded evidence should pass; issues: {result.issues}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Test 6: container_not_packaged negative
 # ---------------------------------------------------------------------------
 

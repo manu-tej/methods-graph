@@ -53,7 +53,7 @@ def validate_workflow(
     workflow: Workflow,
     *,
     allowed_method_ids: set[str],
-    approved_expansions: set[str] = frozenset(),
+    approved_expansions: frozenset[str] = frozenset(),
 ) -> ValidationResult:
     """Validate every step and decision in *workflow* against the graph.
 
@@ -132,9 +132,12 @@ def validate_workflow(
                 ))
                 continue
 
-            # Check edge from method to evidence node.
+            # Check semantic edge from method to evidence node.
+            # Only PERFORMS, HAS_TOPIC, INPUT, and OUTPUT count as genuine
+            # EDAM grounding; non-semantic edges (e.g. PACKAGED_AS) do not.
             edge_res = list(conn.execute(
-                "MATCH (m:Entity {id: $mid})-[:Rel]->(e:Entity {id: $eid}) RETURN e.id",
+                "MATCH (m:Entity {id: $mid})-[r:Rel]->(e:Entity {id: $eid}) "
+                "WHERE r.kind IN ['PERFORMS','HAS_TOPIC','INPUT','OUTPUT'] RETURN e.id",
                 parameters={"mid": mid, "eid": eid},
             ))
             if not edge_res:
@@ -142,7 +145,8 @@ def validate_workflow(
                     step_id=sid,
                     code="evidence_missing",
                     detail=(
-                        f"No edge from method '{mid}' to evidence node '{eid}'."
+                        f"No semantic grounding edge (PERFORMS/HAS_TOPIC/INPUT/OUTPUT) "
+                        f"from method '{mid}' to evidence node '{eid}'."
                     ),
                 ))
 
