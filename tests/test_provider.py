@@ -204,6 +204,34 @@ def test_derive_category_known_and_default():
     assert _derive_category([]) == "custom"
 
 
+# Mirror of quration's MethodCategory / DataModality enum values. Hardcoded here
+# on purpose: quration is an optional dependency not installed in this venv, so a
+# typo in a map value (e.g. "rnaseq" instead of "rna_seq") would otherwise stay
+# invisible until it hit pydantic on a real quration install. This guard fails fast.
+_QURATION_DATA_MODALITY = {
+    "dna_seq", "rna_seq", "chip_seq", "atac_seq", "bisulfite_seq",
+    "single_cell_rna", "single_cell_atac", "metagenomics", "metatranscriptomics", "unknown",
+}
+_QURATION_METHOD_CATEGORY = {
+    "variant_calling", "rna_seq", "chip_seq", "atac_seq", "methylation", "single_cell",
+    "metagenomics", "quality_control", "alignment", "assembly", "differential_expression",
+    "pathway_analysis", "custom",
+}
+
+
+def test_map_values_are_valid_quration_enum_values():
+    from methods_graph.provider.quration_provider import _TOPIC_TO_MODALITY, _TOPIC_TO_CATEGORY
+    assert set(_TOPIC_TO_MODALITY.values()) <= _QURATION_DATA_MODALITY
+    assert set(_TOPIC_TO_CATEGORY.values()) <= _QURATION_METHOD_CATEGORY
+
+
+def test_map_keys_are_lowercased():
+    """Lookups lowercase the topic label, so keys must already be lowercase."""
+    from methods_graph.provider.quration_provider import _TOPIC_TO_MODALITY, _TOPIC_TO_CATEGORY
+    for k in (*_TOPIC_TO_MODALITY, *_TOPIC_TO_CATEGORY):
+        assert k == k.lower(), f"map key not lowercased: {k!r}"
+
+
 def test_build_analysis_method_happy_path(db_path):
     """When quration IS installed, the enriched dict constructs a valid AnalysisMethod."""
     pytest.importorskip("quration")

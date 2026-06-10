@@ -16,45 +16,50 @@ from methods_graph.extract.seed import seed, method_neighborhood
 
 
 # --- EDAM-label → quration vocabulary maps -------------------------------------
-# Keys are lowercased EDAM topic labels; values are quration enum *values*
-# (DataModality / MethodCategory). We only map labels we recognise — unknown
-# topics are dropped rather than guessed, so a method is never silently
-# mislabelled. Extend these tables as the graph's topic coverage grows.
+# Keys are lowercased EDAM *topic* Preferred Labels (only HAS_TOPIC→topic nodes
+# feed these maps); values are quration enum *values* (DataModality /
+# MethodCategory). Every key below was verified against the non-obsolete EDAM
+# topic vocabulary (EDAM.tsv, ~260 topics) — guessed/operation/data labels were
+# removed so the tables don't overstate coverage. Unknown topics are dropped
+# rather than guessed, so a method is never silently mislabelled.
+#
+# Honest coverage gaps: EDAM has NO topic for ATAC-seq, single-cell sequencing,
+# bisulfite/methylation assay, or sequence alignment, so the corresponding
+# quration values (atac_seq, single_cell*, bisulfite_seq, alignment) are not
+# reachable from topics alone — Phase 2 can derive these from operations instead.
 
 _TOPIC_TO_MODALITY: dict[str, str] = {
     "rna-seq": "rna_seq",
-    "rna-seq (single cell)": "single_cell_rna",
-    "single-cell sequencing": "single_cell_rna",
+    "transcriptomics": "rna_seq",
     "chip-seq": "chip_seq",
-    "atac-seq": "atac_seq",
     "dna polymorphism": "dna_seq",
+    "genetic variation": "dna_seq",
+    "copy number variation": "dna_seq",
+    "structural variation": "dna_seq",
     "whole genome sequencing": "dna_seq",
     "exome sequencing": "dna_seq",
     "genomics": "dna_seq",
-    "dna methylation": "bisulfite_seq",
-    "methylated dna immunoprecipitation": "bisulfite_seq",
     "metagenomics": "metagenomics",
+    "metagenomic sequencing": "metagenomics",
     "metatranscriptomics": "metatranscriptomics",
 }
 
 _TOPIC_TO_CATEGORY: dict[str, str] = {
     "rna-seq": "rna_seq",
-    "rna-seq (single cell)": "single_cell",
-    "single-cell sequencing": "single_cell",
+    "transcriptomics": "rna_seq",
+    "gene expression": "differential_expression",
     "chip-seq": "chip_seq",
-    "atac-seq": "atac_seq",
     "dna polymorphism": "variant_calling",
     "genetic variation": "variant_calling",
+    "copy number variation": "variant_calling",
+    "structural variation": "variant_calling",
     "sequence assembly": "assembly",
-    "genome assembly": "assembly",
-    "sequence alignment": "alignment",
     "metagenomics": "metagenomics",
-    "sequencing quality control": "quality_control",
+    "metagenomic sequencing": "metagenomics",
     "data quality management": "quality_control",
-    "dna methylation": "methylation",
-    "gene expression": "differential_expression",
-    "differential gene expression analysis": "differential_expression",
-    "pathways, networks and models": "pathway_analysis",
+    "quality affairs": "quality_control",
+    "methylated dna immunoprecipitation": "methylation",
+    "molecular interactions, pathways and networks": "pathway_analysis",
 }
 
 
