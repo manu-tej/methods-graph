@@ -1,4 +1,4 @@
-"""Over-merge audit: replay the resolver's grouping over real nf-core records and report
+"""Over-merge audit: replay the resolver's id-only grouping over real nf-core records and report
 every group where two DIFFERENT tool names collapsed into one method, with the strong key
 that bridged them. Use it to catch entity-resolution over-merge.
 
@@ -15,7 +15,7 @@ from pathlib import Path
 
 from methods_graph.connectors.nfcore import parse_module
 from methods_graph.types import MethodRecord
-from methods_graph.resolve.resolver import _strong_keys, _UnionFind
+from methods_graph.resolve.resolver import _UnionFind
 
 
 def main() -> int:
@@ -34,7 +34,7 @@ def main() -> int:
     uf = _UnionFind(len(methods))
     key_to_idx: dict[str, int] = {}
     for i, m in enumerate(methods):
-        for key in _strong_keys(m) + [f"id::{m.id}"]:
+        for key in [f"id::{m.id}"]:  # resolver now hard-merges by id ONLY
             if key in key_to_idx:
                 uf.union(i, key_to_idx[key])
             else:
@@ -49,7 +49,7 @@ def main() -> int:
     for members in groups.values():
         names = sorted({methods[i].name.lower() for i in members})
         if len(names) > 1:
-            keys = sorted({k for i in members for k in _strong_keys(methods[i])})
+            keys = ['id-only union']
             multi.append((min(methods[i].id for i in members), names, keys))
             absorbed += len(names) - 1
 
