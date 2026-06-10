@@ -7,6 +7,8 @@ Implemented subcommands:
               optionally enriched with bio.tools EDAM operations/topics via --biotools <dir>
   fetch    -- download real source snapshots (EDAM, nf-core/modules, BioContainers)
               and record a versioned snapshot.json manifest for seamless upgrades
+  audit    -- run correctness checks (schema invariants, provenance, dup ids, coverage)
+              against a built Kùzu DB; exits 0 if all checks pass, 1 otherwise
 
 Deferred subcommands:
   resolve  -- enrich method nodes with pipeline-DAG ordering and external-registry
@@ -180,6 +182,40 @@ def cmd_build(
         f"{summary['edges_loaded']} edges loaded "
         f"({summary['edges_dropped']} dangling dropped){bt_suffix} -> {db_path}"
     )
+
+
+def cmd_audit(*, db_path: Path, snapshot_dir: Path | None, as_json: bool) -> int:
+    """Run KG correctness checks and print a report.
+
+    Returns 0 if all checks pass, 1 if any check fails.
+    """
+    from methods_graph.audit import audit_graph
+
+    db = None
+    conn = None
+    try:
+        import kuzu
+        db = kuzu.Database(str(db_path))
+        conn = kuzu.Connection(db)
+        result = audit_graph(conn, snapshot_dir=snapshot_dir)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    if as_json:
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    else:
+        print(result.to_text())
+
+    return 0 if result.ok else 1
 
 
 def cmd_fetch(
@@ -379,6 +415,18 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--ingested-at", type=str, default=None, dest="ingested_at",
                    help="ISO date string for provenance (default: today)")
 
+    au = sub.add_parser(
+        "audit",
+        help="run correctness checks against a built Kùzu DB; exits 1 if any check fails",
+    )
+    au.add_argument("--db", type=Path, required=True,
+                    help="path to the built Kùzu database directory")
+    au.add_argument("--snapshot", type=Path, default=None, dest="snapshot_dir",
+                    help="path to snapshot dir (EDAM.tsv, modules/, biocontainers/, biotools/) "
+                         "for reconciliation checks (optional)")
+    au.add_argument("--json", action="store_true", dest="as_json",
+                    help="emit JSON instead of human-readable text")
+
     f = sub.add_parser(
         "fetch",
         help="download source snapshots (EDAM, nf-core/modules, BioContainers) and write a manifest",
@@ -405,7 +453,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
-    if args.cmd == "query":
+    if args.cmd == "audit":
+        return cmd_audit(
+            db_path=args.db,
+            snapshot_dir=args.snapshot_dir,
+            as_json=args.as_json,
+        )
+    elif args.cmd == "query":
         cmd_query(db_path=args.db, keywords=args.keywords, k_hops=args.hops)
     elif args.cmd == "methods":
         cmd_methods(db_path=args.db)

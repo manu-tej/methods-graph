@@ -1,10 +1,10 @@
-"""Tests for the CLI entry points (query, methods, and build subcommands)."""
+"""Tests for the CLI entry points (query, methods, build, and audit subcommands)."""
 import json
 import pytest
 import kuzu
 from pathlib import Path
-from methods_graph.cli import cmd_query, cmd_build, main
-from methods_graph.types import MethodRecord, NodeKind, Provenance
+from methods_graph.cli import cmd_query, cmd_build, cmd_audit, main
+from methods_graph.types import MethodRecord, NodeKind, NodeRecord, EdgeKind, EdgeRecord, Provenance
 from methods_graph.graph.loader import build_graph
 from methods_graph.provider.quration_provider import KuzuMethodsGraphProvider
 
@@ -420,3 +420,82 @@ def test_case_variant_modules_merge_to_one_method(tmp_path):
     assert sum(1 for m in methods if m["id"] == "m:deseq2") == 1, (
         f"Expected exactly 1 'm:deseq2' method; got methods={[m['id'] for m in methods]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# audit subcommand tests
+# ---------------------------------------------------------------------------
+
+_P = Provenance("test", "https://example.com/test", "2026-06-10")
+
+
+def _build_clean_db(tmp_path: Path) -> Path:
+    """Build a structurally valid graph for the audit CLI tests."""
+    nodes = [
+        MethodRecord("m:salmon", "salmon", NodeKind.METHOD, {}, _P,
+                     bioconda_pkg="salmon", biotools_id="salmon"),
+        NodeRecord("op:operation_3798", "Read summarisation", NodeKind.OPERATION, {}, _P),
+    ]
+    edges = [EdgeRecord("m:salmon", "op:operation_3798", EdgeKind.PERFORMS, {}, _P)]
+    db_path = tmp_path / "clean.kuzu"
+    build_graph(nodes, edges, db_path, staging_dir=tmp_path / "stg_clean")
+    return db_path
+
+
+def _build_invalid_db(tmp_path: Path) -> Path:
+    """Build a graph with an invariant violation (PERFORMS Method→Container)."""
+    nodes = [
+        MethodRecord("m:salmon", "salmon", NodeKind.METHOD, {}, _P),
+        NodeRecord("cnt:salmon_1.10.0", "salmon:1.10.0", NodeKind.CONTAINER, {}, _P),
+    ]
+    # PERFORMS pointing at a Container — violates the invariant
+    edges = [EdgeRecord("m:salmon", "cnt:salmon_1.10.0", EdgeKind.PERFORMS, {}, _P)]
+    db_path = tmp_path / "invalid.kuzu"
+    build_graph(nodes, edges, db_path, staging_dir=tmp_path / "stg_invalid")
+    return db_path
+
+
+def test_cli_audit_exit_code_pass(tmp_path):
+    """main(['audit', '--db', <clean>]) returns 0 for a valid graph."""
+    db_path = _build_clean_db(tmp_path)
+    result = main(["audit", "--db", str(db_path)])
+    assert result == 0
+
+
+def test_cli_audit_exit_code_fail(tmp_path):
+    """main(['audit', '--db', <invalid>]) returns 1 for a graph with invariant violations."""
+    db_path = _build_invalid_db(tmp_path)
+    result = main(["audit", "--db", str(db_path)])
+    assert result == 1
+
+
+def test_cli_audit_json_output(tmp_path, capsys):
+    """main(['audit', '--db', <clean>, '--json']) emits valid JSON with expected keys."""
+    db_path = _build_clean_db(tmp_path)
+    result = main(["audit", "--db", str(db_path), "--json"])
+    out = capsys.readouterr().out
+    parsed = json.loads(out)
+    expected_keys = {
+        "node_count", "distinct_ids", "duplicate_ids_ok", "provenance_missing",
+        "invariants", "same_as", "coverage", "reconciliation", "ok",
+    }
+    assert expected_keys <= set(parsed.keys()), (
+        f"Missing keys: {expected_keys - set(parsed.keys())}"
+    )
+    assert parsed["ok"] is True
+
+
+def test_cli_audit_json_fail_exit_code(tmp_path):
+    """--json output still returns exit code 1 on failure."""
+    db_path = _build_invalid_db(tmp_path)
+    result = main(["audit", "--db", str(db_path), "--json"])
+    assert result == 1
+
+
+def test_cli_cmd_audit_direct_call(tmp_path):
+    """cmd_audit() function returns 0 on clean graph, 1 on invalid graph."""
+    clean = _build_clean_db(tmp_path)
+    assert cmd_audit(db_path=clean, snapshot_dir=None, as_json=False) == 0
+
+    invalid = _build_invalid_db(tmp_path)
+    assert cmd_audit(db_path=invalid, snapshot_dir=None, as_json=False) == 1
