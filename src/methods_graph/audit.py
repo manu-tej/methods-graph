@@ -224,6 +224,10 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
     # ------------------------------------------------------------------
     # 2. Missing provenance
     # ------------------------------------------------------------------
+    # NOTE: the loader always writes a string ``source`` (never NULL), so the
+    # ``IS NULL`` half is vacuous on any graph it builds; the ``source=''`` half
+    # does the real work. The NULL clause is kept as a guard against graphs
+    # written by other paths.
     provenance_missing: int = _q1(
         "MATCH (n:Entity) WHERE n.source IS NULL OR n.source='' RETURN count(n)"
     )
@@ -269,6 +273,12 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
             # endpoints to share the same kind.  The invariant only rejects IS_A
             # edges whose endpoints are not EDAM classes at all (e.g. Method or
             # Container nodes as src/dst) — those would be a genuine modelling error.
+            #
+            # NOTE: on the production build path this can never fail — the only
+            # IS_A producer (connectors/edam.py) emits an edge only when both
+            # endpoints are classified EDAM nodes. It is defense-in-depth against
+            # hand-edited graphs and future IS_A producers, and is exercised by
+            # tests (test_audit_isa_non_edam_endpoint_is_violation), not by real data.
             "IS_A: EDAM class→EDAM class",
             "MATCH (a)-[r:Rel{kind:'IS_A'}]->(b) "
             "WHERE NOT (a.kind IN ['Operation','Topic','Data','Format'] "
