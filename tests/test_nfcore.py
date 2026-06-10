@@ -443,3 +443,98 @@ def test_parse_module_without_tool_id_unchanged():
     assert "tool_label" not in method.properties, (
         "tool_label must not be set when tool_id is not provided"
     )
+
+
+# ---------------------------------------------------------------------------
+# Duplicate bio.tools identifier across tools in one module (copy-paste error)
+# ---------------------------------------------------------------------------
+
+def test_duplicate_biotools_id_across_tools_is_rejected(tmp_path):
+    """Multi-tool module where homer/samtools/deseq2 all share identifier
+    biotools:homer (copy-paste error in meta.yml).
+
+    Only the tool whose name matches the identifier should keep biotools_id;
+    the mismatched entries must have biotools_id=None to prevent entity-resolution
+    fusion of distinct tools in the graph.
+    """
+    meta_yml = tmp_path / "meta.yml"
+    meta_yml.write_text(
+        "name: homer_maketagdirectory\n"
+        "tools:\n"
+        "  - homer:\n"
+        "      description: Tools for motif discovery and next-gen sequencing analysis\n"
+        "      homepage: http://homer.ucsd.edu/homer/\n"
+        "      identifier: biotools:homer\n"
+        "  - samtools:\n"
+        "      description: Tools for manipulating next-generation sequencing data\n"
+        "      homepage: http://www.htslib.org/\n"
+        "      identifier: biotools:homer\n"
+        "  - deseq2:\n"
+        "      description: Differential gene expression analysis\n"
+        "      homepage: https://bioconductor.org/packages/DESeq2/\n"
+        "      identifier: biotools:homer\n"
+        "input: []\n"
+        "output: []\n"
+    )
+    env_yml = tmp_path / "environment.yml"
+    env_yml.write_text(
+        "name: homer_maketagdirectory\n"
+        "dependencies:\n"
+        "  - bioconda::homer=4.11\n"
+        "  - bioconda::samtools=1.19\n"
+    )
+
+    nodes, _ = parse_module(tmp_path, ingested_at="2026-06-10")
+    methods = {n.id: n for n in nodes if n.kind == NodeKind.METHOD}
+
+    # homer's name matches the identifier — it keeps biotools_id
+    assert methods["m:homer"].biotools_id == "homer", (
+        "homer must keep biotools_id='homer' because its name matches the identifier"
+    )
+    # samtools and deseq2 carry a copy-pasted homer id — must be cleared
+    assert methods["m:samtools"].biotools_id is None, (
+        "samtools must have biotools_id=None: identifier 'homer' is shared and name doesn't match"
+    )
+    assert methods["m:deseq2"].biotools_id is None, (
+        "deseq2 must have biotools_id=None: identifier 'homer' is shared and name doesn't match"
+    )
+
+
+def test_distinct_biotools_ids_preserved(tmp_path):
+    """Multi-tool module where each tool has a DIFFERENT, name-matching identifier.
+
+    No identifier is shared, so the deduplication logic must leave every
+    biotools_id intact — no false rejection.
+    """
+    meta_yml = tmp_path / "meta.yml"
+    meta_yml.write_text(
+        "name: samtools_bcftools\n"
+        "tools:\n"
+        "  - samtools:\n"
+        "      description: Tools for manipulating next-generation sequencing data\n"
+        "      homepage: http://www.htslib.org/\n"
+        "      identifier: biotools:samtools\n"
+        "  - bcftools:\n"
+        "      description: Tools for variant calling and manipulating VCFs and BCFs\n"
+        "      homepage: http://www.htslib.org/\n"
+        "      identifier: biotools:bcftools\n"
+        "input: []\n"
+        "output: []\n"
+    )
+    env_yml = tmp_path / "environment.yml"
+    env_yml.write_text(
+        "name: samtools_bcftools\n"
+        "dependencies:\n"
+        "  - bioconda::samtools=1.19\n"
+        "  - bioconda::bcftools=1.19\n"
+    )
+
+    nodes, _ = parse_module(tmp_path, ingested_at="2026-06-10")
+    methods = {n.id: n for n in nodes if n.kind == NodeKind.METHOD}
+
+    assert methods["m:samtools"].biotools_id == "samtools", (
+        "samtools must keep biotools_id='samtools' — distinct identifiers, no conflict"
+    )
+    assert methods["m:bcftools"].biotools_id == "bcftools", (
+        "bcftools must keep biotools_id='bcftools' — distinct identifiers, no conflict"
+    )

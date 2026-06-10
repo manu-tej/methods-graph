@@ -207,6 +207,30 @@ def parse_module(
     # entries share the same name we emit one Method + one WRAPS.
     emitted_method_ids: set[str] = set()
 
+    # Detect conflicting bio.tools identifiers in the multi-tool path.
+    # Distinct tools cannot legitimately share one bio.tools id; a duplicated
+    # identifier (e.g. biotools:homer copy-pasted onto samtools/DESeq2 entries)
+    # is a source error.  We trust only the entry whose tool name matches the
+    # identifier (or none, if no entry matches).  A conflicting id on a
+    # mismatched entry is silently dropped to prevent entity-resolution fusion
+    # of unrelated tools in the graph.
+    #
+    # Strategy: first pass — build {identifier_lower: set(tool_names_lower)}.
+    # An identifier is "conflicting" if more than one distinct tool name maps
+    # to it.  This only matters in the multi-tool path; for single-tool modules
+    # there can be no conflict by definition.
+    _id_to_tool_names: dict[str, set[str]] = {}
+    if not single_tool:
+        for _te in valid_tools:
+            _tname, _tmeta = next(iter(_te.items()))
+            _raw_id = (_tmeta.get("identifier") or "").replace("biotools:", "").lower()
+            if _raw_id:
+                _id_to_tool_names.setdefault(_raw_id, set()).add(_tname.lower())
+    # Set of identifiers that are shared by more than one distinct tool name.
+    _conflicting_ids: frozenset[str] = frozenset(
+        _id for _id, _names in _id_to_tool_names.items() if len(_names) > 1
+    )
+
     # Collect module-level I/O EDAM node ids from input/output channel ontologies.
     # These are attributed to every wrapped method: exact for single-tool modules;
     # an approximation for multi-tool modules (module-level I/O is ambiguous per tool).
@@ -251,7 +275,14 @@ def parse_module(
             pkg, ver = _bioconda_dep(env_path, prefer_pkg=tool_name,
                                      allow_single_fallback=single_tool)
 
-        biotools_id = (tool_meta.get("identifier") or "").replace("biotools:", "") or None
+        _raw_biotools_id = (tool_meta.get("identifier") or "").replace("biotools:", "") or None
+        # In the multi-tool path: if this identifier is shared by more than one
+        # distinct tool name (a copy-paste error), keep it only for the entry
+        # whose tool name matches the identifier; otherwise clear it.
+        if _raw_biotools_id and _raw_biotools_id.lower() in _conflicting_ids:
+            biotools_id = _raw_biotools_id if tool_name.lower() == _raw_biotools_id.lower() else None
+        else:
+            biotools_id = _raw_biotools_id
 
         if method_id not in emitted_method_ids:
             emitted_method_ids.add(method_id)
