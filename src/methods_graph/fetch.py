@@ -5,6 +5,7 @@ This module provides two kinds of callables:
   PURE functions  (clock/network-free, deterministic, fully unit-tested):
     _transform_biocontainer   -- map live BioContainers API record to our shape
     bioconda_packages_from_nfcore -- scan cloned modules tree for dep names
+    biotools_ids_from_nfcore  -- scan cloned modules tree for bio.tools ids
     write_manifest            -- write snapshot.json to dest_dir
 
   NETWORK wrappers (thin I/O, accept injectable callables for testing in principle,
@@ -12,6 +13,7 @@ This module provides two kinds of callables:
     fetch_edam           -- download EDAM.tsv
     fetch_nfcore         -- shallow-clone nf-core/modules
     fetch_biocontainers  -- download per-tool JSON via BioContainers TRS API
+    fetch_biotools       -- download per-tool JSON via bio.tools API
 
 Synthesised image tags
 ----------------------
@@ -137,12 +139,57 @@ def bioconda_packages_from_nfcore(modules_root: Path) -> list[str]:
     return sorted(packages)
 
 
+_BIOTOOLS_PREFIX = "biotools:"
+
+
+def biotools_ids_from_nfcore(modules_root: Path) -> list[str]:
+    """Scan a cloned nf-core modules tree and return sorted, de-duplicated bio.tools IDs.
+
+    Each ``meta.yml`` found anywhere under *modules_root* is parsed.  For every
+    ``tools[]`` entry, the ``identifier`` value is inspected; identifiers of the
+    form ``biotools:<id>`` yield ``<id>`` as the result.  Identifiers without the
+    ``biotools:`` prefix (including empty strings) are silently skipped.
+
+    A tool entry is a single-key dict ``{toolname: {identifier: "biotools:salmon", ...}}``.
+
+    Args:
+        modules_root: Root of a cloned nf-core modules tree.
+
+    Returns:
+        Sorted, de-duplicated list of bio.tools IDs referenced across all modules.
+    """
+    ids: set[str] = set()
+    for meta_path in modules_root.rglob("meta.yml"):
+        try:
+            meta = yaml.safe_load(meta_path.read_text()) or {}
+        except Exception:
+            continue
+        if not isinstance(meta, dict):
+            continue
+        for tool_entry in meta.get("tools") or []:
+            if not isinstance(tool_entry, dict):
+                continue
+            # Each entry is {toolname: {identifier: ..., ...}}
+            for _toolname, tool_info in tool_entry.items():
+                if not isinstance(tool_info, dict):
+                    continue
+                identifier = tool_info.get("identifier") or ""
+                if not isinstance(identifier, str):
+                    continue
+                if identifier.startswith(_BIOTOOLS_PREFIX):
+                    bt_id = identifier[len(_BIOTOOLS_PREFIX):]
+                    if bt_id:
+                        ids.add(bt_id)
+    return sorted(ids)
+
+
 def write_manifest(
     dest_dir: Path,
     *,
     edam: dict[str, Any] | None,
     nfcore: dict[str, Any] | None,
     biocontainers: dict[str, Any] | None,
+    biotools: dict[str, Any] | None = None,
     created_at: str,
 ) -> Path:
     """Write a ``snapshot.json`` manifest to *dest_dir*.
@@ -157,7 +204,8 @@ def write_manifest(
           "sources": {
             "edam":             <edam manifest dict>  | null,
             "nfcore_modules":   <nfcore manifest dict> | null,
-            "biocontainers":    <biocontainers manifest dict> | null
+            "biocontainers":    <biocontainers manifest dict> | null,
+            "biotools":         <biotools manifest dict> | null
           }
         }
 
@@ -166,6 +214,7 @@ def write_manifest(
         edam:          Return value of ``fetch_edam``, or ``None``.
         nfcore:        Return value of ``fetch_nfcore``, or ``None``.
         biocontainers: Return value of ``fetch_biocontainers``, or ``None``.
+        biotools:      Return value of ``fetch_biotools``, or ``None``.
         created_at:    ISO-8601 timestamp string (injected by caller; clock
                        is never read inside this function).
 
@@ -178,6 +227,7 @@ def write_manifest(
             "edam": edam,
             "nfcore_modules": nfcore,
             "biocontainers": biocontainers,
+            "biotools": biotools,
         },
     }
     out_path = dest_dir / "snapshot.json"
@@ -390,6 +440,67 @@ def fetch_biocontainers(
         "api": api_base,
         "fetched_at": fetched_at,
         "tools": tools_versions,
+        "failed": failed,
+        "n_failed": len(failed),
+    }
+
+
+def fetch_biotools(
+    ids: list[str],
+    dest_dir: Path,
+    *,
+    fetched_at: str,
+    api_base: str = "https://bio.tools/api/tool",
+    http_get_json: Callable[[str], Any] = _stdlib_http_get_json,
+) -> dict[str, Any]:
+    """Fetch bio.tools API records for *ids* and return a manifest entry.
+
+    For each id in *ids* (iterated in sorted order), the bio.tools API is called::
+
+        GET <api_base>/<id>/?format=json
+
+    The returned JSON object (a single record, not a list) is written as-is to
+    ``<dest_dir>/<id>.json``.  Per-tool failures are logged as warnings and
+    recorded in the manifest; they never abort the overall fetch.
+
+    Args:
+        ids:           Iterable of bio.tools IDs to fetch.
+        dest_dir:      Destination directory for the per-tool JSON files.
+        fetched_at:    ISO-8601 UTC timestamp injected by the caller.
+        api_base:      bio.tools API base URL.
+        http_get_json: Injectable JSON fetcher (uses ``_build_request`` internally
+                       for the User-Agent header in the real implementation).
+
+    Returns:
+        Manifest entry dict::
+            {
+              "api":       str,
+              "fetched_at": str,
+              "n_tools":   int,   # number of files successfully written
+              "failed":    list[str],
+              "n_failed":  int
+            }
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    failed: list[str] = []
+    n_written = 0
+    for bt_id in sorted(ids):
+        url = f"{api_base}/{bt_id}/?format=json"
+        try:
+            record = http_get_json(url)
+            out_path = dest_dir / f"{bt_id}.json"
+            out_path.write_text(json.dumps(record, indent=2))
+            n_written += 1
+        except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+            _log.warning("bio.tools fetch failed for %r: %s", bt_id, exc)
+            failed.append(bt_id)
+        except Exception as exc:  # JSON parse errors, unexpected API shapes, etc.
+            _log.warning("bio.tools unexpected error for %r: %s", bt_id, exc)
+            failed.append(bt_id)
+    return {
+        "api": api_base,
+        "fetched_at": fetched_at,
+        "n_tools": n_written,
         "failed": failed,
         "n_failed": len(failed),
     }

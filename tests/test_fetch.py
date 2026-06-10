@@ -14,7 +14,9 @@ from methods_graph.fetch import (
     _build_request,
     _transform_biocontainer,
     bioconda_packages_from_nfcore,
+    biotools_ids_from_nfcore,
     fetch_biocontainers,
+    fetch_biotools,
     fetch_edam,
     fetch_nfcore,
     write_manifest,
@@ -578,3 +580,306 @@ def test_cmd_fetch_bc_wholesale_failure_still_writes_snapshot(tmp_path: Path) ->
     has_error = "error" in bc
     has_empty_tools = isinstance(bc.get("tools"), dict)
     assert has_error or has_empty_tools, f"BC failure manifest shape unexpected: {bc}"
+
+
+# ---------------------------------------------------------------------------
+# biotools_ids_from_nfcore — pure scan of meta.yml files
+# ---------------------------------------------------------------------------
+
+
+def _make_meta_yml(tmp_path: Path, subdir: str, tools: list[dict]) -> None:
+    """Write a minimal meta.yml with the given tools list under tmp_path/subdir/."""
+    module_dir = tmp_path / subdir
+    module_dir.mkdir(parents=True, exist_ok=True)
+    import yaml as _yaml
+    content = {"name": subdir, "description": "test", "tools": tools}
+    (module_dir / "meta.yml").write_text(_yaml.dump(content))
+
+
+def test_biotools_ids_from_nfcore(tmp_path: Path) -> None:
+    """Scans a tiny fixture tree and returns sorted, de-duped bio.tools IDs; non-biotools skipped."""
+    # Two modules with biotools: prefixes.
+    _make_meta_yml(tmp_path, "salmon_mod", [{"salmon": {"identifier": "biotools:salmon"}}])
+    _make_meta_yml(tmp_path, "fastqc_mod", [{"fastqc": {"identifier": "biotools:fastqc"}}])
+    # One module with a non-biotools identifier — must be skipped.
+    _make_meta_yml(tmp_path, "other_mod", [{"other": {"identifier": "conda:sometool"}}])
+    # A duplicate of salmon — should appear only once.
+    _make_meta_yml(tmp_path, "salmon_mod2", [{"salmon": {"identifier": "biotools:salmon"}}])
+
+    result = biotools_ids_from_nfcore(tmp_path)
+
+    assert result == ["fastqc", "salmon"], (
+        f"expected ['fastqc', 'salmon'] (sorted, deduped); got {result}"
+    )
+
+
+def test_biotools_ids_from_nfcore_skips_empty_identifier(tmp_path: Path) -> None:
+    """Identifiers that are empty strings or missing are silently skipped."""
+    _make_meta_yml(tmp_path, "no_id_mod", [
+        {"tool_a": {"identifier": ""}},
+        {"tool_b": {}},  # no identifier key at all
+        {"tool_c": {"identifier": "biotools:realid"}},
+    ])
+
+    result = biotools_ids_from_nfcore(tmp_path)
+    assert result == ["realid"], f"expected ['realid']; got {result}"
+
+
+def test_biotools_ids_from_nfcore_against_existing_fixtures() -> None:
+    """Validates against the shared nfcore fixture tree used by other tests."""
+    fx = Path(__file__).parent / "fixtures" / "nfcore"
+    result = biotools_ids_from_nfcore(fx)
+    # salmon, fastqc, samtools, bcftools, fastp are in those fixtures.
+    assert "salmon" in result
+    assert "fastqc" in result
+    assert "samtools" in result
+
+
+# ---------------------------------------------------------------------------
+# fetch_biotools — per-tool resilience (offline, injected http_get_json)
+# ---------------------------------------------------------------------------
+
+_GOOD_BIOTOOLS_RECORD = {
+    "biotoolsID": "good",
+    "function": [{"operation": [{"uri": "http://edamontology.org/operation_3800"}]}],
+    "topic": [{"uri": "http://edamontology.org/topic_3170"}],
+}
+
+
+def test_fetch_biotools_writes_per_id_and_skips_failures(tmp_path: Path) -> None:
+    """fetch_biotools writes good.json, skips bad, records failed list — no exception propagates."""
+
+    def _fake_http_get_json(url: str) -> Any:
+        if "/good/" in url:
+            return _GOOD_BIOTOOLS_RECORD
+        if "/bad/" in url:
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    result = fetch_biotools(
+        ["good", "bad"],
+        tmp_path,
+        fetched_at="2026-06-09T00:00:00+00:00",
+        http_get_json=_fake_http_get_json,
+    )
+
+    # good.json written with expected content
+    good_path = tmp_path / "good.json"
+    assert good_path.exists(), "good.json should be written for successful fetch"
+    good_data = json.loads(good_path.read_text())
+    assert good_data["biotoolsID"] == "good"
+
+    # bad.json NOT written
+    bad_path = tmp_path / "bad.json"
+    assert not bad_path.exists(), "bad.json must not be written on fetch failure"
+
+    # Manifest shape
+    assert result["n_tools"] == 1, f"expected n_tools=1; got {result['n_tools']}"
+    assert "bad" in result["failed"], "'bad' must appear in failed list"
+    assert result["n_failed"] == 1
+    assert result["n_failed"] == len(result["failed"])
+    assert result["api"] == "https://bio.tools/api/tool"
+    assert result["fetched_at"] == "2026-06-09T00:00:00+00:00"
+
+
+def test_fetch_biotools_skips_generic_exception(tmp_path: Path) -> None:
+    """fetch_biotools also handles non-urllib exceptions (e.g. JSON parse errors)."""
+
+    def _fake_http_get_json(url: str) -> Any:
+        raise ValueError("Unexpected JSON structure")
+
+    result = fetch_biotools(
+        ["broken"],
+        tmp_path,
+        fetched_at="2026-06-09T00:00:00+00:00",
+        http_get_json=_fake_http_get_json,
+    )
+
+    assert "broken" in result["failed"]
+    assert result["n_failed"] == 1
+    assert result["n_tools"] == 0
+    assert not (tmp_path / "broken.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# write_manifest — biotools source included in snapshot.json
+# ---------------------------------------------------------------------------
+
+_SAMPLE_BIOTOOLS = {
+    "api": "https://bio.tools/api/tool",
+    "fetched_at": "2026-06-09T00:00:00+00:00",
+    "n_tools": 2,
+    "failed": [],
+    "n_failed": 0,
+}
+
+
+def test_write_manifest_includes_biotools(tmp_path: Path) -> None:
+    """write_manifest with a biotools dict records it under sources.biotools."""
+    manifest_path = write_manifest(
+        tmp_path,
+        edam=_SAMPLE_EDAM,
+        nfcore=_SAMPLE_NFCORE,
+        biocontainers=_SAMPLE_BIOCONTAINERS,
+        biotools=_SAMPLE_BIOTOOLS,
+        created_at="2026-06-09T00:00:00+00:00",
+    )
+
+    data = json.loads(manifest_path.read_text())
+    bt = data["sources"]["biotools"]
+    assert bt is not None, "sources.biotools must be present"
+    assert bt["api"] == "https://bio.tools/api/tool"
+    assert bt["n_tools"] == 2
+    assert bt["n_failed"] == 0
+    assert bt["failed"] == []
+
+
+def test_write_manifest_biotools_null_by_default(tmp_path: Path) -> None:
+    """write_manifest without biotools= writes sources.biotools as null."""
+    manifest_path = write_manifest(
+        tmp_path,
+        edam=None,
+        nfcore=None,
+        biocontainers=None,
+        created_at="2026-06-09T00:00:00+00:00",
+    )
+    data = json.loads(manifest_path.read_text())
+    assert "biotools" in data["sources"], "sources.biotools key must always be present"
+    assert data["sources"]["biotools"] is None
+
+
+# ---------------------------------------------------------------------------
+# cmd_fetch end-to-end with bio.tools seam injected
+# ---------------------------------------------------------------------------
+
+_BT_RECORD_SALMON = {
+    "biotoolsID": "salmon",
+    "function": [{"operation": [{"uri": "http://edamontology.org/operation_3800"}]}],
+    "topic": [{"uri": "http://edamontology.org/topic_3170"}],
+}
+
+
+def _make_nfcore_tree_with_biotools(base: Path) -> None:
+    """Create a minimal nf-core modules tree with both environment.yml and meta.yml."""
+    nfcore_dir = base / "modules" / "modules" / "nf-core" / "salmon_quant"
+    nfcore_dir.mkdir(parents=True, exist_ok=True)
+    (nfcore_dir / "environment.yml").write_text(
+        "name: salmon_quant\nchannels:\n  - bioconda\ndependencies:\n  - \"bioconda::salmon=1.10.0\"\n"
+    )
+    (nfcore_dir / "meta.yml").write_text(
+        "name: salmon_quant\ndescription: test\ntools:\n  - salmon:\n      identifier: biotools:salmon\n"
+    )
+
+
+def test_cmd_fetch_end_to_end_with_biotools(tmp_path: Path) -> None:
+    """cmd_fetch with biotools seam injected writes snapshot.json with sources.biotools."""
+    from methods_graph.cli import cmd_fetch
+
+    dest = tmp_path / "snap"
+    issued: list[list[str]] = []
+
+    def _runner(cmd: list[str], **kwargs: Any) -> Any:
+        issued.append(list(cmd))
+        if "clone" in cmd:
+            _make_nfcore_tree_with_biotools(dest)
+            return None
+        if "rev-parse" in cmd:
+            class _R:
+                stdout = _FAKE_NFCORE_COMMIT
+            return _R()
+        raise AssertionError(f"Unexpected: {cmd}")
+
+    def _fake_edam_http_get(url: str) -> tuple[bytes, dict[str, str]]:
+        return _FAKE_EDAM_BODY, {"last-modified": "Mon, 09 Jun 2026 00:00:00 GMT"}
+
+    def _fake_bc_http_get_json(url: str) -> Any:
+        return [_BC_API_RECORD]
+
+    def _fake_bt_http_get_json(url: str) -> Any:
+        if "/salmon/" in url:
+            return _BT_RECORD_SALMON
+        raise AssertionError(f"Unexpected bio.tools URL: {url}")
+
+    cmd_fetch(
+        dest=dest,
+        do_edam=True,
+        do_nfcore=True,
+        do_biocontainers=True,
+        do_biotools=True,
+        fetched_at="2026-06-09T00:00:00Z",
+        _edam_http_get=_fake_edam_http_get,
+        _nfcore_runner=_runner,
+        _bc_http_get_json=_fake_bc_http_get_json,
+        _biotools_http_get_json=_fake_bt_http_get_json,
+    )
+
+    snap_path = dest / "snapshot.json"
+    assert snap_path.exists(), "snapshot.json must be written"
+    data = json.loads(snap_path.read_text())
+
+    # bio.tools section must be present
+    bt = data["sources"]["biotools"]
+    assert bt is not None, "sources.biotools must be present"
+    assert bt["n_tools"] >= 1, f"expected at least 1 tool fetched; got {bt['n_tools']}"
+    assert bt["n_failed"] == 0
+
+    # Per-tool JSON file written
+    salmon_json = dest / "biotools" / "salmon.json"
+    assert salmon_json.exists(), "biotools/salmon.json must be written"
+    salmon_data = json.loads(salmon_json.read_text())
+    assert salmon_data["biotoolsID"] == "salmon"
+
+
+def test_cmd_fetch_biotools_wholesale_failure_still_writes_snapshot(tmp_path: Path) -> None:
+    """When bio.tools raises wholesale, snapshot.json is still written with other sources."""
+    from methods_graph.cli import cmd_fetch
+
+    dest = tmp_path / "snap"
+
+    def _runner(cmd: list[str], **kwargs: Any) -> Any:
+        if "clone" in cmd:
+            _make_nfcore_tree_with_biotools(dest)
+            return None
+        if "rev-parse" in cmd:
+            class _R:
+                stdout = _FAKE_NFCORE_COMMIT
+            return _R()
+        raise AssertionError(f"Unexpected: {cmd}")
+
+    def _fake_edam_http_get(url: str) -> tuple[bytes, dict[str, str]]:
+        return _FAKE_EDAM_BODY, {}
+
+    def _fake_bc_http_get_json(url: str) -> Any:
+        return [_BC_API_RECORD]
+
+    def _fake_bt_http_get_json_raises(url: str) -> Any:
+        raise RuntimeError("Simulated bio.tools network failure")
+
+    cmd_fetch(
+        dest=dest,
+        do_edam=True,
+        do_nfcore=True,
+        do_biocontainers=True,
+        do_biotools=True,
+        fetched_at="2026-06-09T00:00:00Z",
+        _edam_http_get=_fake_edam_http_get,
+        _nfcore_runner=_runner,
+        _bc_http_get_json=_fake_bc_http_get_json,
+        _biotools_http_get_json=_fake_bt_http_get_json_raises,
+    )
+
+    snap_path = dest / "snapshot.json"
+    assert snap_path.exists(), "snapshot.json must be written even on bio.tools failure"
+    data = json.loads(snap_path.read_text())
+
+    # edam, nfcore, biocontainers all present
+    assert data["sources"]["edam"] is not None
+    assert data["sources"]["nfcore_modules"] is not None
+    assert data["sources"]["biocontainers"] is not None
+
+    # biotools section should exist (error record), not absent or raise
+    bt = data["sources"]["biotools"]
+    assert bt is not None, "sources.biotools must be written even on wholesale failure"
+    has_error = "error" in bt
+    has_n_tools = "n_tools" in bt
+    assert has_error or has_n_tools, f"bio.tools failure manifest shape unexpected: {bt}"

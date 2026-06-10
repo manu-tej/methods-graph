@@ -171,11 +171,13 @@ def cmd_fetch(
     do_edam: bool,
     do_nfcore: bool,
     do_biocontainers: bool,
+    do_biotools: bool = True,
     fetched_at: str,
     # Injectable network seams (default to real stdlib helpers; override in tests).
     _edam_http_get: Callable[[str], tuple[bytes, dict[str, str]]] | None = None,
     _nfcore_runner: Callable[..., Any] | None = None,
     _bc_http_get_json: Callable[[str], Any] | None = None,
+    _biotools_http_get_json: Callable[[str], Any] | None = None,
 ) -> None:
     """Download source snapshots and write a snapshot.json manifest.
 
@@ -184,16 +186,21 @@ def cmd_fetch(
       2. Shallow-clone nf-core/modules (if --no-nfcore not set).
       3. Derive bioconda package names from the cloned modules tree.
       4. Fetch BioContainers records for those packages (if --no-biocontainers not set).
-      5. Write snapshot.json manifest.
+      5. Derive bio.tools IDs from the cloned modules tree.
+      6. Fetch bio.tools records for those IDs (if --no-biotools not set).
+      7. Write snapshot.json manifest.
 
-    The ``_edam_http_get``, ``_nfcore_runner``, and ``_bc_http_get_json`` parameters
-    are optional injectable seams for unit testing.  When *None* (the default used
-    by ``main()``), the real stdlib helpers are used.  Do not pass these from the
-    CLI; they exist solely to make the function testable without a network.
+    The ``_edam_http_get``, ``_nfcore_runner``, ``_bc_http_get_json``, and
+    ``_biotools_http_get_json`` parameters are optional injectable seams for unit
+    testing.  When *None* (the default used by ``main()``), the real stdlib helpers
+    are used.  Do not pass these from the CLI; they exist solely to make the
+    function testable without a network.
     """
     from methods_graph.fetch import (
         bioconda_packages_from_nfcore,
+        biotools_ids_from_nfcore,
         fetch_biocontainers,
+        fetch_biotools,
         fetch_edam,
         fetch_nfcore,
         write_manifest,
@@ -205,12 +212,14 @@ def cmd_fetch(
     edam_http_get = _edam_http_get if _edam_http_get is not None else _stdlib_http_get
     nfcore_runner = _nfcore_runner if _nfcore_runner is not None else subprocess.run
     bc_http_get_json = _bc_http_get_json if _bc_http_get_json is not None else _stdlib_http_get_json
+    bt_http_get_json = _biotools_http_get_json if _biotools_http_get_json is not None else _stdlib_http_get_json
 
     dest.mkdir(parents=True, exist_ok=True)
 
     edam_manifest: dict | None = None
     nfcore_manifest: dict | None = None
     biocontainers_manifest: dict | None = None
+    biotools_manifest: dict | None = None
 
     # --- EDAM ---
     if do_edam:
@@ -224,16 +233,15 @@ def cmd_fetch(
         nfcore_manifest = fetch_nfcore(dest, fetched_at=fetched_at, runner=nfcore_runner)
         print(f"  nf-core: commit {nfcore_manifest['commit'][:12]}…")
 
+    # Determine the modules path (used by both BioContainers and bio.tools steps).
+    if nfcore_manifest is not None:
+        modules_path = Path(nfcore_manifest["modules_path"])
+    else:
+        # Best-effort: look for an existing clone under dest.
+        modules_path = dest / "modules" / "modules" / "nf-core"
+
     # --- BioContainers ---
     if do_biocontainers:
-        # Derive package names from the cloned modules tree (or dest_dir if
-        # nfcore was not fetched this run but a previous clone exists).
-        if nfcore_manifest is not None:
-            modules_path = Path(nfcore_manifest["modules_path"])
-        else:
-            # Best-effort: look for an existing clone under dest.
-            modules_path = dest / "modules" / "modules" / "nf-core"
-
         if modules_path.exists():
             pkg_names = bioconda_packages_from_nfcore(modules_path)
             print(f"  Derived {len(pkg_names)} bioconda package names from nf-core modules.")
@@ -268,12 +276,48 @@ def cmd_fetch(
         else:
             print("  BioContainers: no package names — skipping.")
 
+    # --- bio.tools ---
+    if do_biotools:
+        if modules_path.exists():
+            bt_ids = biotools_ids_from_nfcore(modules_path)
+            print(f"  Derived {len(bt_ids)} bio.tools IDs from nf-core modules.")
+        else:
+            bt_ids = []
+            _log.warning(
+                "No nf-core modules path found at %s; skipping bio.tools fetch.", modules_path
+            )
+
+        if bt_ids:
+            print(f"Fetching bio.tools records for {len(bt_ids)} tools …")
+            biotools_dir = dest / "biotools"
+            try:
+                biotools_manifest = fetch_biotools(
+                    bt_ids, biotools_dir, fetched_at=fetched_at, http_get_json=bt_http_get_json
+                )
+            except Exception as exc:
+                # Wholesale failure — record it so other sources are not lost.
+                _log.error("bio.tools fetch raised unexpectedly: %s", exc)
+                biotools_manifest = {
+                    "api": "https://bio.tools/api/tool",
+                    "fetched_at": fetched_at,
+                    "n_tools": 0,
+                    "failed": list(bt_ids),
+                    "n_failed": len(bt_ids),
+                    "error": str(exc),
+                }
+            n_bt_ok = biotools_manifest.get("n_tools", 0)
+            n_bt_fail = biotools_manifest.get("n_failed", 0)
+            print(f"  bio.tools: {n_bt_ok} tools fetched, {n_bt_fail} failed.")
+        else:
+            print("  bio.tools: no IDs — skipping.")
+
     # --- Manifest (always written, even on partial failures) ---
     manifest_path = write_manifest(
         dest,
         edam=edam_manifest,
         nfcore=nfcore_manifest,
         biocontainers=biocontainers_manifest,
+        biotools=biotools_manifest,
         created_at=fetched_at,
     )
     print(f"Manifest written: {manifest_path}")
@@ -338,6 +382,10 @@ def main(argv: list[str] | None = None) -> int:
         "--no-biocontainers", action="store_false", dest="do_biocontainers",
         help="skip fetching BioContainers tool records",
     )
+    f.add_argument(
+        "--no-biotools", action="store_false", dest="do_biotools",
+        help="skip fetching bio.tools tool records",
+    )
 
     args = parser.parse_args(argv)
     if args.cmd == "query":
@@ -363,6 +411,7 @@ def main(argv: list[str] | None = None) -> int:
             do_edam=args.do_edam,
             do_nfcore=args.do_nfcore,
             do_biocontainers=args.do_biocontainers,
+            do_biotools=args.do_biotools,
             fetched_at=fetched_at,
         )
     return 0
