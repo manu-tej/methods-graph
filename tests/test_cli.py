@@ -298,3 +298,52 @@ def test_cmd_build_biotools_deduplicates_existing_edges(tmp_path, capsys):
     finally:
         conn.close()
         db.close()
+
+
+def test_build_uses_tool_directory_identity(tmp_path):
+    """Regression test: two bcftools subcommand modules (sort, view) whose meta.yml
+    tool keys are generic ('sort', 'view') must BOTH resolve to the single canonical
+    method m:bcftools — not to separate m:sort / m:view methods.
+
+    This is the over-merge fix: generic subcommand keys no longer create distinct,
+    colliding method ids when the nf-core directory hierarchy is used as the
+    authoritative tool identity.
+    """
+    db_path = tmp_path / "tool_id.kuzu"
+    cmd_build(
+        edam=None,
+        nfcore_modules=FX / "nfcore_tool_id",
+        biocontainers=None,
+        db_path=db_path,
+        staging_dir=tmp_path / "stg",
+        ingested_at="2026-06-10",
+    )
+
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        methods = provider.get_methods()
+
+    method_ids = {m["id"] for m in methods}
+    method_names = {m["name"] for m in methods}
+
+    # The canonical tool must be present
+    assert "m:bcftools" in method_ids, (
+        f"Expected m:bcftools in method ids; got {method_ids}"
+    )
+    assert "bcftools" in method_names, (
+        f"Expected 'bcftools' in method names; got {method_names}"
+    )
+
+    # Generic subcommand keys must NOT appear as distinct method ids
+    assert "m:sort" not in method_ids, (
+        f"m:sort must not exist — generic key should be overridden by directory identity; "
+        f"got {method_ids}"
+    )
+    assert "m:view" not in method_ids, (
+        f"m:view must not exist — generic key should be overridden by directory identity; "
+        f"got {method_ids}"
+    )
+
+    # Only one bcftools method (both subcommand modules collapsed to one)
+    assert sum(1 for m in methods if m["name"] == "bcftools") == 1, (
+        f"Expected exactly 1 bcftools method; got methods={[m['name'] for m in methods]}"
+    )

@@ -92,7 +92,24 @@ def cmd_build(
             if module_dir in seen_dirs:
                 continue
             seen_dirs.add(module_dir)
-            nodes, edges = parse_module(module_dir, ingested_at=ingested_at)
+            # Derive the authoritative tool identity from the first path
+            # component relative to the modules root.  Real nf-core modules
+            # live at ``<tool>/<subcommand>/meta.yml`` (depth ≥ 2), so
+            # ``rel.parts[0]`` is unambiguously the tool name.  For example:
+            #   bcftools/sort/meta.yml  → tool_id = "bcftools"
+            #   bcftools/view/meta.yml  → tool_id = "bcftools"
+            # This prevents generic subcommand keys such as ``sort`` or
+            # ``view`` from creating separate, colliding method ids when
+            # multiple tools share the same sub-command name.
+            # For single-level paths (``<tool>/meta.yml``, depth = 1) no
+            # override is needed: the directory IS the tool and the meta.yml
+            # tool key already matches it.
+            rel = meta_file.relative_to(nfcore_modules)
+            # rel.parts includes 'meta.yml' at the end; a nested module has
+            # at least ['<tool>', '<subcommand>', 'meta.yml'] → len >= 3.
+            tool_id = rel.parts[0] if len(rel.parts) >= 3 else None
+            nodes, edges = parse_module(module_dir, ingested_at=ingested_at,
+                                        tool_id=tool_id)
             all_nodes.extend(nodes)
             all_edges.extend(edges)
 

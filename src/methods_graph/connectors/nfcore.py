@@ -143,7 +143,37 @@ def _bioconda_dep(env_path: Path, prefer_pkg: str | None = None, *,
     return None, None
 
 
-def parse_module(module_dir: Path, *, ingested_at: str) -> tuple[list[NodeRecord], list[EdgeRecord]]:
+def parse_module(
+    module_dir: Path,
+    *,
+    ingested_at: str,
+    tool_id: str | None = None,
+) -> tuple[list[NodeRecord], list[EdgeRecord]]:
+    """Parse an nf-core module directory into nodes and edges.
+
+    Parameters
+    ----------
+    module_dir:
+        Path to the module directory containing ``meta.yml`` (and optionally
+        ``environment.yml``).
+    ingested_at:
+        ISO date string used for provenance records.
+    tool_id:
+        Optional authoritative tool identity derived from the nf-core module
+        directory name (e.g. ``"bcftools"`` for
+        ``modules/nf-core/bcftools/sort/``).  When provided AND the module has
+        exactly one valid tool entry, the Method node id is
+        ``m:<tool_id>`` and its name is ``<tool_id>`` — overriding the
+        potentially generic meta.yml tool key (e.g. ``"sort"``).  The
+        original meta.yml key is preserved in
+        ``properties["tool_label"]`` for traceability.  Bioconda lookup still
+        uses the authoritative ``tool_id`` as the preferred package name so the
+        correct dep is chosen.
+
+        When *tool_id* is ``None`` **or** the module has more than one valid
+        tool, the function behaves exactly as before: each tool gets
+        ``m:<meta_key>`` as its id (backwards-compatible path).
+    """
     prov = Provenance("nfcore", f"https://github.com/nf-core/modules/tree/master/{module_dir.name}",
                       ingested_at)
     meta = yaml.safe_load((module_dir / "meta.yml").read_text()) or {}
@@ -166,6 +196,12 @@ def parse_module(module_dir: Path, *, ingested_at: str) -> tuple[list[NodeRecord
     # only an exact name-match can assign the dep — degenerate but safe.
     valid_tools = [t for t in tools if isinstance(t, dict) and t]
     single_tool = len(valid_tools) == 1
+
+    # Determine whether to apply the tool_id override.  The override only
+    # applies when a tool_id was given AND the module has exactly one valid
+    # tool entry.  Multi-tool modules keep per-tool meta keys (those are
+    # reliable real names) regardless of tool_id.
+    apply_tool_id_override = tool_id is not None and single_tool
 
     # Dedupe: track emitted method ids within this module so that if two tool
     # entries share the same name we emit one Method + one WRAPS.
@@ -191,27 +227,45 @@ def parse_module(module_dir: Path, *, ingested_at: str) -> tuple[list[NodeRecord
 
     for tool_entry in valid_tools:
         tool_name, tool_meta = next(iter(tool_entry.items()))
-        method_id = f"m:{tool_name}"
 
-        # Per-tool bioconda resolution: prefer_pkg=tool_name guarantees the
-        # correct package is selected even in multi-dep environment.yml files.
-        # allow_single_fallback lets a single-tool module claim the sole dep
-        # even when the tool key name differs from the package name.
-        pkg, ver = _bioconda_dep(env_path, prefer_pkg=tool_name,
-                                 allow_single_fallback=single_tool)
+        if apply_tool_id_override:
+            # Single-tool module with an authoritative directory-derived tool_id:
+            # use the directory name as the canonical method id/name, but keep
+            # the original meta key as tool_label for traceability.
+            effective_name = tool_id  # type: ignore[assignment]
+            method_id = f"m:{tool_id}"
+            tool_label: str | None = tool_name  # original meta.yml key (e.g. "sort")
+            # Prefer the authoritative tool_id as the bioconda package name so
+            # we pick the right dep (e.g. "bcftools" over generic "sort").
+            pkg, ver = _bioconda_dep(env_path, prefer_pkg=tool_id,
+                                     allow_single_fallback=True)
+        else:
+            # Original path: use the meta.yml tool key as the method identity.
+            effective_name = tool_name
+            method_id = f"m:{tool_name}"
+            tool_label = None
+            # Per-tool bioconda resolution: prefer_pkg=tool_name guarantees the
+            # correct package is selected even in multi-dep environment.yml files.
+            # allow_single_fallback lets a single-tool module claim the sole dep
+            # even when the tool key name differs from the package name.
+            pkg, ver = _bioconda_dep(env_path, prefer_pkg=tool_name,
+                                     allow_single_fallback=single_tool)
 
         biotools_id = (tool_meta.get("identifier") or "").replace("biotools:", "") or None
 
         if method_id not in emitted_method_ids:
             emitted_method_ids.add(method_id)
+            props: dict[str, Any] = {
+                "description": tool_meta.get("description", ""),
+                "homepage": tool_meta.get("homepage", ""),
+                "version": ver or "",
+                "implementation_type": "nextflow",
+            }
+            if tool_label is not None:
+                props["tool_label"] = tool_label
             nodes.append(MethodRecord(
-                id=method_id, name=tool_name, kind=NodeKind.METHOD,
-                properties={
-                    "description": tool_meta.get("description", ""),
-                    "homepage": tool_meta.get("homepage", ""),
-                    "version": ver or "",
-                    "implementation_type": "nextflow",
-                },
+                id=method_id, name=effective_name, kind=NodeKind.METHOD,
+                properties=props,
                 provenance=prov, bioconda_pkg=pkg, biotools_id=biotools_id,
             ))
             # Keep WRAPS and EDAM edges inside the dedup guard so that a

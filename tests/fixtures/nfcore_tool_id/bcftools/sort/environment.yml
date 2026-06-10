@@ -1,0 +1,6 @@
+name: bcftools_sort
+channels:
+  - bioconda
+  - conda-forge
+dependencies:
+  - bioconda::bcftools=1.19

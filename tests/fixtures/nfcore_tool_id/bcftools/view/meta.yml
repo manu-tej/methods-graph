@@ -1,0 +1,9 @@
+name: bcftools_view
+description: View, subset and filter VCF or BCF files
+tools:
+  - view:
+      description: View, subset and filter VCF or BCF files by position and filtering expression
+      homepage: https://samtools.github.io/bcftools
+      identifier: biotools:bcftools
+      edam_operations: []
+      edam_topics: []

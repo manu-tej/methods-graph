@@ -12,6 +12,7 @@ MULTI_TOOL_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "samtools_st
 SAMTOOLS_HELPER_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "samtools_helper"
 FASTQC_MOD_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "fastqc_mod"
 FASTP_IO_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "fastp_io"
+BCFTOOLS_SORT_MODULE = Path(__file__).parent / "fixtures" / "nfcore" / "bcftools_sort"
 
 
 def test_parse_module_creates_method_with_join_keys():
@@ -361,3 +362,84 @@ def test_malformed_tool_entry_is_skipped(tmp_path):
     assert "m:salmon" in method_ids
     # The bare string should NOT have produced a Method node
     assert len(method_ids) == 1
+
+
+# ---------------------------------------------------------------------------
+# tool_id override tests (directory-derived authoritative identity)
+# ---------------------------------------------------------------------------
+
+def test_tool_id_overrides_generic_meta_key():
+    """Single-tool module with a generic meta key ('sort') + tool_id='bcftools':
+    the Method must use id m:bcftools, name bcftools, and preserve the original
+    meta key as properties['tool_label'].  The WRAPS edge must point to m:bcftools.
+    The bioconda_pkg must be correctly resolved to 'bcftools' despite the tool
+    key being 'sort'.
+    """
+    nodes, edges = parse_module(
+        BCFTOOLS_SORT_MODULE, ingested_at="2026-06-10", tool_id="bcftools"
+    )
+    method = next(n for n in nodes if n.kind == NodeKind.METHOD)
+
+    # Identity override
+    assert method.id == "m:bcftools", f"Expected m:bcftools; got {method.id}"
+    assert method.name == "bcftools", f"Expected name 'bcftools'; got {method.name}"
+
+    # Original meta key preserved for traceability
+    assert method.properties.get("tool_label") == "sort", (
+        f"Expected tool_label='sort'; got {method.properties.get('tool_label')}"
+    )
+
+    # Bioconda package resolved via authoritative tool_id
+    assert method.bioconda_pkg == "bcftools", (
+        f"Expected bioconda_pkg='bcftools'; got {method.bioconda_pkg}"
+    )
+
+    # WRAPS edge must point to the overridden id
+    module_node = next(n for n in nodes if n.kind == NodeKind.MODULE)
+    wraps_edges = [e for e in edges if e.kind == EdgeKind.WRAPS]
+    assert any(
+        e.from_id == module_node.id and e.to_id == "m:bcftools" for e in wraps_edges
+    ), f"Expected WRAPS edge to m:bcftools; got {[(e.from_id, e.to_id) for e in wraps_edges]}"
+
+    # The generic key must NOT appear as a method id
+    method_ids = {n.id for n in nodes if n.kind == NodeKind.METHOD}
+    assert "m:sort" not in method_ids, "m:sort must not be emitted when tool_id overrides it"
+
+
+def test_tool_id_ignored_for_multitool_module():
+    """Multi-tool module with tool_id provided: tool_id must be ignored.
+    Each tool must get its own m:<meta_key> id (original behaviour).
+    """
+    nodes, edges = parse_module(
+        MULTI_TOOL_MODULE, ingested_at="2026-06-10", tool_id="whatever"
+    )
+    method_ids = {n.id for n in nodes if n.kind == NodeKind.METHOD}
+
+    # Both original meta keys must be present
+    assert "m:samtools" in method_ids, f"Expected m:samtools; got {method_ids}"
+    assert "m:bcftools" in method_ids, f"Expected m:bcftools; got {method_ids}"
+
+    # The supplied tool_id must NOT appear as a method id
+    assert "m:whatever" not in method_ids, (
+        f"tool_id='whatever' must be ignored for multi-tool modules; got {method_ids}"
+    )
+
+    # Neither method should have a tool_label property (override not applied)
+    for n in nodes:
+        if n.kind == NodeKind.METHOD:
+            assert "tool_label" not in n.properties, (
+                f"tool_label must not be set on multi-tool method {n.id}"
+            )
+
+
+def test_parse_module_without_tool_id_unchanged():
+    """Back-compat: calling parse_module without tool_id on the salmon_quant
+    fixture still yields m:salmon (not affected by tool_id feature).
+    """
+    nodes, _ = parse_module(MODULE, ingested_at="2026-06-10")
+    method = next(n for n in nodes if n.kind == NodeKind.METHOD)
+    assert method.id == "m:salmon", f"Back-compat broken: expected m:salmon, got {method.id}"
+    assert method.name == "salmon"
+    assert "tool_label" not in method.properties, (
+        "tool_label must not be set when tool_id is not provided"
+    )
