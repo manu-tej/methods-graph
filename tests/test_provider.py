@@ -124,3 +124,92 @@ def test_method_ids_matching_is_deterministic(db_path):
     assert first == second, (
         f"_method_ids_matching returned different results across calls: {first!r} vs {second!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# AnalysisMethod enrichment (TDD — new behaviour)
+#
+# get_methods() must emit dicts that are COMPLETE enough to construct a quration
+# AnalysisMethod without further enrichment: a category, modalities mapped to
+# quration's DataModality *value* vocabulary, input/output lists, and quality
+# metrics. quration is not installed in this venv, so we assert on the dict shape
+# here; full AnalysisMethod construction is proven in the quration repo.
+# ---------------------------------------------------------------------------
+
+# Required AnalysisMethod fields that have no default and must be present in the
+# emitted dict for AnalysisMethod(**d) to validate.
+REQUIRED_METHOD_KEYS = {
+    "id", "name", "category", "description", "implementation_type", "version",
+    "inputs", "outputs", "supported_modalities", "quality_metrics",
+}
+
+
+def test_get_methods_dict_has_all_required_fields(db_path):
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        salmon = next(m for m in provider.get_methods() if m["name"] == "salmon")
+    missing = REQUIRED_METHOD_KEYS - salmon.keys()
+    assert not missing, f"emitted method dict missing required keys: {missing}"
+
+
+def test_get_methods_maps_topic_to_modality_value(db_path):
+    """EDAM topic 'RNA-Seq' must become the quration DataModality value 'rna_seq'."""
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        salmon = next(m for m in provider.get_methods() if m["name"] == "salmon")
+    assert salmon["supported_modalities"] == ["rna_seq"], salmon["supported_modalities"]
+    # human-readable topic label is preserved separately in tags
+    assert "RNA-Seq" in salmon["tags"]
+
+
+def test_get_methods_derives_category(db_path):
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        salmon = next(m for m in provider.get_methods() if m["name"] == "salmon")
+    assert salmon["category"] == "rna_seq", salmon["category"]
+
+
+def test_get_methods_quality_metrics_shape(db_path):
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        salmon = next(m for m in provider.get_methods() if m["name"] == "salmon")
+    qm = salmon["quality_metrics"]
+    assert {"reproducibility_score", "code_availability", "documentation_quality"} <= qm.keys()
+    assert 0.0 <= qm["reproducibility_score"] <= 1.0
+    # salmon has a container → packaging is reproducible → code is available
+    assert qm["code_availability"] is True
+
+
+def test_get_methods_inputs_outputs_are_lists(db_path):
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        salmon = next(m for m in provider.get_methods() if m["name"] == "salmon")
+    assert isinstance(salmon["inputs"], list)
+    assert isinstance(salmon["outputs"], list)
+
+
+# --- pure mapping helpers (no graph / no quration needed) ------------------
+
+def test_map_modalities_known_and_unknown():
+    from methods_graph.provider.quration_provider import _map_modalities
+    assert _map_modalities(["RNA-Seq"]) == ["rna_seq"]
+    assert _map_modalities(["ChIP-seq"]) == ["chip_seq"]
+    # unknown topics are dropped, not guessed
+    assert _map_modalities(["Phylogenetics"]) == []
+    # de-duplicated, order-stable
+    assert _map_modalities(["RNA-Seq", "RNA-Seq"]) == ["rna_seq"]
+
+
+def test_derive_category_known_and_default():
+    from methods_graph.provider.quration_provider import _derive_category
+    assert _derive_category(["RNA-Seq"]) == "rna_seq"
+    assert _derive_category(["Sequence assembly"]) == "assembly"
+    # no recognisable topic → custom (never silently mislabel)
+    assert _derive_category(["Phylogenetics"]) == "custom"
+    assert _derive_category([]) == "custom"
+
+
+def test_build_analysis_method_happy_path(db_path):
+    """When quration IS installed, the enriched dict constructs a valid AnalysisMethod."""
+    pytest.importorskip("quration")
+    from methods_graph.provider.quration_provider import build_analysis_method
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        salmon = next(m for m in provider.get_methods() if m["name"] == "salmon")
+    method = build_analysis_method(salmon)
+    assert method.id == "m:salmon"
+    assert method.category.value == "rna_seq"

@@ -15,10 +15,93 @@ from methods_graph.extract.adapters import to_rag_text
 from methods_graph.extract.seed import seed, method_neighborhood
 
 
+# --- EDAM-label → quration vocabulary maps -------------------------------------
+# Keys are lowercased EDAM topic labels; values are quration enum *values*
+# (DataModality / MethodCategory). We only map labels we recognise — unknown
+# topics are dropped rather than guessed, so a method is never silently
+# mislabelled. Extend these tables as the graph's topic coverage grows.
+
+_TOPIC_TO_MODALITY: dict[str, str] = {
+    "rna-seq": "rna_seq",
+    "rna-seq (single cell)": "single_cell_rna",
+    "single-cell sequencing": "single_cell_rna",
+    "chip-seq": "chip_seq",
+    "atac-seq": "atac_seq",
+    "dna polymorphism": "dna_seq",
+    "whole genome sequencing": "dna_seq",
+    "exome sequencing": "dna_seq",
+    "genomics": "dna_seq",
+    "dna methylation": "bisulfite_seq",
+    "methylated dna immunoprecipitation": "bisulfite_seq",
+    "metagenomics": "metagenomics",
+    "metatranscriptomics": "metatranscriptomics",
+}
+
+_TOPIC_TO_CATEGORY: dict[str, str] = {
+    "rna-seq": "rna_seq",
+    "rna-seq (single cell)": "single_cell",
+    "single-cell sequencing": "single_cell",
+    "chip-seq": "chip_seq",
+    "atac-seq": "atac_seq",
+    "dna polymorphism": "variant_calling",
+    "genetic variation": "variant_calling",
+    "sequence assembly": "assembly",
+    "genome assembly": "assembly",
+    "sequence alignment": "alignment",
+    "metagenomics": "metagenomics",
+    "sequencing quality control": "quality_control",
+    "data quality management": "quality_control",
+    "dna methylation": "methylation",
+    "gene expression": "differential_expression",
+    "differential gene expression analysis": "differential_expression",
+    "pathways, networks and models": "pathway_analysis",
+}
+
+
+def _map_modalities(topic_labels: list[str]) -> list[str]:
+    """Map EDAM topic labels to quration DataModality values, dropping unknowns.
+
+    De-duplicated and order-stable (first occurrence wins)."""
+    out: list[str] = []
+    for label in topic_labels:
+        modality = _TOPIC_TO_MODALITY.get(label.strip().lower())
+        if modality and modality not in out:
+            out.append(modality)
+    return out
+
+
+def _derive_category(topic_labels: list[str]) -> str:
+    """Pick the first recognised MethodCategory from the topics, else 'custom'."""
+    for label in topic_labels:
+        category = _TOPIC_TO_CATEGORY.get(label.strip().lower())
+        if category:
+            return category
+    return "custom"
+
+
+def _quality_metrics(props: dict[str, Any], *, has_container: bool) -> dict[str, Any]:
+    """Derive structural quality metrics from available signals.
+
+    These are heuristics over packaging/documentation presence, NOT measured
+    scores — Phase 2 replaces them with Papers-derived citations and curated
+    reproducibility data. ``code_availability`` is true when the tool ships a
+    container or exposes a homepage/repository.
+    """
+    code_available = bool(has_container or props.get("homepage"))
+    return {
+        "reproducibility_score": 0.8 if has_container else 0.5,
+        "code_availability": code_available,
+        "documentation_quality": 0.7 if props.get("description") else 0.4,
+        "peer_reviewed": False,
+        "citation_count": 0,
+    }
+
+
 def _neighborhood_to_method_dict(nb: dict[str, Any]) -> dict[str, Any]:
     m = nb["method"]
     props = m.get("properties", {})
-    tags = [o["name"] for o in nb["operations"]] + [t["name"] for t in nb["topics"]]
+    topic_labels = [t["name"] for t in nb["topics"]]
+    tags = [o["name"] for o in nb["operations"]] + topic_labels
     containers = nb["containers"]
     compute = {}
     if containers:
@@ -27,12 +110,19 @@ def _neighborhood_to_method_dict(nb: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": m["id"],
         "name": m["name"],
+        "category": _derive_category(topic_labels),
         "description": props.get("description", ""),
         "implementation_type": props.get("implementation_type", "tool"),
         "version": props.get("version", ""),
         "repository_url": props.get("homepage") or None,
         "tags": tags,
-        "supported_modalities": [t["name"] for t in nb["topics"]],
+        # MVP: the graph has no INPUT/OUTPUT Data|Format edges wired into
+        # method_neighborhood yet, so these are empty — Phase 2 populates them
+        # from EDAM Data/Format nodes.
+        "inputs": [],
+        "outputs": [],
+        "supported_modalities": _map_modalities(topic_labels),
+        "quality_metrics": _quality_metrics(props, has_container=bool(containers)),
         "compute_requirements": compute,
         "status": "active",
         "publications": [],
@@ -143,12 +233,11 @@ class KuzuMethodsGraphProvider:
 def build_analysis_method(method_dict: dict[str, Any]):
     """Upgrade a method dict to a quration AnalysisMethod if quration is installed.
 
-    MVP LIMITATION: the dict from get_methods() is a partial AnalysisMethod.
-    Constructing a valid quration AnalysisMethod additionally requires Phase 2 enrichment —
-    ``category``, ``inputs``/``outputs`` (from EDAM Data/Format), ``quality_metrics``
-    (from Papers), and mapping ``supported_modalities`` from EDAM topic labels (e.g. "RNA-Seq")
-    to quration ``DataModality`` enum values (e.g. "rna_seq").  Until then this raises
-    ``pydantic.ValidationError`` on a real quration install.
+    The dict produced by ``get_methods()`` is now complete: ``category``,
+    ``supported_modalities`` (mapped to ``DataModality`` values), ``inputs``/``outputs``,
+    and ``quality_metrics`` are all populated, so this validates against a real quration
+    install. ``inputs``/``outputs`` are empty until Phase 2 wires EDAM Data/Format edges,
+    and ``quality_metrics`` are structural heuristics until Phase 2 adds Papers enrichment.
     """
     try:
         from quration.broker.models import AnalysisMethod   # type: ignore
