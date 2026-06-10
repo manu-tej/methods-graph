@@ -286,6 +286,51 @@ def test_io_ontologies_attributed_to_all_wrapped_tools(tmp_path):
     assert all(e.to_id == "fmt:format_2572" for e in input_edges)
 
 
+def test_io_ontologies_skip_non_data_format_edam(tmp_path):
+    """I/O channel ontologies that carry an operation URI must NOT produce an INPUT edge.
+
+    Real nf-core meta.yml files occasionally mis-place an EDAM operation URI
+    inside an input/output channel's ontologies list.  parse_module must emit an
+    INPUT edge only to the valid format node (fmt:format_1930) and must NOT emit
+    an INPUT edge to the operation node (op:operation_3800).
+    """
+    meta_yml = tmp_path / "meta.yml"
+    meta_yml.write_text(
+        "name: mixed_edam_io\n"
+        "tools:\n"
+        "  - fastp:\n"
+        "      description: A tool for fast adapter trimming\n"
+        "      identifier: biotools:fastp\n"
+        "input:\n"
+        "  - - reads:\n"
+        "          type: file\n"
+        "          description: Input FASTQ reads\n"
+        "          ontologies:\n"
+        "            - edam: http://edamontology.org/format_1930\n"
+        "            - edam: http://edamontology.org/operation_3800\n"
+        "output: []\n"
+    )
+    env_yml = tmp_path / "environment.yml"
+    env_yml.write_text(
+        "name: mixed_edam_io\n"
+        "channels:\n"
+        "  - bioconda\n"
+        "dependencies:\n"
+        "  - 'bioconda::fastp=0.23.4'\n"
+    )
+
+    _, edges = parse_module(tmp_path, ingested_at="2026-06-10")
+    input_edges = [e for e in edges if e.kind == EdgeKind.INPUT]
+
+    to_ids = {e.to_id for e in input_edges}
+    assert "fmt:format_1930" in to_ids, (
+        f"INPUT edge to fmt:format_1930 must be emitted; got to_ids={to_ids}"
+    )
+    assert "op:operation_3800" not in to_ids, (
+        f"INPUT edge to op:operation_3800 must NOT be emitted; got to_ids={to_ids}"
+    )
+
+
 def test_malformed_tool_entry_is_skipped(tmp_path):
     """A bare string / None / empty-dict entry in tools: must not raise; valid tool still emitted."""
     meta_yml = tmp_path / "meta.yml"

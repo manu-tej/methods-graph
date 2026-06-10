@@ -176,9 +176,13 @@ def parse_module(module_dir: Path, *, ingested_at: str) -> tuple[list[NodeRecord
     # an approximation for multi-tool modules (module-level I/O is ambiguous per tool).
     def _io_edam_ids(section_key: str) -> list[str]:
         raw_uris = _collect_ontology_edam_uris(meta.get(section_key))
+        # I/O channels are data/format types; operation/topic EDAM ids
+        # occasionally mis-placed in source ontologies are excluded to preserve
+        # the Method->Data|Format invariant for INPUT/OUTPUT edges.
         node_ids = sorted({
             nid for uri in raw_uris
             if (nid := _edam_uri_to_node_id(uri)) is not None
+            and (nid.startswith("data:") or nid.startswith("fmt:"))
         })
         return node_ids
 
