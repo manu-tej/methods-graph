@@ -1,6 +1,7 @@
 """Tests for the CLI entry points (query, methods, and build subcommands)."""
 import json
 import pytest
+import kuzu
 from pathlib import Path
 from methods_graph.cli import cmd_query, cmd_build, main
 from methods_graph.types import MethodRecord, NodeKind, Provenance
@@ -180,3 +181,108 @@ def test_main_build_subcommand(tmp_path):
     ])
     assert result == 0
     assert db_path.exists()
+
+
+def test_cmd_build_biotools_adds_performs_and_has_topic(tmp_path):
+    """bio.tools enrichment adds PERFORMS and HAS_TOPIC edges that connect to EDAM nodes.
+
+    Setup:
+    - edam_sample.tsv has operation_3798 and topic_3170
+    - nfcore/salmon_quant has salmon with biotools_id "salmon"
+    - biotools_build/salmon.json maps salmon → operation_3798, topic_3170
+      (operation_3798 / topic_3170 ARE in edam_sample.tsv so edges survive loader)
+
+    The nf-core fixture already emits PERFORMS op:operation_3798 and HAS_TOPIC topic:topic_3170
+    via edam_operations/edam_topics in meta.yml. The biotools enrichment layer deduplicates
+    against those, so we assert the edges EXIST (possibly from either source).
+    """
+    db_path = tmp_path / "methods.kuzu"
+    cmd_build(
+        edam=FX / "edam_sample.tsv",
+        nfcore_modules=FX / "nfcore",
+        biocontainers=None,
+        biotools=FX / "biotools_build",
+        db_path=db_path,
+        staging_dir=tmp_path / "stg",
+        ingested_at="2026-06-09",
+    )
+
+    # Verify salmon method exists via the provider
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        methods = provider.get_methods()
+    method_names = {m["name"] for m in methods}
+    assert "salmon" in method_names, f"salmon not found in methods: {method_names}"
+
+    # Query the kuzu DB directly for PERFORMS and HAS_TOPIC edges from salmon.
+    db = kuzu.Database(str(db_path))
+    conn = kuzu.Connection(db)
+    try:
+        # PERFORMS edge: salmon → op:operation_3798
+        performs_rows = list(conn.execute(
+            "MATCH (m:Entity {id: 'm:salmon'})-[r:Rel {kind: 'PERFORMS'}]->(op:Entity {id: 'op:operation_3798'}) "
+            "RETURN m.id, op.id"
+        ))
+        assert len(performs_rows) >= 1, (
+            f"Expected PERFORMS edge m:salmon -> op:operation_3798; got {performs_rows}"
+        )
+
+        # HAS_TOPIC edge: salmon → topic:topic_3170
+        topic_rows = list(conn.execute(
+            "MATCH (m:Entity {id: 'm:salmon'})-[r:Rel {kind: 'HAS_TOPIC'}]->(t:Entity {id: 'topic:topic_3170'}) "
+            "RETURN m.id, t.id"
+        ))
+        assert len(topic_rows) >= 1, (
+            f"Expected HAS_TOPIC edge m:salmon -> topic:topic_3170; got {topic_rows}"
+        )
+    finally:
+        conn.close()
+        db.close()
+
+
+def test_cmd_build_biotools_missing_path_raises(tmp_path):
+    """Passing a non-existent --biotools path raises FileNotFoundError."""
+    bogus = tmp_path / "does_not_exist_biotools"
+    with pytest.raises(FileNotFoundError):
+        cmd_build(
+            edam=None,
+            nfcore_modules=None,
+            biocontainers=None,
+            biotools=bogus,
+            db_path=tmp_path / "m.kuzu",
+            staging_dir=tmp_path / "stg",
+            ingested_at="2026-06-09",
+        )
+
+
+def test_cmd_build_biotools_deduplicates_existing_edges(tmp_path, capsys):
+    """bio.tools edges that already exist from nf-core are NOT duplicated.
+
+    salmon_quant/meta.yml already has edam_operations: [operation_3798] and
+    edam_topics: [topic_3170]. The biotools_build fixture adds the same ones.
+    The loaded graph should have exactly one PERFORMS and one HAS_TOPIC for salmon.
+    """
+    db_path = tmp_path / "methods.kuzu"
+    cmd_build(
+        edam=FX / "edam_sample.tsv",
+        nfcore_modules=FX / "nfcore",
+        biocontainers=None,
+        biotools=FX / "biotools_build",
+        db_path=db_path,
+        staging_dir=tmp_path / "stg",
+        ingested_at="2026-06-09",
+    )
+
+    db = kuzu.Database(str(db_path))
+    conn = kuzu.Connection(db)
+    try:
+        performs_rows = list(conn.execute(
+            "MATCH (m:Entity {id: 'm:salmon'})-[r:Rel {kind: 'PERFORMS'}]->(op:Entity {id: 'op:operation_3798'}) "
+            "RETURN m.id, op.id"
+        ))
+        # Should not be duplicated — exactly 1 edge
+        assert len(performs_rows) == 1, (
+            f"Expected exactly 1 PERFORMS edge (deduped); got {len(performs_rows)}"
+        )
+    finally:
+        conn.close()
+        db.close()

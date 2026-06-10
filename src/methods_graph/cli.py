@@ -4,6 +4,7 @@ Implemented subcommands:
   query    -- seed a subgraph by keyword and print RAG text
   methods  -- dump all methods as AnalysisMethod-shaped JSON
   build    -- build the Kùzu DB from local source snapshots (connectors → resolver → loader)
+              optionally enriched with bio.tools EDAM operations/topics via --biotools <dir>
   fetch    -- download real source snapshots (EDAM, nf-core/modules, BioContainers)
               and record a versioned snapshot.json manifest for seamless upgrades
 
@@ -43,18 +44,24 @@ def cmd_build(
     edam: Path | None,
     nfcore_modules: Path | None,
     biocontainers: Path | None,
+    biotools: Path | None = None,
     db_path: Path,
     staging_dir: Path,
     ingested_at: str,
 ) -> None:
-    """Build a Kùzu graph from local source snapshots: connectors → resolver → loader."""
+    """Build a Kùzu graph from local source snapshots: connectors → resolver → loader.
+
+    Optional ``--biotools <dir>`` enriches each Method whose biotoolsID matches a
+    bio.tools JSON record with PERFORMS (operation) and HAS_TOPIC edges.
+    """
     # Grouped here for readability (build is the only subcommand that needs these).
     from methods_graph.connectors.edam import parse_edam
     from methods_graph.connectors.nfcore import parse_module
     from methods_graph.connectors.biocontainers import parse_biocontainer
+    from methods_graph.connectors.biotools import load_biotools_edam
     from methods_graph.resolve.resolver import resolve
     from methods_graph.graph.loader import build_graph
-    from methods_graph.types import MethodRecord
+    from methods_graph.types import EdgeKind, EdgeRecord, MethodRecord, Provenance
 
     all_nodes: list = []
     all_edges: list = []
@@ -66,6 +73,8 @@ def cmd_build(
         raise FileNotFoundError(f"--nfcore-modules path does not exist: {nfcore_modules}")
     if biocontainers is not None and not Path(biocontainers).exists():
         raise FileNotFoundError(f"--biocontainers path does not exist: {biocontainers}")
+    if biotools is not None and not Path(biotools).exists():
+        raise FileNotFoundError(f"--biotools path does not exist: {biotools}")
 
     # --- EDAM ---
     if edam is not None:
@@ -111,15 +120,48 @@ def cmd_build(
         ingested_at=ingested_at,
     )
 
+    # --- bio.tools EDAM enrichment (post-resolve, pre-load) ---
+    bt_edges_added = 0
+    if biotools is not None:
+        bt_map = load_biotools_edam(Path(biotools))
+        bt_prov = Provenance("biotools", "enrichment", ingested_at)
+        # Build a set of existing (from_id, to_id, kind) triples for deduplication.
+        existing_edge_keys: set[tuple[str, str, str]] = {
+            (e.from_id, e.to_id, e.kind.value) for e in resolved_edges
+        }
+        extra_edges: list[EdgeRecord] = []
+        for node in resolved_nodes:
+            if not isinstance(node, MethodRecord):
+                continue
+            bt_id = (node.biotools_id or "").strip().lower()
+            if not bt_id or bt_id not in bt_map:
+                continue
+            info = bt_map[bt_id]
+            for op_id in info["operations"]:
+                key = (node.id, op_id, EdgeKind.PERFORMS.value)
+                if key not in existing_edge_keys:
+                    extra_edges.append(EdgeRecord(node.id, op_id, EdgeKind.PERFORMS, {}, bt_prov))
+                    existing_edge_keys.add(key)
+            for topic_id in info["topics"]:
+                key = (node.id, topic_id, EdgeKind.HAS_TOPIC.value)
+                if key not in existing_edge_keys:
+                    extra_edges.append(EdgeRecord(node.id, topic_id, EdgeKind.HAS_TOPIC, {}, bt_prov))
+                    existing_edge_keys.add(key)
+        resolved_edges = list(resolved_edges) + extra_edges
+        bt_edges_added = len(extra_edges)
+        if bt_edges_added:
+            _log.info("bio.tools enrichment: added %d PERFORMS/HAS_TOPIC edges", bt_edges_added)
+
     # --- load ---
     summary = build_graph(resolved_nodes, resolved_edges, db_path, staging_dir=staging_dir)
 
     # --- summary ---
     n_methods = sum(1 for n in resolved_nodes if isinstance(n, MethodRecord))
+    bt_suffix = f", {bt_edges_added} bio.tools edges added" if biotools is not None else ""
     print(
         f"Built graph: {n_methods} methods, {summary['nodes']} nodes, "
         f"{summary['edges_loaded']} edges loaded "
-        f"({summary['edges_dropped']} dangling dropped) -> {db_path}"
+        f"({summary['edges_dropped']} dangling dropped){bt_suffix} -> {db_path}"
     )
 
 
@@ -267,6 +309,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="path to directory of nf-core module subdirectories (optional)")
     b.add_argument("--biocontainers", type=Path, default=None,
                    help="path to directory of biocontainers JSON files (optional)")
+    b.add_argument("--biotools", type=Path, default=None,
+                   help="path to directory of bio.tools API JSON files for EDAM enrichment (optional)")
     b.add_argument("--db", type=Path, required=True,
                    help="path to output Kùzu database directory")
     b.add_argument("--staging", type=Path, default=None,
@@ -307,6 +351,7 @@ def main(argv: list[str] | None = None) -> int:
             edam=args.edam,
             nfcore_modules=args.nfcore_modules,
             biocontainers=args.biocontainers,
+            biotools=args.biotools,
             db_path=args.db,
             staging_dir=staging_dir,
             ingested_at=ingested_at,
