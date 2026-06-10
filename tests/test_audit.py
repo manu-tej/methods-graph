@@ -290,6 +290,65 @@ def test_audit_reconciliation_edam_mismatch(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# test_audit_isa_cross_kind_edam_is_valid
+# ---------------------------------------------------------------------------
+
+
+def test_audit_isa_cross_kind_edam_is_valid(tmp_path):
+    """IS_A edge from an Operation to a Topic (cross-kind EDAM) must NOT be a violation.
+
+    EDAM itself carries cross-branch subClassOf edges (e.g. operation_3923 →
+    topic_3168).  Our graph faithfully represents that, so the IS_A invariant
+    must accept any IS_A where both endpoints are EDAM classes.
+    """
+    nodes = [
+        NodeRecord("op:operation_3923", "Genome resequencing", NodeKind.OPERATION, {}, P),
+        NodeRecord("topic:topic_3168", "Sequencing", NodeKind.TOPIC, {}, P),
+    ]
+    edges = [
+        EdgeRecord("op:operation_3923", "topic:topic_3168", EdgeKind.IS_A, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    isa_inv = next(inv for inv in result.invariants if "IS_A" in inv.name)
+    assert isa_inv.ok is True, (
+        f"Cross-kind EDAM IS_A should not be a violation, got {isa_inv.violations}"
+    )
+    assert result.ok is True
+
+
+def test_audit_isa_non_edam_endpoint_is_violation(tmp_path):
+    """IS_A edge whose source is a Method (not an EDAM class) must be a violation."""
+    nodes = [
+        MethodRecord("m:salmon", "salmon", NodeKind.METHOD, {}, P),
+        NodeRecord("op:operation_3798", "Read summarisation", NodeKind.OPERATION, {}, P),
+    ]
+    edges = [
+        # A Method as IS_A source is structurally wrong — only EDAM hierarchy edges
+        # should use IS_A.
+        EdgeRecord("m:salmon", "op:operation_3798", EdgeKind.IS_A, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    isa_inv = next(inv for inv in result.invariants if "IS_A" in inv.name)
+    assert not isa_inv.ok, "Method→Operation IS_A should be a violation"
+    assert isa_inv.violations >= 1
+    assert result.ok is False
+
+
+# ---------------------------------------------------------------------------
 # test_audit_to_json_roundtrips
 # ---------------------------------------------------------------------------
 

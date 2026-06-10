@@ -263,9 +263,16 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
             "WHERE NOT (a.kind='Container' AND b.kind='Package') RETURN count(*)",
         ),
         (
-            "IS_A: EDAM class→same-kind EDAM class",
+            # EDAM itself contains a small number of cross-branch subClassOf edges
+            # (e.g. operation_3923 Genome-resequencing → topic_3168 Sequencing).
+            # Our graph faithfully represents those, so we must NOT require both
+            # endpoints to share the same kind.  The invariant only rejects IS_A
+            # edges whose endpoints are not EDAM classes at all (e.g. Method or
+            # Container nodes as src/dst) — those would be a genuine modelling error.
+            "IS_A: EDAM class→EDAM class",
             "MATCH (a)-[r:Rel{kind:'IS_A'}]->(b) "
-            "WHERE NOT (a.kind = b.kind AND a.kind IN ['Operation','Topic','Data','Format']) "
+            "WHERE NOT (a.kind IN ['Operation','Topic','Data','Format'] "
+            "AND b.kind IN ['Operation','Topic','Data','Format']) "
             "RETURN count(*)",
         ),
     ]
