@@ -124,7 +124,7 @@ def cmd_build(
     bt_edges_added = 0
     if biotools is not None:
         bt_map = load_biotools_edam(Path(biotools))
-        bt_prov = Provenance("biotools", "enrichment", ingested_at)
+        bt_prov = Provenance("biotools", "https://bio.tools", ingested_at)
         # Build a set of existing (from_id, to_id, kind) triples for deduplication.
         existing_edge_keys: set[tuple[str, str, str]] = {
             (e.from_id, e.to_id, e.kind.value) for e in resolved_edges

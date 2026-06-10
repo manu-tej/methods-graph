@@ -187,14 +187,15 @@ def test_cmd_build_biotools_adds_performs_and_has_topic(tmp_path):
     """bio.tools enrichment adds PERFORMS and HAS_TOPIC edges that connect to EDAM nodes.
 
     Setup:
-    - edam_sample.tsv has operation_3798 and topic_3170
-    - nfcore/salmon_quant has salmon with biotools_id "salmon"
-    - biotools_build/salmon.json maps salmon → operation_3798, topic_3170
-      (operation_3798 / topic_3170 ARE in edam_sample.tsv so edges survive loader)
+    - edam_sample.tsv has operation_3798, operation_2495, and topic_3170
+    - nfcore/salmon_quant has salmon with biotools_id "salmon" and edam_operations:
+        [operation_3798] (but NOT operation_2495)
+    - biotools_build/salmon.json maps salmon → operation_3798, operation_2495, topic_3170
+      (all three are in edam_sample.tsv so edges survive the loader)
 
-    The nf-core fixture already emits PERFORMS op:operation_3798 and HAS_TOPIC topic:topic_3170
-    via edam_operations/edam_topics in meta.yml. The biotools enrichment layer deduplicates
-    against those, so we assert the edges EXIST (possibly from either source).
+    operation_2495 is present in biotools_build/salmon.json but NOT in salmon_quant/meta.yml,
+    so the PERFORMS edge m:salmon -> op:operation_2495 can ONLY come from the bio.tools
+    enrichment path.  Its presence proves the enrichment code contributed it.
     """
     db_path = tmp_path / "methods.kuzu"
     cmd_build(
@@ -217,7 +218,7 @@ def test_cmd_build_biotools_adds_performs_and_has_topic(tmp_path):
     db = kuzu.Database(str(db_path))
     conn = kuzu.Connection(db)
     try:
-        # PERFORMS edge: salmon → op:operation_3798
+        # PERFORMS edge: salmon → op:operation_3798 (present in both nf-core and bio.tools)
         performs_rows = list(conn.execute(
             "MATCH (m:Entity {id: 'm:salmon'})-[r:Rel {kind: 'PERFORMS'}]->(op:Entity {id: 'op:operation_3798'}) "
             "RETURN m.id, op.id"
@@ -226,13 +227,24 @@ def test_cmd_build_biotools_adds_performs_and_has_topic(tmp_path):
             f"Expected PERFORMS edge m:salmon -> op:operation_3798; got {performs_rows}"
         )
 
-        # HAS_TOPIC edge: salmon → topic:topic_3170
+        # HAS_TOPIC edge: salmon → topic:topic_3170 (present in both nf-core and bio.tools)
         topic_rows = list(conn.execute(
             "MATCH (m:Entity {id: 'm:salmon'})-[r:Rel {kind: 'HAS_TOPIC'}]->(t:Entity {id: 'topic:topic_3170'}) "
             "RETURN m.id, t.id"
         ))
         assert len(topic_rows) >= 1, (
             f"Expected HAS_TOPIC edge m:salmon -> topic:topic_3170; got {topic_rows}"
+        )
+
+        # Enrichment-only edge: salmon → op:operation_2495 (bio.tools ONLY — not in meta.yml).
+        # This edge can ONLY exist if the bio.tools enrichment path ran successfully.
+        enrichment_only_rows = list(conn.execute(
+            "MATCH (m:Entity {id: 'm:salmon'})-[r:Rel {kind: 'PERFORMS'}]->(op:Entity {id: 'op:operation_2495'}) "
+            "RETURN m.id, op.id"
+        ))
+        assert len(enrichment_only_rows) >= 1, (
+            f"Expected enrichment-only PERFORMS edge m:salmon -> op:operation_2495 "
+            f"(proves bio.tools enrichment path ran); got {enrichment_only_rows}"
         )
     finally:
         conn.close()

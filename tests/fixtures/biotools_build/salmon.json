@@ -6,7 +6,8 @@
   "function": [
     {
       "operation": [
-        {"uri": "http://edamontology.org/operation_3798", "term": "Read summarisation"}
+        {"uri": "http://edamontology.org/operation_3798", "term": "Read summarisation"},
+        {"uri": "http://edamontology.org/operation_2495", "term": "Gene expression analysis"}
       ]
     }
   ]
