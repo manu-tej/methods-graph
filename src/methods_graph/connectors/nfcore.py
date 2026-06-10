@@ -254,10 +254,12 @@ def parse_module(
 
         if apply_tool_id_override:
             # Single-tool module with an authoritative directory-derived tool_id:
-            # use the directory name as the canonical method id/name, but keep
+            # use the directory name as the canonical method name, but keep
             # the original meta key as tool_label for traceability.
+            # Method identity is case-insensitive: tool names like DESeq2/deseq2
+            # refer to the same tool, so the id is always lowercased.
             effective_name = tool_id  # type: ignore[assignment]
-            method_id = f"m:{tool_id}"
+            method_id = f"m:{tool_id.lower()}"
             tool_label: str | None = tool_name  # original meta.yml key (e.g. "sort")
             # Prefer the authoritative tool_id as the bioconda package name so
             # we pick the right dep (e.g. "bcftools" over generic "sort").
@@ -265,8 +267,11 @@ def parse_module(
                                      allow_single_fallback=True)
         else:
             # Original path: use the meta.yml tool key as the method identity.
+            # Method identity is case-insensitive: tool names like Comet/comet
+            # refer to the same tool, so the id is always lowercased while the
+            # display name preserves the original case from meta.yml.
             effective_name = tool_name
-            method_id = f"m:{tool_name}"
+            method_id = f"m:{tool_name.lower()}"
             tool_label = None
             # Per-tool bioconda resolution: prefer_pkg=tool_name guarantees the
             # correct package is selected even in multi-dep environment.yml files.

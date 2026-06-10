@@ -347,3 +347,76 @@ def test_build_uses_tool_directory_identity(tmp_path):
     assert sum(1 for m in methods if m["name"] == "bcftools") == 1, (
         f"Expected exactly 1 bcftools method; got methods={[m['name'] for m in methods]}"
     )
+
+
+def test_case_variant_modules_merge_to_one_method(tmp_path):
+    """Two single-tool modules whose tool_ids differ only in case
+    (tool_id='DESeq2' and tool_id='deseq2') must produce exactly ONE method
+    node 'm:deseq2' after building — case-variants collapse because ids are
+    lowercased before deduplication in the resolver.
+
+    On macOS (case-insensitive HFS+) we cannot create two real directories
+    that differ only in case, so we build the node+edge lists directly via
+    parse_module with explicit tool_id values and run resolve+build_graph to
+    verify the merge.
+    """
+    from methods_graph.connectors.nfcore import parse_module
+    from methods_graph.resolve.resolver import resolve
+    from methods_graph.graph.loader import build_graph
+    from methods_graph.types import MethodRecord
+
+    # Shared module directory with a minimal meta.yml
+    mod_dir = tmp_path / "deseq2_module"
+    mod_dir.mkdir()
+    (mod_dir / "meta.yml").write_text(
+        "name: deseq2_run\n"
+        "tools:\n"
+        "  - deseq2:\n"
+        "      description: Differential expression analysis\n"
+        "      homepage: https://bioconductor.org/packages/DESeq2/\n"
+        "input: []\n"
+        "output: []\n"
+    )
+    (mod_dir / "environment.yml").write_text(
+        "name: deseq2_env\n"
+        "dependencies:\n"
+        "  - bioconda::deseq2=1.40.0\n"
+    )
+
+    # Simulate two separate parse_module calls with case-variant tool_ids
+    nodes_a, edges_a = parse_module(mod_dir, ingested_at="2026-06-10", tool_id="DESeq2")
+    nodes_b, edges_b = parse_module(mod_dir, ingested_at="2026-06-10", tool_id="deseq2")
+
+    all_nodes = nodes_a + nodes_b
+    all_edges = edges_a + edges_b
+
+    method_nodes = [n for n in all_nodes if isinstance(n, MethodRecord)]
+    other_nodes = [n for n in all_nodes if not isinstance(n, MethodRecord)]
+
+    resolved_nodes, resolved_edges = resolve(
+        method_nodes=method_nodes,
+        other_nodes=other_nodes,
+        src_edges=all_edges,
+        ingested_at="2026-06-10",
+    )
+
+    db_path = tmp_path / "case_merge.kuzu"
+    build_graph(resolved_nodes, resolved_edges, db_path, staging_dir=tmp_path / "stg")
+
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        methods = provider.get_methods()
+
+    method_ids = {m["id"] for m in methods}
+
+    # Case-variants must collapse to a single lowercased id
+    assert "m:deseq2" in method_ids, (
+        f"Expected 'm:deseq2' after case-folding merge; got {method_ids}"
+    )
+    # No uppercase variant should appear as a separate node
+    assert "m:DESeq2" not in method_ids, (
+        f"'m:DESeq2' must not exist as a separate node; got {method_ids}"
+    )
+    # Exactly one deseq2 method (the two case-variants collapsed)
+    assert sum(1 for m in methods if m["id"] == "m:deseq2") == 1, (
+        f"Expected exactly 1 'm:deseq2' method; got methods={[m['id'] for m in methods]}"
+    )

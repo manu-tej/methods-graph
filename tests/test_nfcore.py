@@ -500,6 +500,86 @@ def test_duplicate_biotools_id_across_tools_is_rejected(tmp_path):
     )
 
 
+# ---------------------------------------------------------------------------
+# Case-insensitive method identity tests
+# ---------------------------------------------------------------------------
+
+def test_method_id_is_lowercased(tmp_path):
+    """Single-tool module with tool_id='DESeq2': method id must be 'm:deseq2' (lowercased)
+    while name preserves the original case 'DESeq2'.  The WRAPS edge must target 'm:deseq2'.
+    """
+    meta_yml = tmp_path / "meta.yml"
+    meta_yml.write_text(
+        "name: deseq2_test\n"
+        "tools:\n"
+        "  - deseq2:\n"
+        "      description: Differential expression analysis\n"
+        "      homepage: https://bioconductor.org/packages/DESeq2/\n"
+        "      identifier: biotools:DESeq2\n"
+        "input: []\n"
+        "output: []\n"
+    )
+    env_yml = tmp_path / "environment.yml"
+    env_yml.write_text(
+        "name: deseq2_test\n"
+        "dependencies:\n"
+        "  - bioconda::deseq2=1.40.0\n"
+    )
+
+    nodes, edges = parse_module(tmp_path, ingested_at="2026-06-10", tool_id="DESeq2")
+    method = next(n for n in nodes if n.kind == NodeKind.METHOD)
+
+    # id must be lowercased
+    assert method.id == "m:deseq2", (
+        f"Expected method id 'm:deseq2' (lowercased); got '{method.id}'"
+    )
+    # display name preserves original case
+    assert method.name == "DESeq2", (
+        f"Expected name 'DESeq2' (original case preserved); got '{method.name}'"
+    )
+
+    # WRAPS edge must target the lowercased id
+    module_node = next(n for n in nodes if n.kind == NodeKind.MODULE)
+    wraps_edges = [e for e in edges if e.kind == EdgeKind.WRAPS]
+    assert any(
+        e.from_id == module_node.id and e.to_id == "m:deseq2" for e in wraps_edges
+    ), f"Expected WRAPS edge to 'm:deseq2'; got {[(e.from_id, e.to_id) for e in wraps_edges]}"
+
+
+def test_meta_key_method_id_lowercased(tmp_path):
+    """No tool_id override: meta key 'Comet' must yield method id 'm:comet' (lowercased)
+    while name preserves 'Comet'.
+    """
+    meta_yml = tmp_path / "meta.yml"
+    meta_yml.write_text(
+        "name: comet_search\n"
+        "tools:\n"
+        "  - Comet:\n"
+        "      description: Tandem mass spectrometry database search\n"
+        "      homepage: https://uwpr.github.io/Comet/\n"
+        "input: []\n"
+        "output: []\n"
+    )
+    env_yml = tmp_path / "environment.yml"
+    env_yml.write_text(
+        "name: comet_search\n"
+        "dependencies:\n"
+        "  - bioconda::comet=2023010\n"
+    )
+
+    nodes, edges = parse_module(tmp_path, ingested_at="2026-06-10")
+    method = next(n for n in nodes if n.kind == NodeKind.METHOD)
+
+    # id must be lowercased
+    assert method.id == "m:comet", (
+        f"Expected method id 'm:comet' (lowercased); got '{method.id}'"
+    )
+    # display name preserves the original meta key case
+    assert method.name == "Comet", (
+        f"Expected name 'Comet' (original case preserved); got '{method.name}'"
+    )
+
+
 def test_distinct_biotools_ids_preserved(tmp_path):
     """Multi-tool module where each tool has a DIFFERENT, name-matching identifier.
 
