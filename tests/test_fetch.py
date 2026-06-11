@@ -830,6 +830,140 @@ def test_cmd_fetch_end_to_end_with_biotools(tmp_path: Path) -> None:
     assert salmon_data["biotoolsID"] == "salmon"
 
 
+# ---------------------------------------------------------------------------
+# fetch_stato / fetch_obi — offline via injected http_get
+# ---------------------------------------------------------------------------
+
+_STATO_OWL_BYTES = b"""<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+         xmlns:owl="http://www.w3.org/2002/07/owl#">
+  <owl:Ontology rdf:about="http://purl.obolibrary.org/obo/stato.owl">
+    <owl:versionIRI rdf:resource="http://purl.obolibrary.org/obo/stato/2024-01-15/stato.owl"/>
+  </owl:Ontology>
+  <owl:Class rdf:about="http://purl.obolibrary.org/obo/OBI_0200000">
+    <rdfs:label>data transformation</rdfs:label>
+  </owl:Class>
+  <owl:Class rdf:about="http://purl.obolibrary.org/obo/STATO_0000304">
+    <rdfs:label>Student's t-test</rdfs:label>
+    <rdfs:subClassOf rdf:resource="http://purl.obolibrary.org/obo/OBI_0200000"/>
+  </owl:Class>
+</rdf:RDF>
+"""
+
+_OBI_OWL_BYTES = b"""<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+         xmlns:owl="http://www.w3.org/2002/07/owl#">
+  <owl:Ontology rdf:about="http://purl.obolibrary.org/obo/obi.owl"/>
+  <owl:Class rdf:about="http://purl.obolibrary.org/obo/OBI_0000070">
+    <rdfs:label>assay</rdfs:label>
+  </owl:Class>
+  <owl:Class rdf:about="http://purl.obolibrary.org/obo/OBI_0001234">
+    <rdfs:label>DNA sequencing assay</rdfs:label>
+    <rdfs:subClassOf rdf:resource="http://purl.obolibrary.org/obo/OBI_0000070"/>
+  </owl:Class>
+</rdf:RDF>
+"""
+
+
+def test_fetch_stato_writes_and_manifests(tmp_path: Path) -> None:
+    """fetch_stato writes stato.owl and returns a manifest with sha256 + version."""
+    from methods_graph.fetch import fetch_stato
+
+    expected_sha256 = hashlib.sha256(_STATO_OWL_BYTES).hexdigest()
+
+    def _fake_http_get(url: str) -> tuple[bytes, dict[str, str]]:
+        assert "stato" in url.lower(), f"Unexpected URL: {url}"
+        return _STATO_OWL_BYTES, {"content-type": "application/rdf+xml"}
+
+    result = fetch_stato(
+        tmp_path,
+        fetched_at="2026-06-11T00:00:00Z",
+        http_get=_fake_http_get,
+    )
+
+    out_path = tmp_path / "stato.owl"
+    assert out_path.exists(), "stato.owl must be written"
+    assert out_path.read_bytes() == _STATO_OWL_BYTES
+
+    assert result["sha256"] == expected_sha256
+    assert result["fetched_at"] == "2026-06-11T00:00:00Z"
+    assert result["url"] is not None
+    assert "version" in result  # version key always present (may be "")
+    # This OWL has a versionIRI — version should be non-empty
+    assert result["version"] != "", f"Expected non-empty version, got {result['version']!r}"
+
+
+def test_fetch_obi_writes_and_manifests(tmp_path: Path) -> None:
+    """fetch_obi writes obi.owl and returns a manifest with sha256 + version."""
+    from methods_graph.fetch import fetch_obi
+
+    expected_sha256 = hashlib.sha256(_OBI_OWL_BYTES).hexdigest()
+
+    def _fake_http_get(url: str) -> tuple[bytes, dict[str, str]]:
+        assert "obi" in url.lower(), f"Unexpected URL: {url}"
+        return _OBI_OWL_BYTES, {}
+
+    result = fetch_obi(
+        tmp_path,
+        fetched_at="2026-06-11T00:00:00Z",
+        http_get=_fake_http_get,
+    )
+
+    out_path = tmp_path / "obi.owl"
+    assert out_path.exists(), "obi.owl must be written"
+    assert out_path.read_bytes() == _OBI_OWL_BYTES
+
+    assert result["sha256"] == expected_sha256
+    assert result["fetched_at"] == "2026-06-11T00:00:00Z"
+    assert result["url"] is not None
+    assert "version" in result  # no versionIRI in this minimal OWL → ""
+    assert isinstance(result["version"], str)
+
+
+def test_cmd_fetch_includes_stato_obi(tmp_path: Path) -> None:
+    """cmd_fetch with STATO/OBI seams writes snapshot.json with sources.stato and sources.obi."""
+    from methods_graph.cli import cmd_fetch
+
+    dest = tmp_path / "snap"
+
+    def _fake_edam_http_get(url: str) -> tuple[bytes, dict[str, str]]:
+        return _FAKE_EDAM_BODY, {}
+
+    def _fake_stato_http_get(url: str) -> tuple[bytes, dict[str, str]]:
+        return _STATO_OWL_BYTES, {}
+
+    def _fake_obi_http_get(url: str) -> tuple[bytes, dict[str, str]]:
+        return _OBI_OWL_BYTES, {}
+
+    cmd_fetch(
+        dest=dest,
+        do_edam=True,
+        do_nfcore=False,
+        do_biocontainers=False,
+        do_biotools=False,
+        do_stato=True,
+        do_obi=True,
+        fetched_at="2026-06-11T00:00:00Z",
+        _edam_http_get=_fake_edam_http_get,
+        _stato_http_get=_fake_stato_http_get,
+        _obi_http_get=_fake_obi_http_get,
+    )
+
+    snap_path = dest / "snapshot.json"
+    assert snap_path.exists(), "snapshot.json must be written"
+    data = json.loads(snap_path.read_text())
+
+    stato = data["sources"]["stato"]
+    assert stato is not None, "sources.stato must be present"
+    assert stato["sha256"] == hashlib.sha256(_STATO_OWL_BYTES).hexdigest()
+
+    obi = data["sources"]["obi"]
+    assert obi is not None, "sources.obi must be present"
+    assert obi["sha256"] == hashlib.sha256(_OBI_OWL_BYTES).hexdigest()
+
+
 def test_cmd_fetch_biotools_wholesale_failure_still_writes_snapshot(tmp_path: Path) -> None:
     """When bio.tools raises wholesale, snapshot.json is still written with other sources."""
     from methods_graph.cli import cmd_fetch

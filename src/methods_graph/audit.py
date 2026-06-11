@@ -172,6 +172,26 @@ class AuditResult:
 
 
 # ---------------------------------------------------------------------------
+# Ontology-term kinds: all node kinds that may be endpoints of IS_A edges.
+# Includes EDAM kinds (Operation, Topic, Data, Format) and STATO/OBI kinds.
+# ---------------------------------------------------------------------------
+
+_ONTOLOGY_TERM_KINDS: frozenset[str] = frozenset({
+    "Operation",
+    "Topic",
+    "Data",
+    "Format",
+    "StatisticalMethod",
+    "Assumption",
+    "Diagnostic",
+    "Assay",
+    "Protocol",
+    "StudyDesign",
+    "Material",
+    "Instrument",
+})
+
+# ---------------------------------------------------------------------------
 # EDAM kind prefixes (local name → tsv key)
 # ---------------------------------------------------------------------------
 
@@ -271,18 +291,23 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
             # (e.g. operation_3923 Genome-resequencing → topic_3168 Sequencing).
             # Our graph faithfully represents those, so we must NOT require both
             # endpoints to share the same kind.  The invariant only rejects IS_A
-            # edges whose endpoints are not EDAM classes at all (e.g. Method or
+            # edges whose endpoints are not ontology classes at all (e.g. Method or
             # Container nodes as src/dst) — those would be a genuine modelling error.
             #
+            # The allowed kinds include all EDAM kinds AND STATO/OBI kinds
+            # (StatisticalMethod, Assay, Protocol, StudyDesign, Instrument, Material,
+            # Assumption, Diagnostic).
+            #
             # NOTE: on the production build path this can never fail — the only
-            # IS_A producer (connectors/edam.py) emits an edge only when both
-            # endpoints are classified EDAM nodes. It is defense-in-depth against
-            # hand-edited graphs and future IS_A producers, and is exercised by
-            # tests (test_audit_isa_non_edam_endpoint_is_violation), not by real data.
-            "IS_A: EDAM class→EDAM class",
+            # IS_A producers (connectors/edam.py, connectors/ontology.py) emit edges
+            # only when both endpoints are classified ontology nodes. It is
+            # defense-in-depth against hand-edited graphs and future IS_A producers,
+            # and is exercised by tests (test_audit_isa_non_edam_endpoint_is_violation),
+            # not by real data.
+            "IS_A: ontology class→ontology class",
             "MATCH (a)-[r:Rel{kind:'IS_A'}]->(b) "
-            "WHERE NOT (a.kind IN ['Operation','Topic','Data','Format'] "
-            "AND b.kind IN ['Operation','Topic','Data','Format']) "
+            f"WHERE NOT (a.kind IN {sorted(_ONTOLOGY_TERM_KINDS)!r} "
+            f"AND b.kind IN {sorted(_ONTOLOGY_TERM_KINDS)!r}) "
             "RETURN count(*)",
         ),
     ]
@@ -347,6 +372,15 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
         "RETURN count(m)"
     )
 
+    # ------------------------------------------------------------------
+    # Ontology-node counts (informational; one entry per kind present).
+    # ------------------------------------------------------------------
+    ontology_nodes: dict[str, int] = {}
+    for kind_str in sorted(_ONTOLOGY_TERM_KINDS):
+        count = _q1(f"MATCH (n:Entity{{kind:'{kind_str}'}}) RETURN count(n)")
+        if count > 0:
+            ontology_nodes[kind_str] = count
+
     coverage: dict = {
         "methods_total": methods_total,
         "with_biotools_id": {"count": with_biotools_id, "pct": _pct(with_biotools_id)},
@@ -355,6 +389,7 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
         "with_edam_operation": {"count": with_edam_operation, "pct": _pct(with_edam_operation)},
         "with_topic": {"count": with_topic, "pct": _pct(with_topic)},
         "with_io_contract": {"count": with_io_contract, "pct": _pct(with_io_contract)},
+        "ontology_nodes": ontology_nodes,
     }
 
     # ------------------------------------------------------------------

@@ -408,3 +408,126 @@ def test_audit_to_text_format(tmp_path):
     # With no issues except missing provenance on the method (provenance IS set)
     # so we expect PASS or FAILED in the result line
     assert "ALL CHECKS PASSED" in text or "CHECK(S) FAILED" in text
+
+
+# ---------------------------------------------------------------------------
+# STATO/OBI ontology-term IS_A invariant tests
+# ---------------------------------------------------------------------------
+
+
+def test_audit_isa_accepts_ontology_term_kinds(tmp_path):
+    """IS_A edge where both endpoints are StatisticalMethod must NOT be a violation."""
+    nodes = [
+        NodeRecord("obo:OBI_0200000", "data transformation", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("obo:STATO_0000304", "Student's t-test", NodeKind.STATISTICAL_METHOD, {}, P),
+    ]
+    edges = [
+        EdgeRecord("obo:STATO_0000304", "obo:OBI_0200000", EdgeKind.IS_A, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    isa_inv = next(inv for inv in result.invariants if "IS_A" in inv.name)
+    assert isa_inv.ok is True, (
+        f"StatisticalMethod→StatisticalMethod IS_A must not be a violation; "
+        f"got {isa_inv.violations} violation(s)"
+    )
+    assert result.ok is True
+
+
+def test_audit_isa_accepts_assay_kind(tmp_path):
+    """IS_A edge where both endpoints are Assay must NOT be a violation."""
+    nodes = [
+        NodeRecord("obo:OBI_0000070", "assay", NodeKind.ASSAY, {}, P),
+        NodeRecord("obo:OBI_0001234", "DNA sequencing assay", NodeKind.ASSAY, {}, P),
+    ]
+    edges = [
+        EdgeRecord("obo:OBI_0001234", "obo:OBI_0000070", EdgeKind.IS_A, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    isa_inv = next(inv for inv in result.invariants if "IS_A" in inv.name)
+    assert isa_inv.ok is True, (
+        f"Assay→Assay IS_A must not be a violation; got {isa_inv.violations} violation(s)"
+    )
+
+
+def test_audit_isa_method_to_statistical_method_is_violation(tmp_path):
+    """IS_A edge from Method (non-ontology kind) to StatisticalMethod must be a violation."""
+    nodes = [
+        MethodRecord("m:deseq2", "DESeq2", NodeKind.METHOD, {}, P),
+        NodeRecord("obo:OBI_0200000", "data transformation", NodeKind.STATISTICAL_METHOD, {}, P),
+    ]
+    edges = [
+        # Method IS_A StatisticalMethod is a modelling error — Method is not an ontology class
+        EdgeRecord("m:deseq2", "obo:OBI_0200000", EdgeKind.IS_A, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    isa_inv = next(inv for inv in result.invariants if "IS_A" in inv.name)
+    assert not isa_inv.ok, (
+        "Method→StatisticalMethod IS_A should be a violation (Method is not an ontology kind)"
+    )
+    assert isa_inv.violations >= 1
+    assert result.ok is False
+
+
+# ---------------------------------------------------------------------------
+# ontology_nodes informational coverage
+# ---------------------------------------------------------------------------
+
+
+def test_audit_ontology_coverage_informational(tmp_path):
+    """Ontology nodes (StatisticalMethod, Assay) appear in coverage.ontology_nodes; no gate fail."""
+    nodes = [
+        NodeRecord("obo:OBI_0200000", "data transformation", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("obo:STATO_0000304", "t-test", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("obo:OBI_0000070", "assay", NodeKind.ASSAY, {}, P),
+        # Also include a regular method — must not affect ontology_nodes
+        MethodRecord("m:salmon", "salmon", NodeKind.METHOD, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, [])
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    # Result must still be ok (ontology_nodes is informational only)
+    assert result.ok is True
+
+    # ontology_nodes dict must be present in coverage
+    cov = result.coverage
+    assert "ontology_nodes" in cov, (
+        f"coverage must contain 'ontology_nodes'; got keys: {list(cov.keys())}"
+    )
+    ont = cov["ontology_nodes"]
+    assert isinstance(ont, dict), f"ontology_nodes must be a dict; got {type(ont)}"
+
+    # StatisticalMethod count must be 2
+    assert ont.get("StatisticalMethod", 0) == 2, (
+        f"Expected StatisticalMethod=2 in ontology_nodes; got {ont}"
+    )
+
+    # Assay count must be 1
+    assert ont.get("Assay", 0) == 1, (
+        f"Expected Assay=1 in ontology_nodes; got {ont}"
+    )

@@ -190,6 +190,8 @@ def write_manifest(
     nfcore: dict[str, Any] | None,
     biocontainers: dict[str, Any] | None,
     biotools: dict[str, Any] | None = None,
+    stato: dict[str, Any] | None = None,
+    obi: dict[str, Any] | None = None,
     created_at: str,
 ) -> Path:
     """Write a ``snapshot.json`` manifest to *dest_dir*.
@@ -205,7 +207,9 @@ def write_manifest(
             "edam":             <edam manifest dict>  | null,
             "nfcore_modules":   <nfcore manifest dict> | null,
             "biocontainers":    <biocontainers manifest dict> | null,
-            "biotools":         <biotools manifest dict> | null
+            "biotools":         <biotools manifest dict> | null,
+            "stato":            <stato manifest dict> | null,
+            "obi":              <obi manifest dict> | null
           }
         }
 
@@ -215,6 +219,8 @@ def write_manifest(
         nfcore:        Return value of ``fetch_nfcore``, or ``None``.
         biocontainers: Return value of ``fetch_biocontainers``, or ``None``.
         biotools:      Return value of ``fetch_biotools``, or ``None``.
+        stato:         Return value of ``fetch_stato``, or ``None``.
+        obi:           Return value of ``fetch_obi``, or ``None``.
         created_at:    ISO-8601 timestamp string (injected by caller; clock
                        is never read inside this function).
 
@@ -228,6 +234,8 @@ def write_manifest(
             "nfcore_modules": nfcore,
             "biocontainers": biocontainers,
             "biotools": biotools,
+            "stato": stato,
+            "obi": obi,
         },
     }
     out_path = dest_dir / "snapshot.json"
@@ -503,4 +511,101 @@ def fetch_biotools(
         "n_tools": n_written,
         "failed": failed,
         "n_failed": len(failed),
+    }
+
+
+# ---------------------------------------------------------------------------
+# OWL ontology fetchers (STATO + OBI)
+# ---------------------------------------------------------------------------
+
+_VERSION_IRI_RE = re.compile(
+    r'versionIRI\s+rdf:resource\s*=\s*"([^"]+)"',
+    re.DOTALL,
+)
+
+
+def _extract_version_iri(body: bytes) -> str:
+    """Extract the versionIRI value from OWL/RDF-XML bytes, or return ''."""
+    text = body.decode("utf-8", "replace")
+    m = _VERSION_IRI_RE.search(text)
+    return m.group(1) if m else ""
+
+
+def fetch_stato(
+    dest_dir: Path,
+    *,
+    url: str = "http://purl.obolibrary.org/obo/stato.owl",
+    fetched_at: str,
+    http_get: Callable[[str], tuple[bytes, dict[str, str]]] = _stdlib_http_get,
+) -> dict[str, Any]:
+    """Download the STATO OWL file and return a manifest entry.
+
+    Args:
+        dest_dir:   Destination directory; the file is written as
+                    ``<dest_dir>/stato.owl``.
+        url:        URL to download from (default: the official STATO OWL).
+        fetched_at: ISO-8601 UTC timestamp injected by the caller.
+        http_get:   Injectable HTTP getter for testing.  Signature:
+                    ``(url: str) -> (bytes, dict[str, str])``.
+
+    Returns:
+        Manifest entry dict::
+            {
+              "url":        str,
+              "sha256":     str,
+              "version":    str,  # versionIRI value or ""
+              "fetched_at": str
+            }
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    body, _headers = http_get(url)
+    dest_path = dest_dir / "stato.owl"
+    dest_path.write_bytes(body)
+    sha256 = hashlib.sha256(body).hexdigest()
+    version = _extract_version_iri(body)
+    return {
+        "url": url,
+        "sha256": sha256,
+        "version": version,
+        "fetched_at": fetched_at,
+    }
+
+
+def fetch_obi(
+    dest_dir: Path,
+    *,
+    url: str = "http://purl.obolibrary.org/obo/obi.owl",
+    fetched_at: str,
+    http_get: Callable[[str], tuple[bytes, dict[str, str]]] = _stdlib_http_get,
+) -> dict[str, Any]:
+    """Download the OBI OWL file and return a manifest entry.
+
+    Args:
+        dest_dir:   Destination directory; the file is written as
+                    ``<dest_dir>/obi.owl``.
+        url:        URL to download from (default: the official OBI OWL).
+        fetched_at: ISO-8601 UTC timestamp injected by the caller.
+        http_get:   Injectable HTTP getter for testing.  Signature:
+                    ``(url: str) -> (bytes, dict[str, str])``.
+
+    Returns:
+        Manifest entry dict::
+            {
+              "url":        str,
+              "sha256":     str,
+              "version":    str,  # versionIRI value or ""
+              "fetched_at": str
+            }
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    body, _headers = http_get(url)
+    dest_path = dest_dir / "obi.owl"
+    dest_path.write_bytes(body)
+    sha256 = hashlib.sha256(body).hexdigest()
+    version = _extract_version_iri(body)
+    return {
+        "url": url,
+        "sha256": sha256,
+        "version": version,
+        "fetched_at": fetched_at,
     }

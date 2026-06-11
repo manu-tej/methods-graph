@@ -499,3 +499,105 @@ def test_cli_cmd_audit_direct_call(tmp_path):
 
     invalid = _build_invalid_db(tmp_path)
     assert cmd_audit(db_path=invalid, snapshot_dir=None, as_json=False) == 1
+
+
+# ---------------------------------------------------------------------------
+# STATO + OBI build tests
+# ---------------------------------------------------------------------------
+
+_ONTO_FX = Path(__file__).parent / "fixtures" / "ontology"
+
+
+def test_build_ingests_stato_obi(tmp_path):
+    """cmd_build with stato+obi OWL fixtures loads StatisticalMethod and Assay nodes.
+
+    The fixture files produce:
+      stato_mini.owl → obo:OBI_0200000 (StatisticalMethod), obo:OBI_0000673 (StatisticalMethod),
+                       obo:STATO_0000304 (StatisticalMethod), plus IS_A edges
+      obi_mini.owl  → obo:OBI_0000070 (Assay), obo:OBI_0001234 (Assay), plus IS_A edge
+    """
+    db_path = tmp_path / "onto.kuzu"
+    cmd_build(
+        edam=None,
+        nfcore_modules=None,
+        biocontainers=None,
+        stato=_ONTO_FX / "stato_mini.owl",
+        obi=_ONTO_FX / "obi_mini.owl",
+        db_path=db_path,
+        staging_dir=tmp_path / "stg",
+        ingested_at="2026-06-11",
+    )
+
+    db = kuzu.Database(str(db_path))
+    conn = kuzu.Connection(db)
+    try:
+        stat_count = list(conn.execute(
+            "MATCH (n:Entity {kind: 'StatisticalMethod'}) RETURN count(n)"
+        ))[0][0]
+        assert stat_count >= 1, (
+            f"Expected >=1 StatisticalMethod node from stato_mini.owl; got {stat_count}"
+        )
+
+        assay_count = list(conn.execute(
+            "MATCH (n:Entity {kind: 'Assay'}) RETURN count(n)"
+        ))[0][0]
+        assert assay_count >= 1, (
+            f"Expected >=1 Assay node from obi_mini.owl; got {assay_count}"
+        )
+
+        # At least one IS_A edge must be present (from either ontology)
+        isa_count = list(conn.execute(
+            "MATCH ()-[r:Rel {kind: 'IS_A'}]->() RETURN count(r)"
+        ))[0][0]
+        assert isa_count >= 1, f"Expected >=1 IS_A edge; got {isa_count}"
+
+        # Specific known node from stato_mini.owl
+        ttest_rows = list(conn.execute(
+            "MATCH (n:Entity {id: 'obo:STATO_0000304'}) RETURN n.id, n.kind"
+        ))
+        assert len(ttest_rows) == 1, (
+            f"Expected obo:STATO_0000304 to be present; got {ttest_rows}"
+        )
+        assert ttest_rows[0][1] == "StatisticalMethod"
+
+        # Specific known node from obi_mini.owl
+        assay_rows = list(conn.execute(
+            "MATCH (n:Entity {id: 'obo:OBI_0000070'}) RETURN n.id, n.kind"
+        ))
+        assert len(assay_rows) == 1, (
+            f"Expected obo:OBI_0000070 (assay root) to be present; got {assay_rows}"
+        )
+        assert assay_rows[0][1] == "Assay"
+    finally:
+        conn.close()
+        db.close()
+
+
+def test_build_stato_bogus_path_raises(tmp_path):
+    """cmd_build with a non-existent --stato path raises FileNotFoundError."""
+    bogus = tmp_path / "no_such_stato.owl"
+    with pytest.raises(FileNotFoundError):
+        cmd_build(
+            edam=None,
+            nfcore_modules=None,
+            biocontainers=None,
+            stato=bogus,
+            db_path=tmp_path / "m.kuzu",
+            staging_dir=tmp_path / "stg",
+            ingested_at="2026-06-11",
+        )
+
+
+def test_build_obi_bogus_path_raises(tmp_path):
+    """cmd_build with a non-existent --obi path raises FileNotFoundError."""
+    bogus = tmp_path / "no_such_obi.owl"
+    with pytest.raises(FileNotFoundError):
+        cmd_build(
+            edam=None,
+            nfcore_modules=None,
+            biocontainers=None,
+            obi=bogus,
+            db_path=tmp_path / "m.kuzu",
+            staging_dir=tmp_path / "stg",
+            ingested_at="2026-06-11",
+        )

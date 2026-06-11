@@ -49,6 +49,8 @@ def cmd_build(
     nfcore_modules: Path | None,
     biocontainers: Path | None,
     biotools: Path | None = None,
+    stato: Path | None = None,
+    obi: Path | None = None,
     db_path: Path,
     staging_dir: Path,
     ingested_at: str,
@@ -57,12 +59,17 @@ def cmd_build(
 
     Optional ``--biotools <dir>`` enriches each Method whose biotoolsID matches a
     bio.tools JSON record with PERFORMS (operation) and HAS_TOPIC edges.
+
+    Optional ``--stato <path>`` and ``--obi <path>`` load STATO/OBI OWL ontology
+    files into StatisticalMethod, Assay, Protocol, StudyDesign, Instrument, and
+    Material nodes with IS_A edges.
     """
     # Grouped here for readability (build is the only subcommand that needs these).
     from methods_graph.connectors.edam import parse_edam
     from methods_graph.connectors.nfcore import parse_module
     from methods_graph.connectors.biocontainers import parse_biocontainer
     from methods_graph.connectors.biotools import load_biotools_edam
+    from methods_graph.connectors.ontology import parse_stato, parse_obi
     from methods_graph.resolve.resolver import resolve
     from methods_graph.graph.loader import build_graph
     from methods_graph.types import EdgeKind, EdgeRecord, MethodRecord, Provenance
@@ -79,6 +86,10 @@ def cmd_build(
         raise FileNotFoundError(f"--biocontainers path does not exist: {biocontainers}")
     if biotools is not None and not Path(biotools).exists():
         raise FileNotFoundError(f"--biotools path does not exist: {biotools}")
+    if stato is not None and not Path(stato).exists():
+        raise FileNotFoundError(f"--stato path does not exist: {stato}")
+    if obi is not None and not Path(obi).exists():
+        raise FileNotFoundError(f"--obi path does not exist: {obi}")
 
     # --- EDAM ---
     if edam is not None:
@@ -124,6 +135,18 @@ def cmd_build(
             nodes, edges = parse_biocontainer(data, ingested_at=ingested_at)
             all_nodes.extend(nodes)
             all_edges.extend(edges)
+
+    # --- STATO ---
+    if stato is not None:
+        stato_nodes, stato_edges = parse_stato(Path(stato), ingested_at=ingested_at)
+        all_nodes.extend(stato_nodes)
+        all_edges.extend(stato_edges)
+
+    # --- OBI ---
+    if obi is not None:
+        obi_nodes, obi_edges = parse_obi(Path(obi), ingested_at=ingested_at)
+        all_nodes.extend(obi_nodes)
+        all_edges.extend(obi_edges)
 
     # --- partition method vs other nodes ---
     method_nodes = [n for n in all_nodes if isinstance(n, MethodRecord)]
@@ -177,12 +200,23 @@ def cmd_build(
     summary = build_graph(resolved_nodes, resolved_edges, db_path, staging_dir=staging_dir)
 
     # --- summary ---
+    from methods_graph.types import NodeKind
+
     n_methods = sum(1 for n in resolved_nodes if isinstance(n, MethodRecord))
     bt_suffix = f", {bt_edges_added} bio.tools edges added" if biotools is not None else ""
+
+    _ONTOLOGY_KINDS = {
+        NodeKind.STATISTICAL_METHOD, NodeKind.ASSAY, NodeKind.PROTOCOL,
+        NodeKind.STUDY_DESIGN, NodeKind.INSTRUMENT, NodeKind.MATERIAL,
+        NodeKind.ASSUMPTION, NodeKind.DIAGNOSTIC,
+    }
+    n_onto = sum(1 for n in resolved_nodes if n.kind in _ONTOLOGY_KINDS)
+    onto_suffix = f", {n_onto} ontology nodes" if (stato is not None or obi is not None) else ""
+
     print(
         f"Built graph: {n_methods} methods, {summary['nodes']} nodes, "
         f"{summary['edges_loaded']} edges loaded "
-        f"({summary['edges_dropped']} dangling dropped){bt_suffix} -> {db_path}"
+        f"({summary['edges_dropped']} dangling dropped){bt_suffix}{onto_suffix} -> {db_path}"
     )
 
 
@@ -227,12 +261,16 @@ def cmd_fetch(
     do_nfcore: bool,
     do_biocontainers: bool,
     do_biotools: bool = True,
+    do_stato: bool = True,
+    do_obi: bool = True,
     fetched_at: str,
     # Injectable network seams (default to real stdlib helpers; override in tests).
     _edam_http_get: Callable[[str], tuple[bytes, dict[str, str]]] | None = None,
     _nfcore_runner: Callable[..., Any] | None = None,
     _bc_http_get_json: Callable[[str], Any] | None = None,
     _biotools_http_get_json: Callable[[str], Any] | None = None,
+    _stato_http_get: Callable[[str], tuple[bytes, dict[str, str]]] | None = None,
+    _obi_http_get: Callable[[str], tuple[bytes, dict[str, str]]] | None = None,
 ) -> None:
     """Download source snapshots and write a snapshot.json manifest.
 
@@ -243,13 +281,16 @@ def cmd_fetch(
       4. Fetch BioContainers records for those packages (if --no-biocontainers not set).
       5. Derive bio.tools IDs from the cloned modules tree.
       6. Fetch bio.tools records for those IDs (if --no-biotools not set).
-      7. Write snapshot.json manifest.
+      7. Fetch STATO OWL (if --no-stato not set).
+      8. Fetch OBI OWL (if --no-obi not set).
+      9. Write snapshot.json manifest.
 
-    The ``_edam_http_get``, ``_nfcore_runner``, ``_bc_http_get_json``, and
-    ``_biotools_http_get_json`` parameters are optional injectable seams for unit
-    testing.  When *None* (the default used by ``main()``), the real stdlib helpers
-    are used.  Do not pass these from the CLI; they exist solely to make the
-    function testable without a network.
+    The ``_edam_http_get``, ``_nfcore_runner``, ``_bc_http_get_json``,
+    ``_biotools_http_get_json``, ``_stato_http_get``, and ``_obi_http_get``
+    parameters are optional injectable seams for unit testing.  When *None*
+    (the default used by ``main()``), the real stdlib helpers are used.  Do
+    not pass these from the CLI; they exist solely to make the function
+    testable without a network.
     """
     from methods_graph.fetch import (
         bioconda_packages_from_nfcore,
@@ -258,6 +299,8 @@ def cmd_fetch(
         fetch_biotools,
         fetch_edam,
         fetch_nfcore,
+        fetch_stato,
+        fetch_obi,
         write_manifest,
         _stdlib_http_get,
         _stdlib_http_get_json,
@@ -268,6 +311,8 @@ def cmd_fetch(
     nfcore_runner = _nfcore_runner if _nfcore_runner is not None else subprocess.run
     bc_http_get_json = _bc_http_get_json if _bc_http_get_json is not None else _stdlib_http_get_json
     bt_http_get_json = _biotools_http_get_json if _biotools_http_get_json is not None else _stdlib_http_get_json
+    stato_http_get = _stato_http_get if _stato_http_get is not None else _stdlib_http_get
+    obi_http_get = _obi_http_get if _obi_http_get is not None else _stdlib_http_get
 
     dest.mkdir(parents=True, exist_ok=True)
 
@@ -275,6 +320,8 @@ def cmd_fetch(
     nfcore_manifest: dict | None = None
     biocontainers_manifest: dict | None = None
     biotools_manifest: dict | None = None
+    stato_manifest: dict | None = None
+    obi_manifest: dict | None = None
 
     # --- EDAM ---
     if do_edam:
@@ -366,6 +413,40 @@ def cmd_fetch(
         else:
             print("  bio.tools: no IDs — skipping.")
 
+    # --- STATO ---
+    if do_stato:
+        print("Fetching STATO OWL …")
+        try:
+            stato_manifest = fetch_stato(dest, fetched_at=fetched_at, http_get=stato_http_get)
+            ver = stato_manifest.get("version") or "?"
+            print(f"  STATO: sha256={stato_manifest['sha256'][:12]}… version={ver}")
+        except Exception as exc:
+            _log.error("STATO fetch raised unexpectedly: %s", exc)
+            stato_manifest = {
+                "url": "http://purl.obolibrary.org/obo/stato.owl",
+                "fetched_at": fetched_at,
+                "sha256": "",
+                "version": "",
+                "error": str(exc),
+            }
+
+    # --- OBI ---
+    if do_obi:
+        print("Fetching OBI OWL …")
+        try:
+            obi_manifest = fetch_obi(dest, fetched_at=fetched_at, http_get=obi_http_get)
+            ver = obi_manifest.get("version") or "?"
+            print(f"  OBI: sha256={obi_manifest['sha256'][:12]}… version={ver}")
+        except Exception as exc:
+            _log.error("OBI fetch raised unexpectedly: %s", exc)
+            obi_manifest = {
+                "url": "http://purl.obolibrary.org/obo/obi.owl",
+                "fetched_at": fetched_at,
+                "sha256": "",
+                "version": "",
+                "error": str(exc),
+            }
+
     # --- Manifest (always written, even on partial failures) ---
     manifest_path = write_manifest(
         dest,
@@ -373,6 +454,8 @@ def cmd_fetch(
         nfcore=nfcore_manifest,
         biocontainers=biocontainers_manifest,
         biotools=biotools_manifest,
+        stato=stato_manifest,
+        obi=obi_manifest,
         created_at=fetched_at,
     )
     print(f"Manifest written: {manifest_path}")
@@ -440,6 +523,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="path to directory of biocontainers JSON files (optional)")
     b.add_argument("--biotools", type=Path, default=None,
                    help="path to directory of bio.tools API JSON files for EDAM enrichment (optional)")
+    b.add_argument("--stato", type=Path, default=None,
+                   help="path to a STATO OWL file for StatisticalMethod nodes (optional)")
+    b.add_argument("--obi", type=Path, default=None,
+                   help="path to an OBI OWL file for Assay/Protocol/etc. nodes (optional)")
     b.add_argument("--db", type=Path, required=True,
                    help="path to output Kùzu database directory")
     b.add_argument("--staging", type=Path, default=None,
@@ -483,6 +570,14 @@ def main(argv: list[str] | None = None) -> int:
         "--no-biotools", action="store_false", dest="do_biotools",
         help="skip fetching bio.tools tool records",
     )
+    f.add_argument(
+        "--no-stato", action="store_false", dest="do_stato",
+        help="skip fetching the STATO OWL ontology",
+    )
+    f.add_argument(
+        "--no-obi", action="store_false", dest="do_obi",
+        help="skip fetching the OBI OWL ontology",
+    )
 
     kgx = sub.add_parser(
         "export-kgx",
@@ -512,6 +607,8 @@ def main(argv: list[str] | None = None) -> int:
             nfcore_modules=args.nfcore_modules,
             biocontainers=args.biocontainers,
             biotools=args.biotools,
+            stato=args.stato,
+            obi=args.obi,
             db_path=args.db,
             staging_dir=staging_dir,
             ingested_at=ingested_at,
@@ -524,6 +621,8 @@ def main(argv: list[str] | None = None) -> int:
             do_nfcore=args.do_nfcore,
             do_biocontainers=args.do_biocontainers,
             do_biotools=args.do_biotools,
+            do_stato=args.do_stato,
+            do_obi=args.do_obi,
             fetched_at=fetched_at,
         )
     elif args.cmd == "export-kgx":
