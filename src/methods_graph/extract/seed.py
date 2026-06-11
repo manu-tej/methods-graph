@@ -91,6 +91,8 @@ def method_neighborhood(conn: kuzu.Connection, method_id: str) -> dict[str, Any]
     - ``operations``: list of nodes connected via PERFORMS edges
     - ``topics``: list of nodes connected via HAS_TOPIC edges
     - ``containers``: list of nodes connected via PACKAGED_AS edges
+    - ``inputs``: list of Data/Format nodes connected via INPUT edges
+    - ``outputs``: list of Data/Format nodes connected via OUTPUT edges
     """
     method_res = list(conn.execute(
         "MATCH (m:Entity {id: $id}) "
@@ -114,6 +116,8 @@ def method_neighborhood(conn: kuzu.Connection, method_id: str) -> dict[str, Any]
         "operations": "PERFORMS",
         "topics": "HAS_TOPIC",
         "containers": "PACKAGED_AS",
+        "inputs": "INPUT",
+        "outputs": "OUTPUT",
     }
     out: dict[str, Any] = {"method": method}
     for key, edge_kind in buckets.items():

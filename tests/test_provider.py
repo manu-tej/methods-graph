@@ -241,3 +241,92 @@ def test_build_analysis_method_happy_path(db_path):
     method = build_analysis_method(salmon)
     assert method.id == "m:salmon"
     assert method.category.value == "rna_seq"
+
+
+# ---------------------------------------------------------------------------
+# I/O edges — populate inputs/outputs from EDAM Data/Format nodes (TDD)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def db_path_with_io(tmp_path):
+    """Graph where salmon has INPUT->FASTQ(Format) and OUTPUT->JSON(Format) edges."""
+    nodes = [
+        MethodRecord("m:salmon", "salmon", NodeKind.METHOD,
+                     {"version": "1.10.0", "description": "quant", "implementation_type": "nextflow"},
+                     P, bioconda_pkg="salmon", biotools_id="salmon"),
+        NodeRecord("fmt:format_1930", "FASTQ", NodeKind.FORMAT, {}, P),
+        NodeRecord("fmt:format_3464", "JSON", NodeKind.FORMAT, {}, P),
+        # A second method with NO I/O edges, to verify back-compat empty lists.
+        MethodRecord("m:fastp", "fastp", NodeKind.METHOD,
+                     {"version": "0.23.0", "description": "qc", "implementation_type": "tool"},
+                     P),
+    ]
+    edges = [
+        EdgeRecord("m:salmon", "fmt:format_1930", EdgeKind.INPUT, {}, P),
+        EdgeRecord("m:salmon", "fmt:format_3464", EdgeKind.OUTPUT, {}, P),
+    ]
+    path = tmp_path / "io.kuzu"
+    build_graph(nodes, edges, path, staging_dir=tmp_path / "stg")
+    return path
+
+
+def test_get_methods_populates_inputs_outputs(db_path_with_io):
+    with KuzuMethodsGraphProvider(db_path_with_io) as provider:
+        methods = provider.get_methods()
+
+    salmon = next(m for m in methods if m["name"] == "salmon")
+    fastp = next(m for m in methods if m["name"] == "fastp")
+
+    # salmon inputs
+    assert len(salmon["inputs"]) == 1
+    inp = salmon["inputs"][0]
+    assert inp["name"] == "FASTQ"
+    assert inp["data_type"] == "FASTQ"
+    assert inp["required"] is True
+    assert inp["multiple"] is False
+    assert "description" in inp
+
+    # salmon outputs
+    assert len(salmon["outputs"]) == 1
+    out = salmon["outputs"][0]
+    assert out["name"] == "JSON"
+    assert out["data_type"] == "JSON"
+    assert "description" in out
+
+    # fastp has no I/O edges → empty lists (back-compat)
+    assert fastp["inputs"] == []
+    assert fastp["outputs"] == []
+
+
+def test_get_methods_io_description_contains_kind(db_path_with_io):
+    """description must follow the 'EDAM <kind>: <name>' pattern."""
+    with KuzuMethodsGraphProvider(db_path_with_io) as provider:
+        salmon = next(m for m in provider.get_methods() if m["name"] == "salmon")
+    assert "Format" in salmon["inputs"][0]["description"]
+    assert "FASTQ" in salmon["inputs"][0]["description"]
+    assert "Format" in salmon["outputs"][0]["description"]
+    assert "JSON" in salmon["outputs"][0]["description"]
+
+
+def test_get_methods_io_deduped_and_sorted(tmp_path):
+    """Duplicate I/O edges (same name+data_type) should be collapsed; output sorted by name."""
+    nodes = [
+        MethodRecord("m:tool", "tool", NodeKind.METHOD,
+                     {"version": "1", "description": "x", "implementation_type": "tool"}, P),
+        NodeRecord("fmt:a", "AAA", NodeKind.FORMAT, {}, P),
+        NodeRecord("fmt:b", "BBB", NodeKind.FORMAT, {}, P),
+        NodeRecord("fmt:a2", "AAA", NodeKind.FORMAT, {}, P),  # duplicate name
+    ]
+    edges = [
+        EdgeRecord("m:tool", "fmt:b", EdgeKind.INPUT, {}, P),
+        EdgeRecord("m:tool", "fmt:a", EdgeKind.INPUT, {}, P),
+        EdgeRecord("m:tool", "fmt:a2", EdgeKind.INPUT, {}, P),  # same name as fmt:a → deduped
+    ]
+    path = tmp_path / "dup.kuzu"
+    build_graph(nodes, edges, path, staging_dir=tmp_path / "stg")
+    with KuzuMethodsGraphProvider(path) as provider:
+        tool = next(m for m in provider.get_methods() if m["name"] == "tool")
+    names = [i["name"] for i in tool["inputs"]]
+    # deduped: only 2 unique (name, data_type) pairs
+    assert names == sorted(set(names)), "inputs must be sorted and deduped"
+    assert len(names) == 2  # AAA and BBB

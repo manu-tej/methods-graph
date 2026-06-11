@@ -102,6 +102,41 @@ def _quality_metrics(props: dict[str, Any], *, has_container: bool) -> dict[str,
     }
 
 
+def _io_specs(nodes: list[dict[str, Any]], *, is_input: bool) -> list[dict[str, Any]]:
+    """Build MethodInputSpec or MethodOutputSpec dicts from EDAM Data/Format nodes.
+
+    Inputs/outputs are derived from EDAM Data/Format INPUT/OUTPUT edges and shaped
+    as quration MethodInput/OutputSpec dicts (plain dicts — no quration import needed).
+    Entries are deduped by (name, data_type) and sorted by name for determinism.
+    """
+    seen: set[tuple[str, str]] = set()
+    specs: list[dict[str, Any]] = []
+    for node in nodes:
+        name = node["name"]
+        data_type = node["name"]
+        key = (name, data_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        description = f"EDAM {node['kind']}: {name}"
+        if is_input:
+            specs.append({
+                "name": name,
+                "description": description,
+                "data_type": data_type,
+                "required": True,
+                "multiple": False,
+            })
+        else:
+            specs.append({
+                "name": name,
+                "description": description,
+                "data_type": data_type,
+            })
+    specs.sort(key=lambda s: s["name"])
+    return specs
+
+
 def _neighborhood_to_method_dict(nb: dict[str, Any]) -> dict[str, Any]:
     m = nb["method"]
     props = m.get("properties", {})
@@ -121,11 +156,8 @@ def _neighborhood_to_method_dict(nb: dict[str, Any]) -> dict[str, Any]:
         "version": props.get("version", ""),
         "repository_url": props.get("homepage") or None,
         "tags": tags,
-        # MVP: the graph has no INPUT/OUTPUT Data|Format edges wired into
-        # method_neighborhood yet, so these are empty — Phase 2 populates them
-        # from EDAM Data/Format nodes.
-        "inputs": [],
-        "outputs": [],
+        "inputs": _io_specs(nb.get("inputs", []), is_input=True),
+        "outputs": _io_specs(nb.get("outputs", []), is_input=False),
         "supported_modalities": _map_modalities(topic_labels),
         "quality_metrics": _quality_metrics(props, has_container=bool(containers)),
         "compute_requirements": compute,
@@ -238,11 +270,11 @@ class KuzuMethodsGraphProvider:
 def build_analysis_method(method_dict: dict[str, Any]):
     """Upgrade a method dict to a quration AnalysisMethod if quration is installed.
 
-    The dict produced by ``get_methods()`` is now complete: ``category``,
-    ``supported_modalities`` (mapped to ``DataModality`` values), ``inputs``/``outputs``,
-    and ``quality_metrics`` are all populated, so this validates against a real quration
-    install. ``inputs``/``outputs`` are empty until Phase 2 wires EDAM Data/Format edges,
-    and ``quality_metrics`` are structural heuristics until Phase 2 adds Papers enrichment.
+    The dict produced by ``get_methods()`` is complete: ``category``,
+    ``supported_modalities`` (mapped to ``DataModality`` values), ``inputs``/``outputs``
+    (populated from EDAM Data/Format INPUT/OUTPUT edges), and ``quality_metrics`` are all
+    present, so this validates against a real quration install. ``quality_metrics`` are
+    structural heuristics until Phase 2 adds Papers enrichment.
     """
     try:
         from quration.broker.models import AnalysisMethod   # type: ignore

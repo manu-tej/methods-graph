@@ -56,3 +56,46 @@ def test_seed_missing_id_is_graceful(conn):
 def test_method_neighborhood_missing_raises(conn):
     with pytest.raises(KeyError):
         method_neighborhood(conn, "m:nope")
+
+
+# ---------------------------------------------------------------------------
+# I/O edges — TDD for new "inputs" / "outputs" buckets
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def conn_with_io(tmp_path):
+    """Tiny graph: salmon -INPUT-> FASTQ (Format) and salmon -OUTPUT-> JSON (Format)."""
+    nodes = [
+        MethodRecord("m:salmon", "salmon", NodeKind.METHOD, {"version": "1.10.0"}, P,
+                     bioconda_pkg="salmon", biotools_id="salmon"),
+        NodeRecord("fmt:format_1930", "FASTQ", NodeKind.FORMAT, {}, P),
+        NodeRecord("fmt:format_3464", "JSON", NodeKind.FORMAT, {}, P),
+    ]
+    edges = [
+        EdgeRecord("m:salmon", "fmt:format_1930", EdgeKind.INPUT, {}, P),
+        EdgeRecord("m:salmon", "fmt:format_3464", EdgeKind.OUTPUT, {}, P),
+    ]
+    db_path = tmp_path / "io.kuzu"
+    build_graph(nodes, edges, db_path, staging_dir=tmp_path / "stg")
+    return kuzu.Connection(kuzu.Database(str(db_path)))
+
+
+def test_method_neighborhood_includes_io(conn_with_io):
+    nb = method_neighborhood(conn_with_io, "m:salmon")
+    input_ids = {n["id"] for n in nb["inputs"]}
+    output_ids = {n["id"] for n in nb["outputs"]}
+    assert "fmt:format_1930" in input_ids, f"FASTQ input not found; inputs={nb['inputs']}"
+    assert "fmt:format_3464" in output_ids, f"JSON output not found; outputs={nb['outputs']}"
+    # buckets for methods with no I/O should be empty in the base fixture
+    nb_no_io = method_neighborhood(conn_with_io, "m:salmon")
+    # sanity: inputs / outputs keys exist
+    assert "inputs" in nb_no_io
+    assert "outputs" in nb_no_io
+
+
+def test_method_neighborhood_io_node_shape(conn_with_io):
+    nb = method_neighborhood(conn_with_io, "m:salmon")
+    fastq = next(n for n in nb["inputs"] if n["id"] == "fmt:format_1930")
+    assert fastq["name"] == "FASTQ"
+    assert fastq["kind"] == "Format"
+    assert "properties" in fastq
