@@ -38,6 +38,7 @@ NodeKind for manual or future-ingestion use.
 """
 from __future__ import annotations
 
+import collections
 from pathlib import Path
 
 from methods_graph.types import EdgeKind, EdgeRecord, NodeKind, NodeRecord, Provenance
@@ -135,22 +136,21 @@ def parse_ontology_owl(
     # ------------------------------------------------------------------
     classified: dict[str, NodeKind] = {}  # iri → kind
 
+    # Build a reverse index (parent → children) once — shared across all roots.
+    parent_to_children: dict[str, list[str]] = {}
+    for child_iri, parents in child_to_parents.items():
+        for p in parents:
+            parent_to_children.setdefault(p, []).append(child_iri)
+
     for root_local_id in sorted(roots.keys()):
         kind = roots[root_local_id]
         root_iri = _OBO_BASE + root_local_id
 
-        # Build a reverse index (parent → children) restricted to known triples
-        # so BFS is efficient.
-        parent_to_children: dict[str, list[str]] = {}
-        for child_iri, parents in child_to_parents.items():
-            for p in parents:
-                parent_to_children.setdefault(p, []).append(child_iri)
-
         # BFS from root.
-        queue: list[str] = [root_iri]
+        queue: collections.deque[str] = collections.deque([root_iri])
         seen: set[str] = set()
         while queue:
-            current = queue.pop(0)
+            current = queue.popleft()
             if current in seen:
                 continue
             seen.add(current)
