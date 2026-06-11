@@ -243,53 +243,67 @@ classes:
   # -------------------------------------------------------------------------
 
   StatisticalMethod:
-    is_a: Method
-    abstract: true
+    is_a: GraphNode
     description: >-
-      [EXTENSION POINT — STATO/OBI layer, not yet populated]
-      A method that is primarily statistical in nature (STATO alignment).
+      An ontology-term node for a statistical method ingested from STATO
+      (root OBI_0200000 "data transformation", ~193 descendants including
+      t-test, ANOVA, regression, differential-expression methods).
+      Auto-populated by parse_stato() from stato.owl.
 
   Assumption:
-    abstract: true
+    is_a: GraphNode
     description: >-
-      [EXTENSION POINT — STATO/OBI layer, not yet populated]
-      A stated assumption underlying a statistical or analytical decision.
+      An ontology-term node for a stated assumption underlying a statistical
+      or analytical decision (STATO source).
+      NOTE: Assumption is declared as a concrete class but is NOT auto-populated
+      by ingestion — STATO scatters assumption terms as leaf concepts with no
+      single clean ontology root, so no ingestion root mapping exists for this
+      class.
 
   Diagnostic:
-    abstract: true
+    is_a: GraphNode
     description: >-
-      [EXTENSION POINT — STATO/OBI layer, not yet populated]
-      A diagnostic check or quality-control step in a workflow.
+      An ontology-term node for a diagnostic check or quality-control step
+      in a workflow (STATO source).
+      NOTE: Diagnostic is declared as a concrete class but is NOT auto-populated
+      by ingestion — STATO scatters diagnostic terms as leaf concepts with no
+      single clean ontology root, so no ingestion root mapping exists for this
+      class.
 
   Assay:
-    abstract: true
+    is_a: GraphNode
     description: >-
-      [EXTENSION POINT — OBI layer, not yet populated]
-      A planned process that has specified inputs and outputs (OBI:0000070).
+      An ontology-term node for a planned process with specified inputs and
+      outputs, ingested from OBI (root OBI_0000070 "assay").
+      Auto-populated by parse_obi() from obi.owl.
 
   Protocol:
-    abstract: true
+    is_a: GraphNode
     description: >-
-      [EXTENSION POINT — OBI layer, not yet populated]
-      A protocol that specifies how an assay or process is carried out.
+      An ontology-term node for a protocol specifying how an assay or process
+      is carried out, ingested from OBI (root OBI_0000272 "protocol").
+      Auto-populated by parse_obi() from obi.owl.
 
   StudyDesign:
-    abstract: true
+    is_a: GraphNode
     description: >-
-      [EXTENSION POINT — OBI layer, not yet populated]
-      The design of an experimental study (OBI:0500000).
+      An ontology-term node for the design of an experimental study, ingested
+      from OBI (root OBI_0500000 "study design").
+      Auto-populated by parse_obi() from obi.owl.
 
   Material:
-    abstract: true
+    is_a: GraphNode
     description: >-
-      [EXTENSION POINT — OBI layer, not yet populated]
-      A biological or chemical material used in or produced by an assay.
+      An ontology-term node for a biological or chemical material used in or
+      produced by an assay, ingested from OBI (root OBI_0100051 "specimen").
+      Auto-populated by parse_obi() from obi.owl.
 
   Instrument:
-    abstract: true
+    is_a: GraphNode
     description: >-
-      [EXTENSION POINT — OBI layer, not yet populated]
-      A device or instrument used to carry out an assay (OBI:0000968).
+      An ontology-term node for a device or instrument used to carry out an
+      assay, ingested from OBI (root COB_0001300 "device").
+      Auto-populated by parse_obi() from obi.owl.
 
 # ---------------------------------------------------------------------------
 # Slots  (shared / graph-layer only — workflow classes use local attributes)

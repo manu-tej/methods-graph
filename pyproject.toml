@@ -17,7 +17,9 @@ quration = ["quration"]
 # `linkml` is only needed to validate objects against the LinkML schema in tests;
 # the schema file itself and KGX export have no LinkML runtime dependency.
 schema = ["linkml>=1.7"]
-dev = ["pytest>=8.0", "linkml>=1.7"]
+# `rdflib` is only needed for OWL ontology ingestion (parse_stato / parse_obi).
+ontology = ["rdflib>=7"]
+dev = ["pytest>=8.0", "linkml>=1.7", "rdflib>=7"]
 
 [project.scripts]
 methods-graph = "methods_graph.cli:main"

@@ -18,6 +18,15 @@ class NodeKind(str, Enum):
     DATA = "Data"
     FORMAT = "Format"
     PAPER = "Paper"
+    # STATO/OBI ontology-term kinds — values match LinkML class names exactly.
+    STATISTICAL_METHOD = "StatisticalMethod"
+    ASSUMPTION = "Assumption"
+    DIAGNOSTIC = "Diagnostic"
+    ASSAY = "Assay"
+    PROTOCOL = "Protocol"
+    STUDY_DESIGN = "StudyDesign"
+    MATERIAL = "Material"
+    INSTRUMENT = "Instrument"
 
 
 class EdgeKind(str, Enum):
