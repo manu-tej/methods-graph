@@ -59,6 +59,29 @@ def validate_workflow(
 
     All issues are collected (no early exit). Returns a ValidationResult
     whose ``ok`` flag is True only when no issues were found.
+
+    Issue codes
+    -----------
+    method_not_found         — method node doesn't exist in the graph
+    method_not_allowed       — method exists but is outside the allowed set
+    container_not_packaged   — no PACKAGED_AS edge from method to container
+    evidence_missing         — evidence node absent or no semantic edge to it
+    input_artifact_unknown   — step.inputs references undeclared artifact
+    output_artifact_unknown  — step.outputs references undeclared artifact
+    output_not_produced_here — artifact.produced_by conflicts with this step
+    decision_input_unknown   — decision.inputs references undeclared artifact
+    decision_leads_to_unknown — decision.leads_to references unknown step
+    input_contract_violation — artifact edam_format not in method's INPUT contract
+    output_contract_violation — artifact edam_format not in method's OUTPUT contract
+
+    Contract-check rule (opt-in)
+    ----------------------------
+    A contract issue is raised only when BOTH conditions hold:
+      1. The method has a non-empty INPUT (or OUTPUT) contract in the graph
+         (i.e. at least one edge of that kind exists).
+      2. The artifact declares a non-empty edam_format.
+    If either condition is absent, no issue is raised — absence of a declared
+    contract is not treated as a violation.
     """
     issues: list[ValidationIssue] = []
 
@@ -178,6 +201,62 @@ def validate_workflow(
                             f"but is listed in outputs of step '{sid}'."
                         ),
                     ))
+
+        # 6. Contract checks: input_contract_violation / output_contract_violation
+        #
+        # These checks are opt-in — both conditions must hold before an issue is raised:
+        #   1. The method declares a non-empty contract for that direction
+        #      (has at least one INPUT or OUTPUT edge in the graph).
+        #   2. The artifact declares a non-empty edam_format.
+        # If EITHER condition is absent (no contract OR no edam_format), no issue.
+        # This prevents false positives for methods whose I/O contracts are not yet
+        # described in the graph and for artifacts that omit EDAM annotation.
+        input_contract: set[str] = {
+            row[0]
+            for row in conn.execute(
+                "MATCH (m:Entity {id: $mid})-[:Rel {kind: 'INPUT'}]->(d:Entity)"
+                " RETURN d.id",
+                parameters={"mid": mid},
+            )
+        }
+        output_contract: set[str] = {
+            row[0]
+            for row in conn.execute(
+                "MATCH (m:Entity {id: $mid})-[:Rel {kind: 'OUTPUT'}]->(d:Entity)"
+                " RETURN d.id",
+                parameters={"mid": mid},
+            )
+        }
+
+        if input_contract:
+            for art_id in step.inputs:
+                art = workflow.artifact(art_id)
+                if art is not None and art.edam_format:
+                    if art.edam_format not in input_contract:
+                        issues.append(ValidationIssue(
+                            step_id=sid,
+                            code="input_contract_violation",
+                            detail=(
+                                f"Artifact '{art_id}' declares edam_format "
+                                f"'{art.edam_format}' but method '{mid}' does not "
+                                f"list it as an INPUT (contract: {sorted(input_contract)})."
+                            ),
+                        ))
+
+        if output_contract:
+            for art_id in step.outputs:
+                art = workflow.artifact(art_id)
+                if art is not None and art.edam_format:
+                    if art.edam_format not in output_contract:
+                        issues.append(ValidationIssue(
+                            step_id=sid,
+                            code="output_contract_violation",
+                            detail=(
+                                f"Artifact '{art_id}' declares edam_format "
+                                f"'{art.edam_format}' but method '{mid}' does not "
+                                f"list it as an OUTPUT (contract: {sorted(output_contract)})."
+                            ),
+                        ))
 
     # Workflow-level decision checks (step_id = "")
     for decision in workflow.decisions:

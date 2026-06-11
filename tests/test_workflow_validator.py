@@ -4,12 +4,19 @@ Fixture graph:
   - m:salmon    (Method, bioconda_pkg="salmon")
   - m:bwa       (Method, bioconda_pkg="bwa")  — exists, NO edges
   - m:deseq2    (Method)                       — exists, PERFORMS op:operation_3800
+  - m:nocontract (Method)                      — exists, NO INPUT/OUTPUT edges
   - op:operation_3800  (Operation, "RNA-Seq quantification")
   - ctr:salmon  (Container)
+  - fmt:format_1930  (Data, FASTQ)
+  - fmt:format_3464  (Data, JSON)
+  - fmt:format_2572  (Data, BAM)
   Edges:
     m:salmon  -PERFORMS->    op:operation_3800
     m:salmon  -PACKAGED_AS-> ctr:salmon
+    m:salmon  -INPUT->       fmt:format_1930  (FASTQ input contract)
+    m:salmon  -OUTPUT->      fmt:format_3464  (JSON output contract)
     m:deseq2  -PERFORMS->    op:operation_3800
+    m:nocontract has no INPUT/OUTPUT edges
 """
 import kuzu
 import pytest
@@ -44,12 +51,18 @@ def conn(tmp_path):
         MethodRecord("m:salmon", "salmon", NodeKind.METHOD, {}, P, bioconda_pkg="salmon"),
         MethodRecord("m:bwa", "bwa", NodeKind.METHOD, {}, P, bioconda_pkg="bwa"),
         MethodRecord("m:deseq2", "DESeq2", NodeKind.METHOD, {}, P),
+        MethodRecord("m:nocontract", "no-contract-method", NodeKind.METHOD, {}, P),
         NodeRecord("op:operation_3800", "RNA-Seq quantification", NodeKind.OPERATION, {}, P),
         NodeRecord("ctr:salmon", "quay.io/biocontainers/salmon:1.10.0", NodeKind.CONTAINER, {}, P),
+        NodeRecord("fmt:format_1930", "FASTQ", NodeKind.DATA, {}, P),
+        NodeRecord("fmt:format_3464", "JSON", NodeKind.DATA, {}, P),
+        NodeRecord("fmt:format_2572", "BAM", NodeKind.DATA, {}, P),
     ]
     edges = [
         EdgeRecord("m:salmon", "op:operation_3800", EdgeKind.PERFORMS, {}, P),
         EdgeRecord("m:salmon", "ctr:salmon", EdgeKind.PACKAGED_AS, {}, P),
+        EdgeRecord("m:salmon", "fmt:format_1930", EdgeKind.INPUT, {}, P),
+        EdgeRecord("m:salmon", "fmt:format_3464", EdgeKind.OUTPUT, {}, P),
         EdgeRecord("m:deseq2", "op:operation_3800", EdgeKind.PERFORMS, {}, P),
     ]
     db_path = tmp_path / "m.kuzu"
@@ -335,3 +348,156 @@ def test_multiple_issues_collected(conn):
     codes = {i.code for i in result.issues}
     assert "method_not_found" in codes
     assert "method_not_allowed" in codes
+
+
+# ---------------------------------------------------------------------------
+# Test 9: method-contract validation (input_contract_violation /
+#          output_contract_violation)
+#
+# Issue codes added here:
+#   "output_contract_violation" — artifact's edam_format is not in the
+#       method's OUTPUT contract (set of OUTPUT-edge targets in the graph).
+#   "input_contract_violation"  — artifact's edam_format is not in the
+#       method's INPUT contract.
+#
+# Contract rule: checks are opt-in.  Both conditions must hold before an
+# issue is raised:
+#   1. The method declares a non-empty contract for that direction
+#      (i.e. has at least one INPUT or OUTPUT edge in the graph).
+#   2. The artifact declares a non-empty edam_format.
+# If EITHER condition is absent (no contract OR no edam_format), no issue.
+# ---------------------------------------------------------------------------
+
+
+def test_artifact_matching_output_contract_passes(conn):
+    """Artifact edam_format matches method's OUTPUT contract → ok, no issue."""
+    art_out = Artifact(
+        id="art:json",
+        name="quant.json",
+        kind="file",
+        produced_by="step1",
+        edam_format="fmt:format_3464",  # exactly what m:salmon OUTPUT declares
+    )
+    step = Step(
+        id="step1",
+        method_id="m:salmon",
+        outputs=["art:json"],
+        evidence=["op:operation_3800"],
+    )
+    wf = Workflow(id="wf:c1", steps=[step], artifacts=[art_out])
+    result = validate_workflow(conn, wf, allowed_method_ids={"m:salmon"})
+    assert result.ok is True
+    contract_codes = {
+        i.code for i in result.issues
+        if i.code in ("output_contract_violation", "input_contract_violation")
+    }
+    assert contract_codes == set()
+
+
+def test_artifact_violating_output_contract_fails(conn):
+    """Artifact edam_format not in OUTPUT contract → output_contract_violation."""
+    art_out = Artifact(
+        id="art:bam",
+        name="out.bam",
+        kind="file",
+        produced_by="step1",
+        edam_format="fmt:format_9999",  # m:salmon does NOT output this
+    )
+    step = Step(
+        id="step1",
+        method_id="m:salmon",
+        outputs=["art:bam"],
+        evidence=["op:operation_3800"],
+    )
+    wf = Workflow(id="wf:c2", steps=[step], artifacts=[art_out])
+    result = validate_workflow(conn, wf, allowed_method_ids={"m:salmon"})
+    assert result.ok is False
+    codes = {i.code for i in result.issues}
+    assert "output_contract_violation" in codes
+
+
+def test_artifact_without_edam_format_skips_contract(conn):
+    """Artifact with edam_format=None is always allowed — no contract check."""
+    art_out = Artifact(
+        id="art:misc",
+        name="misc",
+        kind="file",
+        produced_by="step1",
+        edam_format=None,
+    )
+    step = Step(
+        id="step1",
+        method_id="m:salmon",
+        outputs=["art:misc"],
+        evidence=["op:operation_3800"],
+    )
+    wf = Workflow(id="wf:c3", steps=[step], artifacts=[art_out])
+    result = validate_workflow(conn, wf, allowed_method_ids={"m:salmon"})
+    contract_codes = {
+        i.code for i in result.issues
+        if i.code in ("output_contract_violation", "input_contract_violation")
+    }
+    assert contract_codes == set()
+
+
+def test_input_contract_violation(conn):
+    """Input artifact's edam_format not in INPUT contract → input_contract_violation.
+
+    m:salmon INPUT contract = {fmt:format_1930} (FASTQ).
+    Providing fmt:format_2572 (BAM) as an input must raise input_contract_violation.
+    """
+    art_in = Artifact(
+        id="art:bam",
+        name="input.bam",
+        kind="file",
+        edam_format="fmt:format_2572",  # BAM — not in m:salmon INPUT contract
+    )
+    art_out = Artifact(
+        id="art:out",
+        name="out",
+        kind="file",
+        produced_by="step1",
+        edam_format="fmt:format_3464",  # valid output
+    )
+    step = Step(
+        id="step1",
+        method_id="m:salmon",
+        inputs=["art:bam"],
+        outputs=["art:out"],
+        evidence=["op:operation_3800"],
+    )
+    wf = Workflow(id="wf:c4", steps=[step], artifacts=[art_in, art_out])
+    result = validate_workflow(conn, wf, allowed_method_ids={"m:salmon"})
+    assert result.ok is False
+    codes = {i.code for i in result.issues}
+    assert "input_contract_violation" in codes
+
+
+def test_method_without_contract_does_not_flag(conn):
+    """m:nocontract has no INPUT/OUTPUT edges → absence of contract means no violation.
+
+    Even when the artifact declares an edam_format, no contract issue is raised
+    because we cannot assert a contract the graph doesn't describe.
+    """
+    art_out = Artifact(
+        id="art:whatever",
+        name="whatever",
+        kind="file",
+        produced_by="step1",
+        edam_format="fmt:format_9999",  # some edam_format; no contract to violate
+    )
+    step = Step(
+        id="step1",
+        method_id="m:nocontract",
+        outputs=["art:whatever"],
+        # no evidence needed — we're only testing contract check absence
+    )
+    wf = Workflow(id="wf:c5", steps=[step], artifacts=[art_out])
+    result = validate_workflow(conn, wf, allowed_method_ids={"m:nocontract"})
+    contract_codes = {
+        i.code for i in result.issues
+        if i.code in ("output_contract_violation", "input_contract_violation")
+    }
+    assert contract_codes == set(), (
+        f"No contract declared → no violation expected; got: {result.issues}"
+    )
