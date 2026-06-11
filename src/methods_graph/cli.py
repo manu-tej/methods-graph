@@ -1,14 +1,16 @@
 """Command-line entry points for the methods graph pipeline.
 
 Implemented subcommands:
-  query    -- seed a subgraph by keyword and print RAG text
-  methods  -- dump all methods as AnalysisMethod-shaped JSON
-  build    -- build the Kùzu DB from local source snapshots (connectors → resolver → loader)
-              optionally enriched with bio.tools EDAM operations/topics via --biotools <dir>
-  fetch    -- download real source snapshots (EDAM, nf-core/modules, BioContainers)
-              and record a versioned snapshot.json manifest for seamless upgrades
-  audit    -- run correctness checks (schema invariants, provenance, dup ids, coverage)
-              against a built Kùzu DB; exits 0 if all checks pass, 1 otherwise
+  query      -- seed a subgraph by keyword and print RAG text
+  methods    -- dump all methods as AnalysisMethod-shaped JSON
+  build      -- build the Kùzu DB from local source snapshots (connectors → resolver → loader)
+                optionally enriched with bio.tools EDAM operations/topics via --biotools <dir>
+  fetch      -- download real source snapshots (EDAM, nf-core/modules, BioContainers)
+                and record a versioned snapshot.json manifest for seamless upgrades
+  audit      -- run correctness checks (schema invariants, provenance, dup ids, coverage)
+                against a built Kùzu DB; exits 0 if all checks pass, 1 otherwise
+  export-kgx -- export the graph to KGX TSV format (nodes.tsv + edges.tsv) for
+                interoperability with other Knowledge Graph tools
 
 Deferred subcommands:
   resolve  -- enrich method nodes with pipeline-DAG ordering and external-registry
@@ -376,6 +378,36 @@ def cmd_fetch(
     print(f"Manifest written: {manifest_path}")
 
 
+def cmd_export_kgx(*, db_path: Path, out_dir: Path) -> None:
+    """Export the Kùzu graph to KGX TSV format (nodes.tsv + edges.tsv)."""
+    import kuzu
+
+    from methods_graph.kgx import export_kgx
+
+    db = None
+    conn = None
+    try:
+        db = kuzu.Database(str(db_path))
+        conn = kuzu.Connection(db)
+        node_count, edge_count = export_kgx(conn, out_dir)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    print(
+        f"Exported KGX: {node_count} nodes, {edge_count} edges"
+        f" -> {out_dir}/{{nodes,edges}}.tsv"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="methods-graph",
@@ -452,6 +484,15 @@ def main(argv: list[str] | None = None) -> int:
         help="skip fetching bio.tools tool records",
     )
 
+    kgx = sub.add_parser(
+        "export-kgx",
+        help="export the graph to KGX TSV format (nodes.tsv + edges.tsv)",
+    )
+    kgx.add_argument("--db", type=Path, required=True,
+                     help="path to the built Kùzu database directory")
+    kgx.add_argument("--out", type=Path, required=True, dest="out_dir",
+                     help="output directory for nodes.tsv and edges.tsv")
+
     args = parser.parse_args(argv)
     if args.cmd == "audit":
         return cmd_audit(
@@ -485,6 +526,8 @@ def main(argv: list[str] | None = None) -> int:
             do_biotools=args.do_biotools,
             fetched_at=fetched_at,
         )
+    elif args.cmd == "export-kgx":
+        cmd_export_kgx(db_path=args.db, out_dir=args.out_dir)
     return 0
 
 
