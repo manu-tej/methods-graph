@@ -283,3 +283,43 @@ def test_extension_point_classes_present(schema_view: SchemaView):
     assert missing_workflow == set(), (
         f"Missing workflow IR classes: {missing_workflow}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Grounded cross-link slots: uses_statistical_method / requires_assumption
+# ---------------------------------------------------------------------------
+
+
+def test_crosslink_slots_present(schema_view: SchemaView):
+    """Both grounded cross-link relationship slots must be defined in the schema."""
+    slot_names = set(schema_view.all_slots().keys())
+    missing = {"uses_statistical_method", "requires_assumption"} - slot_names
+    assert missing == set(), f"Missing cross-link slots: {missing}"
+
+
+def test_method_uses_statistical_method_validates():
+    """A Method may declare uses_statistical_method referencing StatisticalMethod ids."""
+    method = {
+        "id": "m:deseq2",
+        "name": "deseq2",
+        "source": "nfcore",
+        "source_url": "https://nf-co.re/modules/deseq2",
+        "ingested_at": "2026-06-10",
+        "uses_statistical_method": ["obo:STATO_0000559", "obo:OBI_0200036"],
+    }
+    report = validate(method, _sp(), target_class="Method")
+    assert _errors(report) == [], _errors(report)
+
+
+def test_statistical_method_requires_assumption_validates():
+    """A StatisticalMethod may declare requires_assumption referencing Assumption ids."""
+    sm = {
+        "id": "obo:STATO_0000559",
+        "name": "Wald test",
+        "source": "stato",
+        "source_url": "http://purl.obolibrary.org/obo/STATO_0000559",
+        "ingested_at": "2026-06-10",
+        "requires_assumption": ["assum:asymptotic_normality", "assum:independence"],
+    }
+    report = validate(sm, _sp(), target_class="StatisticalMethod")
+    assert _errors(report) == [], _errors(report)

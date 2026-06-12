@@ -70,6 +70,7 @@ classes:
       - inputs
       - outputs
       - cites
+      - uses_statistical_method
 
   Module:
     is_a: GraphNode
@@ -249,6 +250,8 @@ classes:
       (root OBI_0200000 "data transformation", ~193 descendants including
       t-test, ANOVA, regression, differential-expression methods).
       Auto-populated by parse_stato() from stato.owl.
+    slots:
+      - requires_assumption
 
   Assumption:
     is_a: GraphNode
@@ -396,6 +399,27 @@ slots:
     multivalued: true
     inlined: false
     description: Papers cited by / describing this method.
+
+  # --- Grounded cross-link slots (curated, literature-grounded) ---
+
+  uses_statistical_method:
+    range: StatisticalMethod
+    multivalued: true
+    inlined: false
+    description: >-
+      Statistical method(s) this method uses (USES_STATISTICAL_METHOD edges).
+      Curated and literature-grounded; each edge carries a doi:/pmid: evidence
+      token in the graph.
+
+  requires_assumption:
+    range: Assumption
+    multivalued: true
+    inlined: false
+    description: >-
+      Assumption(s) a statistical method classically requires
+      (REQUIRES_ASSUMPTION edges).  Attached to StatisticalMethod; a Method
+      inherits these transitively via uses_statistical_method.  Each edge carries
+      a doi:/pmid:/url:/isbn:/stato: evidence token in the graph.
 
   # --- Graph relationship slots (Module / Pipeline / Container) ---
 
