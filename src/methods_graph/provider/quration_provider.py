@@ -168,7 +168,7 @@ def _neighborhood_to_method_dict(nb: dict[str, Any]) -> dict[str, Any]:
 
 class KuzuMethodsGraphProvider:
     def __init__(self, db_path: Path):
-        self._db = kuzu.Database(str(db_path))
+        self._db = kuzu.Database(str(db_path), read_only=True)
         self._conn = kuzu.Connection(self._db)
 
     # --- context manager support ---
