@@ -1,10 +1,9 @@
 # Curated, literature-grounded Method -> StatisticalMethod cross-links.
 #
 # Each link asserts that a tool USES a specific statistical method, and MUST cite
-# the tool's primary publication (DOI/PMID) where that method is documented, plus
-# a verbatim supporting quote.  This is not derivable from EDAM/nf-core/bio.tools/
-# STATO — it lives in the literature — so it is curated, but every entry is a
-# *claim with a citation*, not an assertion.
+# the tool's primary publication (DOI/PMID) where that method is documented.  This
+# is not derivable from EDAM/nf-core/bio.tools/STATO — it lives in the literature —
+# so it is curated, but every entry is a *claim with a citation*, not an assertion.
 #
 # Invariants enforced downstream (see crosslinks/__init__.py and audit.py):
 #   * an ungrounded link (no DOI and no PMID) is rejected by the loader;
@@ -32,11 +31,6 @@ links:
       url: https://pmc.ncbi.nlm.nih.gov/articles/PMC4302049/
     confidence: high
     note: DESeq2's default significance test for GLM log2 fold-change coefficients.
-    quote: |-
-      "For significance testing, DESeq2 uses a Wald test: the shrunken estimate
-      of LFC is divided by its standard error, resulting in a z-statistic, which
-      is compared to a standard normal distribution." (Hypothesis tests for
-      differential expression)
   - method: m:deseq2
     statistical_method: obo:OBI_0200036
     label: Benjamini and Hochberg false discovery rate correction method
@@ -46,11 +40,6 @@ links:
       url: https://doi.org/10.1186/s13059-014-0550-8
     confidence: high
     note: DESeq2 adjusts p-values for multiple testing using Benjamini-Hochberg by default.
-    quote: |-
-      "The Wald test P values from the subset of genes that pass an independent
-      filtering step ... are adjusted for multiple testing using the procedure of
-      Benjamini and Hochberg." (Love, Huber & Anders 2014, Methods)
-
   # ---- edgeR (Lun, Chen & Smyth 2016 — quasi-likelihood pipeline) -----------
   - method: m:edger
     statistical_method: obo:STATO_0000086
@@ -61,11 +50,6 @@ links:
       url: https://doi.org/10.1007/978-1-4939-3578-9_19
     confidence: high
     note: edgeR's quasi-likelihood pipeline (glmQLFit/glmQLFTest) tests DE with a QL F-test.
-    quote: |-
-      "glmQLFTest is similar to glmLRT except that it replaces likelihood ratio
-      tests with empirical Bayes quasi-likelihood F-tests." (edgeR documentation;
-      Lun, Chen & Smyth 2016 describe the quasi-likelihood features of edgeR.)
-
   # ---- limma (Smyth 2004, SAGMB) -------------------------------------------
   - method: m:limma
     statistical_method: obo:STATO_0000108
@@ -76,11 +60,6 @@ links:
       url: https://doi.org/10.2202/1544-6115.1027
     confidence: high
     note: limma fits a gene-wise linear model (lmFit) — i.e. linear regression.
-    quote: |-
-      "The core of this package is the fitting of gene-wise linear models to
-      microarray data ... The main function for model fitting is lmFit." (limma
-      docs; Smyth 2004 frames this as general linear models.)
-
   # ---- GSEA (Subramanian et al. 2005, PNAS) --------------------------------
   - method: m:gsea
     statistical_method: obo:STATO_0000083
@@ -91,11 +70,6 @@ links:
       url: https://pmc.ncbi.nlm.nih.gov/articles/PMC1239896/
     confidence: high
     note: GSEA's enrichment score is a weighted Kolmogorov-Smirnov-like running-sum statistic.
-    quote: |-
-      "The enrichment score is the maximum deviation from zero encountered in the
-      random walk; it corresponds to a weighted Kolmogorov-Smirnov-like statistic."
-      (Subramanian et al. 2005, Methods, Calculation of an Enrichment Score)
-
   # ---- Scanpy (Wolf, Angerer & Theis 2018, Genome Biology) -----------------
   - method: m:scanpy
     statistical_method: obo:OBI_0200051
@@ -106,11 +80,6 @@ links:
       url: https://doi.org/10.1186/s13059-017-1382-0
     confidence: high
     note: Scanpy performs PCA (pp.pca / tl.pca) as a standard dimensionality-reduction step.
-    quote: |-
-      "scanpy.pp.pca ... Principal component analysis. Computes PCA coordinates,
-      loadings and variance decomposition." (Scanpy API; Wolf et al. 2018 Fig. 1
-      defines "PCA = principal component analysis" in the pipeline.)
-
   # ---- PLINK 1.x (Purcell et al. 2007, Am J Hum Genet) ---------------------
   - method: m:plink
     statistical_method: obo:STATO_0000149
@@ -121,10 +90,6 @@ links:
       url: https://pmc.ncbi.nlm.nih.gov/articles/PMC1950838/
     confidence: high
     note: PLINK tests case/control association using logistic regression (--logistic).
-    quote: |-
-      "The standard disease- and quantitative-trait association tests ... are also
-      framed as more general linear- and logistic-regression models that allow for
-      multiple binary or continuous covariates." (Purcell et al. 2007)
   - method: m:plink
     statistical_method: obo:STATO_0000108
     label: linear regression for analysis of continuous dependent variable
@@ -134,10 +99,6 @@ links:
       url: https://doi.org/10.1086/519795
     confidence: high
     note: PLINK tests quantitative-trait association using linear regression (--linear).
-    quote: |-
-      "Given a quantitative phenotype and possibly some covariates ... --linear
-      writes a linear regression report to plink.assoc.linear." (PLINK docs;
-      Purcell et al. 2007 provide linear regression for quantitative traits.)
   - method: m:plink
     statistical_method: obo:STATO_0000073
     label: Fisher's exact test
@@ -147,11 +108,6 @@ links:
       url: https://pmc.ncbi.nlm.nih.gov/articles/PMC1950838/
     confidence: high
     note: PLINK can compute allelic/genotypic association significance with Fisher's exact test (--fisher).
-    quote: |-
-      "As well as the standard case/control allelic test, PLINK offers a
-      Cochran-Armitage trend test, Fisher's exact test, genotypic tests ..."
-      (Purcell et al. 2007, Association analysis)
-
   # ---- PLINK 2.0 (Chang et al. 2015, GigaScience) --------------------------
   - method: m:plink2
     statistical_method: obo:STATO_0000149
@@ -162,10 +118,6 @@ links:
       url: https://doi.org/10.1186/s13742-015-0047-8
     confidence: high
     note: PLINK2 tests case/control association using (Firth) logistic regression (--glm).
-    quote: |-
-      "For binary phenotypes, --glm fits a logistic or Firth regression model."
-      (PLINK 2.0 docs; Chang et al. 2015 name logistic regression among the core
-      functions being scaled.)
   - method: m:plink2
     statistical_method: obo:STATO_0000108
     label: linear regression for analysis of continuous dependent variable
@@ -175,11 +127,6 @@ links:
       url: https://doi.org/10.1186/s13742-015-0047-8
     confidence: high
     note: PLINK2 tests quantitative-trait association using linear regression (--glm).
-    quote: |-
-      "For quantitative phenotypes, --glm fits the linear model y = G*betaG +
-      X*betaX + e for every variant ... subject to least-squares minimization."
-      (PLINK 2.0 docs, maintained by C. Chang)
-
   # ---- Salmon (Patro et al. 2017, Nature Methods) --------------------------
   - method: m:salmon
     statistical_method: obo:STATO_0000428
@@ -190,11 +137,6 @@ links:
       url: https://pmc.ncbi.nlm.nih.gov/articles/PMC5600148/
     confidence: high
     note: Salmon estimates transcript abundances by maximum-likelihood inference via an EM algorithm.
-    quote: |-
-      "The first scheme takes a maximum likelihood approach to solve for the
-      quantities of interest. ... The likelihood associated with this objective
-      can be optimized using the EM algorithm." (Patro et al. 2017, Online Methods)
-
   # ---- kallisto (Bray et al. 2016, Nature Biotechnology) -------------------
   - method: m:kallisto
     statistical_method: obo:STATO_0000428
@@ -205,7 +147,3 @@ links:
       url: https://doi.org/10.1038/nbt.3519
     confidence: high
     note: kallisto quantifies transcript abundances via the EM (maximum-likelihood) algorithm.
-    quote: |-
-      "we explored the use of the expectation-maximization (EM) algorithm applied
-      to equivalence classes for quantification ... The likelihood function is
-      iteratively optimized with the EM algorithm." (Bray et al. 2016)

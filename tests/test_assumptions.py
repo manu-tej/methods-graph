@@ -222,3 +222,14 @@ def test_shipped_assumptions_audit_clean(tmp_path):
     assert len(ra) == 2 and all(inv.ok for inv in ra)
     assert result.ok is True
     assert result.coverage["ontology_nodes"].get("Assumption", 0) >= 1
+
+
+def test_shipped_assumptions_carry_no_verbose_quotes():
+    """Shipped assumption edges stay lean: evidence token + source_url + note, no quote."""
+    _vocab, links = load_assumptions()
+    assert links
+    for lk in links:
+        assert lk.evidence_token, f"{lk.statistical_method_id}->{lk.assumption_id} ungrounded"
+        assert lk.quote == "", (
+            f"{lk.statistical_method_id}->{lk.assumption_id} still carries a quote"
+        )

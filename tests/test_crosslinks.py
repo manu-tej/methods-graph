@@ -270,3 +270,13 @@ def test_shipped_map_produces_audit_clean_graph(tmp_path):
     assert len(usm) == 2                       # typed-endpoint + grounding
     assert all(inv.ok for inv in usm)
     assert result.coverage["with_statistical_method"]["count"] >= 1
+
+
+def test_shipped_crosslinks_carry_no_verbose_quotes():
+    """Shipped curated links stay lean: evidence token + source_url + note, but no
+    verbose `quote` text (the DOI/PMID token is the grounding of record)."""
+    links = load_crosslinks()
+    assert links
+    for lk in links:
+        assert lk.evidence.is_grounded, f"{lk.method_id} ungrounded"
+        assert lk.quote == "", f"{lk.method_id}->{lk.statistical_method_id} still carries a quote"
