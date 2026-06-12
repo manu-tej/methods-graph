@@ -136,6 +136,42 @@ def test_method_neighborhood_inherits_assumptions_deduped(conn_with_assumptions)
     by_name = {a["name"]: a for a in nb["assumptions"]}
     # independence is reached via BOTH statistical methods -> one deduped entry, two `via`
     assert set(by_name) == {"independence", "asymptotic normality"}
-    assert set(by_name["independence"]["via"]) == {"Wald test", "BH FDR"}
-    assert by_name["asymptotic normality"]["via"] == ["Wald test"]
-    assert by_name["independence"]["evidence"] == "doi:10.1/x"
+    indep_via = {v["statistical_method"] for v in by_name["independence"]["via"]}
+    assert indep_via == {"Wald test", "BH FDR"}
+    assert [v["statistical_method"] for v in by_name["asymptotic normality"]["via"]] == ["Wald test"]
+    # evidence is preserved per-via (uniform fixture -> all "doi:10.1/x")
+    assert all(v["evidence"] == "doi:10.1/x" for v in by_name["independence"]["via"])
+
+
+@pytest.fixture
+def conn_assumptions_distinct_ev(tmp_path):
+    """independence is inherited via TWO statistical methods, each with DISTINCT
+    REQUIRES_ASSUMPTION evidence — so per-via evidence must be preserved."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P),
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("obo:OBI_0200036", "BH FDR", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("assum:independence", "independence", NodeKind.ASSUMPTION, {}, P),
+    ]
+    uses = {"basis": "curated", "evidence": "doi:10.1/uses"}
+    edges = [
+        EdgeRecord("m:deseq2", "obo:STATO_0000559", EdgeKind.USES_STATISTICAL_METHOD, dict(uses), P),
+        EdgeRecord("m:deseq2", "obo:OBI_0200036", EdgeKind.USES_STATISTICAL_METHOD, dict(uses), P),
+        EdgeRecord("obo:STATO_0000559", "assum:independence", EdgeKind.REQUIRES_ASSUMPTION,
+                   {"basis": "curated", "evidence": "doi:10.1/wald-ind"}, P),
+        EdgeRecord("obo:OBI_0200036", "assum:independence", EdgeKind.REQUIRES_ASSUMPTION,
+                   {"basis": "curated", "evidence": "doi:10.1/bh-ind"}, P),
+    ]
+    db_path = tmp_path / "ad.kuzu"
+    build_graph(nodes, edges, db_path, staging_dir=tmp_path / "stg")
+    return kuzu.Connection(kuzu.Database(str(db_path)))
+
+
+def test_method_neighborhood_preserves_evidence_per_via(conn_assumptions_distinct_ev):
+    nb = method_neighborhood(conn_assumptions_distinct_ev, "m:deseq2")
+    indep = next(a for a in nb["assumptions"] if a["name"] == "independence")
+    assert all(isinstance(v, dict) for v in indep["via"]), (
+        f"each via must record its statistical method + evidence; got {indep['via']}"
+    )
+    via = {v["statistical_method"]: v["evidence"] for v in indep["via"]}
+    assert via == {"Wald test": "doi:10.1/wald-ind", "BH FDR": "doi:10.1/bh-ind"}

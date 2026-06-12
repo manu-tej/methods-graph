@@ -96,8 +96,11 @@ def method_neighborhood(conn: kuzu.Connection, method_id: str) -> dict[str, Any]
     - ``statistical_methods``: StatisticalMethod nodes via USES_STATISTICAL_METHOD
       (each carries the ``evidence`` token grounding the link)
     - ``assumptions``: Assumption nodes inherited transitively
-      (Method→StatisticalMethod→Assumption), deduped, each with the statistical
-      method(s) it comes ``via`` and the grounding ``evidence``
+      (Method→StatisticalMethod→Assumption), deduped by assumption. Each carries
+      a ``via`` list of ``{"statistical_method": <name>, "evidence": <token>}``
+      entries — one per statistical method the assumption is reached through, so
+      the grounding evidence is preserved *per via* (a single assumption inherited
+      via two methods keeps both citations).
     """
     method_res = list(conn.execute(
         "MATCH (m:Entity {id: $id}) "
@@ -161,10 +164,13 @@ def method_neighborhood(conn: kuzu.Connection, method_id: str) -> dict[str, Any]
         if aid not in assumptions:
             d = _node_dict(x[0], x[1], x[2], x[3])
             d["via"] = []
-            d["evidence"] = json.loads(x[5] or "{}").get("evidence", "")
             assumptions[aid] = d
-        if x[4] not in assumptions[aid]["via"]:
-            assumptions[aid]["via"].append(x[4])
+        s_name = x[4]
+        evidence = json.loads(x[5] or "{}").get("evidence", "")
+        # One via entry per statistical method, carrying that edge's own evidence
+        # (rows are ordered by a.name, s.name → via is sorted and deterministic).
+        if not any(v["statistical_method"] == s_name for v in assumptions[aid]["via"]):
+            assumptions[aid]["via"].append({"statistical_method": s_name, "evidence": evidence})
     out["assumptions"] = list(assumptions.values())
 
     return out

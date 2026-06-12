@@ -135,7 +135,7 @@ def broker_ground(conn, method_id):
         "name": nb["method"]["name"],
         "operations": [(o["id"], o["name"]) for o in nb["operations"]],
         "statistical_methods": [(s["name"], s["evidence"]) for s in nb["statistical_methods"]],
-        "assumptions": [(a["name"], a["via"], a["evidence"]) for a in nb["assumptions"]],
+        "assumptions": [(a["name"], a["via"]) for a in nb["assumptions"]],
     }
 
 
@@ -180,8 +180,9 @@ def report_edge(conn, e: HypothesisEdge):
         print(f"     estimator : {g['name']}  (EDAM: {ops})")
         for nm, ev in g["statistical_methods"]:
             print(f"       statistical method: {nm}   [{ev}]")
-        for nm, via, ev in g["assumptions"]:
-            print(f"       ! stat assumption : {nm:42.42} via {', '.join(via)}  [{ev}]")
+        for nm, via in g["assumptions"]:
+            via_str = "; ".join(f"{v['statistical_method']} [{v['evidence']}]" for v in via)
+            print(f"       ! stat assumption : {nm:42.42} via {via_str}")
 
     print(f"  ③ REFUTE    : {'; '.join(e.refutations) if e.refutations else '(pending identification)'}")
 
