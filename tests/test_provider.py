@@ -330,3 +330,34 @@ def test_get_methods_io_deduped_and_sorted(tmp_path):
     # deduped: only 2 unique (name, data_type) pairs
     assert names == sorted(set(names)), "inputs must be sorted and deduped"
     assert len(names) == 2  # AAA and BBB
+
+
+@pytest.fixture
+def assum_db_path(tmp_path):
+    """deseq2 -USES_STATISTICAL_METHOD-> Wald test -REQUIRES_ASSUMPTION-> normality.
+    'normality' is a TWO-HOP inherited assumption from the method."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD,
+                     {"description": "differential expression"}, P),
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("assum:normality", "normality", NodeKind.ASSUMPTION, {}, P),
+    ]
+    ev = {"basis": "curated", "evidence": "doi:10.1/x"}
+    edges = [
+        EdgeRecord("m:deseq2", "obo:STATO_0000559", EdgeKind.USES_STATISTICAL_METHOD, dict(ev), P),
+        EdgeRecord("obo:STATO_0000559", "assum:normality", EdgeKind.REQUIRES_ASSUMPTION, dict(ev), P),
+    ]
+    path = tmp_path / "assum.kuzu"
+    build_graph(nodes, edges, path, staging_dir=tmp_path / "stg")
+    return path
+
+
+def test_retrieve_surfaces_inherited_assumption_and_path(assum_db_path):
+    """A keyword matching a 2-hop inherited assumption surfaces the assumption AND
+    its StatisticalMethod path in the RAG context (default 1-hop seed would omit it)."""
+    with KuzuMethodsGraphProvider(assum_db_path) as p:
+        ctx = p.retrieve_context_for_keywords(["normality"])
+    assert "normality" in ctx, f"matched 2-hop assumption missing from context:\n{ctx}"
+    assert "Wald test" in ctx, f"StatisticalMethod on the path missing:\n{ctx}"
+    assert "REQUIRES_ASSUMPTION" in ctx, f"StatMethod->Assumption edge missing:\n{ctx}"
+    assert "USES_STATISTICAL_METHOD" in ctx, f"Method->StatMethod edge missing:\n{ctx}"

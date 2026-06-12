@@ -234,12 +234,15 @@ class KuzuMethodsGraphProvider:
             )
             direct_method_ids: list[str] = []
             non_method_ids: list[str] = []
+            matched_assumption_ids: list[str] = []
             for row in all_rows:
                 nid, kind = row[0], row[1]
                 if kind == "Method":
                     direct_method_ids.append(nid)
                 else:
                     non_method_ids.append(nid)
+                    if kind == "Assumption":
+                        matched_assumption_ids.append(nid)
 
             # Step 2: collect direct method hits.
             ids.extend(direct_method_ids)
@@ -259,6 +262,15 @@ class KuzuMethodsGraphProvider:
                     parameters={"matched": non_method_ids},
                 )
                 ids.extend(row[0] for row in resolved)
+
+            # Step 4: seed the matched Assumption nodes directly. An inherited
+            # assumption sits TWO hops from a method
+            #   Method -USES_STATISTICAL_METHOD-> StatisticalMethod -REQUIRES_ASSUMPTION-> Assumption
+            # so the resolving method above is found, but a default 1-hop seed from
+            # that method would not reach the assumption. Seeding the assumption too
+            # pulls it and its StatisticalMethod into the RAG context, so the matched
+            # term and its grounding path are both present.
+            ids.extend(matched_assumption_ids)
 
         return list(dict.fromkeys(ids))
 
