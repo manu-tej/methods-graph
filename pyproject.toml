@@ -32,7 +32,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-methods_graph = ["schema/*.yaml"]
+methods_graph = ["schema/*.yaml", "crosslinks/*.yaml"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

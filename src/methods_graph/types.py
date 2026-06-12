@@ -43,6 +43,16 @@ class EdgeKind(str, Enum):
     IS_A = "IS_A"
     CITES = "CITES"
     SAME_AS = "SAME_AS"
+    # Curated, literature-grounded Method→StatisticalMethod link. Carries
+    # confidence + basis + evidence (DOI/PMID) in its properties; the build path
+    # only emits it when BOTH endpoints exist (Method, StatisticalMethod) and the
+    # link is grounded, and the audit enforces both of those as invariants.
+    USES_STATISTICAL_METHOD = "USES_STATISTICAL_METHOD"
+    # Curated, grounded StatisticalMethod→Assumption link (the assumptions a
+    # statistical method classically requires).  Assumptions attach to the
+    # StatisticalMethod, not the tool — a Method inherits them transitively via
+    # USES_STATISTICAL_METHOD.  Same grounding/typed-endpoint invariants apply.
+    REQUIRES_ASSUMPTION = "REQUIRES_ASSUMPTION"
 
 
 @dataclass(frozen=True)

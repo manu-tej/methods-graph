@@ -531,3 +531,170 @@ def test_audit_ontology_coverage_informational(tmp_path):
     assert ont.get("Assay", 0) == 1, (
         f"Expected Assay=1 in ontology_nodes; got {ont}"
     )
+
+
+# ---------------------------------------------------------------------------
+# USES_STATISTICAL_METHOD invariants (typed-endpoint + grounding) and coverage
+# ---------------------------------------------------------------------------
+
+_GROUNDED = {"confidence": 1.0, "basis": "curated", "evidence": "doi:10.1/x"}
+
+
+def _usm_invariants(result):
+    return [inv for inv in result.invariants if "USES_STATISTICAL_METHOD" in inv.name]
+
+
+def test_audit_uses_statistical_method_grounded_passes(tmp_path):
+    """A well-typed, grounded USES_STATISTICAL_METHOD edge passes both invariants and is counted."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P),
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+    ]
+    edges = [
+        EdgeRecord("m:deseq2", "obo:STATO_0000559",
+                   EdgeKind.USES_STATISTICAL_METHOD, dict(_GROUNDED), P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    usm = _usm_invariants(result)
+    assert len(usm) == 2, "expected typed-endpoint AND grounding invariants"
+    assert all(inv.ok for inv in usm)
+    assert result.ok is True
+    assert result.coverage["with_statistical_method"]["count"] == 1
+    assert result.coverage["with_statistical_method"]["pct"] == 100.0
+
+
+def test_audit_uses_statistical_method_wrong_endpoint_is_violation(tmp_path):
+    """USES_STATISTICAL_METHOD whose target is NOT a StatisticalMethod must be a violation."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P),
+        # target exists but is an Operation, not a StatisticalMethod
+        NodeRecord("op:operation_3223", "DGE analysis", NodeKind.OPERATION, {}, P),
+    ]
+    edges = [
+        EdgeRecord("m:deseq2", "op:operation_3223",
+                   EdgeKind.USES_STATISTICAL_METHOD, dict(_GROUNDED), P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    typed = next(i for i in _usm_invariants(result) if "Method→StatisticalMethod" in i.name)
+    assert not typed.ok and typed.violations >= 1
+    assert result.ok is False
+
+
+def test_audit_uses_statistical_method_ungrounded_is_violation(tmp_path):
+    """A correctly-typed but EVIDENCE-LESS cross-link must fail the grounding invariant."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P),
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+    ]
+    edges = [
+        # well-typed, but evidence is empty -> grounding violation
+        EdgeRecord("m:deseq2", "obo:STATO_0000559", EdgeKind.USES_STATISTICAL_METHOD,
+                   {"confidence": 1.0, "basis": "curated", "evidence": ""}, P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    typed = next(i for i in _usm_invariants(result) if "Method→StatisticalMethod" in i.name)
+    grounded = next(i for i in _usm_invariants(result) if "grounded" in i.name)
+    assert typed.ok, "endpoint typing is correct here"
+    assert not grounded.ok and grounded.violations == 1
+    assert result.ok is False
+
+
+# ---------------------------------------------------------------------------
+# REQUIRES_ASSUMPTION invariants (typed-endpoint + grounding) and inheritance
+# ---------------------------------------------------------------------------
+
+
+def _ra_invariants(result):
+    return [inv for inv in result.invariants if "REQUIRES_ASSUMPTION" in inv.name]
+
+
+def test_audit_requires_assumption_grounded_passes(tmp_path):
+    """StatisticalMethod→Assumption grounded edge passes both invariants; inheritance counted."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P),
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("assum:asymptotic_normality", "asymptotic normality", NodeKind.ASSUMPTION, {}, P),
+    ]
+    edges = [
+        EdgeRecord("m:deseq2", "obo:STATO_0000559", EdgeKind.USES_STATISTICAL_METHOD,
+                   dict(_GROUNDED), P),
+        EdgeRecord("obo:STATO_0000559", "assum:asymptotic_normality",
+                   EdgeKind.REQUIRES_ASSUMPTION, {"basis": "curated", "evidence": "url:https://x"}, P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    ra = _ra_invariants(result)
+    assert len(ra) == 2 and all(inv.ok for inv in ra)
+    assert result.ok is True
+    # m:deseq2 inherits the assumption transitively via the Wald test
+    assert result.coverage["with_inherited_assumption"]["count"] == 1
+
+
+def test_audit_requires_assumption_wrong_endpoint_is_violation(tmp_path):
+    """REQUIRES_ASSUMPTION from a Method (not a StatisticalMethod) must be a violation."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P),
+        NodeRecord("assum:normality", "normality", NodeKind.ASSUMPTION, {}, P),
+    ]
+    edges = [
+        # source must be StatisticalMethod, not Method
+        EdgeRecord("m:deseq2", "assum:normality", EdgeKind.REQUIRES_ASSUMPTION,
+                   {"basis": "curated", "evidence": "url:https://x"}, P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    typed = next(i for i in _ra_invariants(result) if "StatisticalMethod→Assumption" in i.name)
+    assert not typed.ok and typed.violations >= 1
+    assert result.ok is False
+
+
+def test_audit_requires_assumption_ungrounded_is_violation(tmp_path):
+    """A correctly-typed but evidence-less assumption edge fails the grounding invariant."""
+    nodes = [
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("assum:normality", "normality", NodeKind.ASSUMPTION, {}, P),
+    ]
+    edges = [
+        EdgeRecord("obo:STATO_0000559", "assum:normality", EdgeKind.REQUIRES_ASSUMPTION,
+                   {"basis": "curated", "evidence": ""}, P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    typed = next(i for i in _ra_invariants(result) if "StatisticalMethod→Assumption" in i.name)
+    grounded = next(i for i in _ra_invariants(result) if "grounded" in i.name)
+    assert typed.ok
+    assert not grounded.ok and grounded.violations == 1
+    assert result.ok is False

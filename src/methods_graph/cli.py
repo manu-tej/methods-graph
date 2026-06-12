@@ -72,7 +72,7 @@ def cmd_build(
     from methods_graph.connectors.ontology import parse_stato, parse_obi
     from methods_graph.resolve.resolver import resolve
     from methods_graph.graph.loader import build_graph
-    from methods_graph.types import EdgeKind, EdgeRecord, MethodRecord, Provenance
+    from methods_graph.types import EdgeKind, EdgeRecord, MethodRecord, NodeKind, Provenance
 
     all_nodes: list = []
     all_edges: list = []
@@ -196,11 +196,77 @@ def cmd_build(
         if bt_edges_added:
             _log.info("bio.tools enrichment: added %d PERFORMS/HAS_TOPIC edges", bt_edges_added)
 
+    # --- curated Method→StatisticalMethod cross-links (post-resolve, pre-load) ---
+    # Only runs when StatisticalMethod nodes are present (i.e. STATO/OBI loaded);
+    # otherwise the targets cannot exist and the step is a no-op.  The builder
+    # emits an edge only when BOTH endpoints resolve to the right kinds, so it
+    # never creates a dangling/mistyped link; skipped links are logged, not
+    # silently dropped.
+    xl_edges_added = 0
+    has_stat_method = any(n.kind == NodeKind.STATISTICAL_METHOD for n in resolved_nodes)
+    if has_stat_method:
+        from methods_graph.crosslinks import build_crosslink_edges
+
+        xl_edges, xl_report = build_crosslink_edges(resolved_nodes, ingested_at=ingested_at)
+        existing_keys: set[tuple[str, str, str]] = {
+            (e.from_id, e.to_id, e.kind.value) for e in resolved_edges
+        }
+        # Mirror the bio.tools dedup: grow the key set as we accept edges so a
+        # future multi-entry map can never inject a duplicate triple.
+        new_xl: list[EdgeRecord] = []
+        for e in xl_edges:
+            key = (e.from_id, e.to_id, e.kind.value)
+            if key not in existing_keys:
+                new_xl.append(e)
+                existing_keys.add(key)
+        resolved_edges = list(resolved_edges) + new_xl
+        xl_edges_added = len(new_xl)
+        if xl_report.skipped:
+            _log.info(
+                "crosslinks: skipped %d ungrounded/unmatched link(s): %s",
+                len(xl_report.skipped), xl_report.skipped,
+            )
+        for w in xl_report.warnings:
+            _log.warning("crosslinks: %s", w)
+        if xl_edges_added:
+            _log.info("crosslinks: added %d USES_STATISTICAL_METHOD edges", xl_edges_added)
+
+        # Statistical-method assumptions: mint Assumption nodes + grounded
+        # REQUIRES_ASSUMPTION edges (StatisticalMethod→Assumption).  Methods
+        # inherit these transitively via USES_STATISTICAL_METHOD.
+        from methods_graph.crosslinks.assumptions import build_assumption_records
+
+        a_nodes, a_edges, a_report = build_assumption_records(
+            resolved_nodes, ingested_at=ingested_at
+        )
+        existing_node_ids = {n.id for n in resolved_nodes}
+        new_a_nodes = [n for n in a_nodes if n.id not in existing_node_ids]
+        resolved_nodes = list(resolved_nodes) + new_a_nodes
+        new_a_edges: list[EdgeRecord] = []
+        for e in a_edges:
+            key = (e.from_id, e.to_id, e.kind.value)
+            if key not in existing_keys:
+                new_a_edges.append(e)
+                existing_keys.add(key)
+        resolved_edges = list(resolved_edges) + new_a_edges
+        assum_edges_added = len(new_a_edges)
+        if a_report.skipped:
+            _log.info(
+                "assumptions: skipped %d unmatched edge(s): %s",
+                len(a_report.skipped), a_report.skipped,
+            )
+        if assum_edges_added:
+            _log.info(
+                "assumptions: minted %d Assumption nodes, added %d REQUIRES_ASSUMPTION edges",
+                len(new_a_nodes), assum_edges_added,
+            )
+    else:
+        assum_edges_added = 0
+
     # --- load ---
     summary = build_graph(resolved_nodes, resolved_edges, db_path, staging_dir=staging_dir)
 
     # --- summary ---
-    from methods_graph.types import NodeKind
 
     n_methods = sum(1 for n in resolved_nodes if isinstance(n, MethodRecord))
     bt_suffix = f", {bt_edges_added} bio.tools edges added" if biotools is not None else ""
@@ -212,11 +278,15 @@ def cmd_build(
     }
     n_onto = sum(1 for n in resolved_nodes if n.kind in _ONTOLOGY_KINDS)
     onto_suffix = f", {n_onto} ontology nodes" if (stato is not None or obi is not None) else ""
+    xl_suffix = (
+        f", {xl_edges_added} stat-method links, {assum_edges_added} assumption links"
+        if has_stat_method else ""
+    )
 
     print(
         f"Built graph: {n_methods} methods, {summary['nodes']} nodes, "
         f"{summary['edges_loaded']} edges loaded "
-        f"({summary['edges_dropped']} dangling dropped){bt_suffix}{onto_suffix} -> {db_path}"
+        f"({summary['edges_dropped']} dangling dropped){bt_suffix}{onto_suffix}{xl_suffix} -> {db_path}"
     )
 
 
@@ -231,7 +301,7 @@ def cmd_audit(*, db_path: Path, snapshot_dir: Path | None, as_json: bool) -> int
     conn = None
     try:
         import kuzu
-        db = kuzu.Database(str(db_path))
+        db = kuzu.Database(str(db_path), read_only=True)
         conn = kuzu.Connection(db)
         result = audit_graph(conn, snapshot_dir=snapshot_dir)
     finally:
@@ -470,7 +540,7 @@ def cmd_export_kgx(*, db_path: Path, out_dir: Path) -> None:
     db = None
     conn = None
     try:
-        db = kuzu.Database(str(db_path))
+        db = kuzu.Database(str(db_path), read_only=True)
         conn = kuzu.Connection(db)
         node_count, edge_count = export_kgx(conn, out_dir)
     finally:

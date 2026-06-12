@@ -1,0 +1,313 @@
+# Curated, grounded statistical-method assumptions (StatisticalMethod -> Assumption).
+#
+# STATO describes assumptions only in free-text definitions (no Assumption classes,
+# no has_assumption relation), so they cannot be harvested and are authored here as
+# grounded claims. Each 'requires' edge cites an authoritative source (evidence token:
+# doi:|url:|isbn:|stato:) + a verbatim quote, and was verified against the literature
+# and survived an adversarial refutation pass. Assumptions attach to the statistical
+# METHOD; a Method inherits them via USES_STATISTICAL_METHOD.
+#
+# Enforced downstream: load rejects an ungrounded/unknown-id/duplicate edge; the build
+# emits an edge only StatisticalMethod->Assumption (mints the Assumption node); the
+# audit fails on any mistyped or evidence-less REQUIRES_ASSUMPTION edge.
+version: 1
+assumptions:
+- id: assum:asymptotic_normality
+  name: asymptotic (large-sample) normality
+  definition: Inference relies on the large-sample (asymptotic) normal distribution of the estimator or
+    test statistic; valid only for sufficiently large samples.
+  reference: url:https://www.statlect.com/fundamentals-of-statistics/Wald-test
+- id: assum:independence
+  name: independence of observations
+  definition: The observations (or model errors) are statistically independent of one another.
+  reference: url:https://www.itl.nist.gov/div898/handbook/prc/section4/prc422.htm
+- id: assum:normality
+  name: normality
+  definition: The model residuals (or the sampled variable) are drawn from a normal distribution.
+  reference: url:https://www.itl.nist.gov/div898/handbook/pmd/section2/pmd214.htm
+- id: assum:homoscedasticity
+  name: homoscedasticity (homogeneity of variance)
+  definition: The error variance (or the variance across compared groups) is constant.
+  reference: doi:10.1136/gpsych-2019-100148
+- id: assum:linearity
+  name: linearity
+  definition: The mean response is a linear function of the predictors, or the structure of interest lies
+    in linear combinations of the variables.
+  reference: url:https://online.stat.psu.edu/stat501/lesson/1/1.3
+- id: assum:linearity_of_logit
+  name: linearity of the logit
+  definition: The log-odds (logit) of the outcome is a linear function of the continuous predictors.
+  reference: doi:10.1136/fmch-2021-001290
+- id: assum:no_multicollinearity
+  name: absence of perfect multicollinearity
+  definition: Predictors are not perfectly (or near-perfectly) linearly dependent.
+  reference: doi:10.1002/0471722146
+- id: assum:continuous_distribution
+  name: continuous underlying distribution
+  definition: The underlying/reference distribution is continuous (e.g. for the Kolmogorov-Smirnov test).
+  reference: url:https://www.itl.nist.gov/div898/handbook/eda/section3/eda35g.htm
+- id: assum:fixed_margins
+  name: fixed marginal totals
+  definition: Inference conditions on fixed marginal totals of the contingency table.
+  reference: url:https://stats.libretexts.org/Bookshelves/Introductory_Statistics
+- id: assum:correct_model_specification
+  name: correct model specification
+  definition: The assumed parametric model / likelihood is correctly specified for the data-generating
+    process.
+  reference: url:https://www.statlect.com/fundamentals-of-statistics/maximum-likelihood
+- id: assum:regularity_conditions
+  name: regularity conditions
+  definition: The likelihood satisfies regularity conditions (differentiability, interior parameter, etc.)
+    underpinning MLE's asymptotic properties.
+  reference: url:https://www.statlect.com/fundamentals-of-statistics/maximum-likelihood
+- id: assum:variance_is_structure
+  name: large variance corresponds to structure
+  definition: Directions of largest variance are assumed to carry the most informative structure (PCA).
+  reference: doi:10.48550/arXiv.1404.1100
+- id: assum:independence_or_prds
+  name: independence or positive regression dependence (PRDS)
+  definition: FDR control holds when the test statistics are independent or satisfy positive regression
+    dependence on a subset (PRDS).
+  reference: doi:10.1214/aos/1013699998
+requires:
+- statistical_method: obo:STATO_0000559
+  assumption: assum:asymptotic_normality
+  evidence: url:https://www.statlect.com/fundamentals-of-statistics/Wald-test
+  source_url: https://www.statlect.com/fundamentals-of-statistics/Wald-test
+  quote: '"We assume that the sample and the likelihood function satisfy some set of conditions that are
+    sufficient to guarantee the consistency and asymptotic normality of [the maximum likelihood estimator]."
+    Under the null hypothesis "the Wald statistic converges in distribution to a Chi-square distribution."
+    (StatLect, "Wald test"). Corroborated by Wikipedia (Wald test): the estimator "is supposed to follow
+    asymptotically a normal distribution with covariance matrix V, √n(θ̂ₙ − θ) →_D N(0,V)."'
+  note: 'The Wald test relies on the asymptotic normality of the maximum-likelihood estimator: the statistic
+    is compared to a normal/chi-square distribution, valid only in large samples.'
+  confidence: high
+- statistical_method: obo:STATO_0000559
+  assumption: assum:independence
+  evidence: url:https://www.statlect.com/fundamentals-of-statistics/maximum-likelihood
+  source_url: https://www.statlect.com/fundamentals-of-statistics/Wald-test
+  quote: 'Wald test page (statlect.com/fundamentals-of-statistics/Wald-test): "We assume that the sample
+    and the likelihood function satisfy some set of conditions that are sufficient to guarantee the consistency
+    and asymptotic normality of the maximum likelihood estimator ... see the lecture on maximum likelihood
+    for a set of such conditions." The referenced MLE assumptions page (statlect.com/fundamentals-of-statistics/maximum-likelihood)
+    lists under "Assumptions": "IID. [the sequence] is an IID sequence," i.e., observations are independent
+    and identically distributed.'
+  note: The Wald test assumes the observations are independent.
+  confidence: high
+- statistical_method: obo:STATO_0000086
+  assumption: assum:normality
+  evidence: url:https://www.itl.nist.gov/div898/handbook/pmd/section2/pmd214.htm
+  source_url: https://www.itl.nist.gov/div898/handbook/pmd/section2/pmd214.htm
+  quote: 'NIST/SEMATECH e-Handbook of Statistical Methods, section 4.2.1.4, titled verbatim "The random
+    errors follow a normal distribution." It states this is a standard assumption of process modeling
+    (least squares / linear models), explaining: "In order for these intervals [confidence/prediction
+    intervals and hypothesis tests] to truly have their specified probabilistic interpretations, the form
+    of the distribution of the random errors must be known" and "the normal distribution ... supports
+    a broad array of inferences." Corroborated by Laerd Statistics and Statistics LibreTexts, which list
+    normality of residuals as one of the three standard one-way ANOVA assumptions (independence, normality
+    of residuals, homogeneity of variance).'
+  note: The classical F-test (ANOVA / linear model) assumes the residuals are normally distributed.
+  confidence: high
+- statistical_method: obo:STATO_0000086
+  assumption: assum:homoscedasticity
+  evidence: url:https://en.wikipedia.org/wiki/F-test
+  source_url: https://en.wikipedia.org/wiki/F-test
+  quote: '"The F-test of analysis of variance (ANOVA) follows three assumptions: Normality, Homogeneity
+    of variance, [and] Independence of errors and random sampling." Homogeneity of variance (homoscedasticity)
+    specifies that the population variances of the groups being compared are equal. The NIST/SEMATECH
+    e-Handbook concurs that "the validity of the typical F test relies on the assumption of homogeneity
+    of variance," i.e., all groups have the same variance.'
+  note: The F-test assumes homogeneity of variance (equal variances across groups).
+  confidence: high
+- statistical_method: obo:STATO_0000086
+  assumption: assum:independence
+  evidence: url:https://www.itl.nist.gov/div898/handbook/prc/section4/prc422.htm
+  source_url: https://www.itl.nist.gov/div898/handbook/prc/section4/prc422.htm
+  quote: '"The errors eij are assumed to be normally and independently (NID) distributed, with mean zero
+    and variance s2e." (NIST/SEMATECH e-Handbook of Statistical Methods, 7.4.2.2 "The 1-way ANOVA model
+    and assumptions")'
+  note: The F-test assumes the observations/residuals are independent.
+  confidence: high
+- statistical_method: obo:STATO_0000108
+  assumption: assum:linearity
+  evidence: url:https://online.stat.psu.edu/stat501/lesson/1/1.3
+  source_url: https://online.stat.psu.edu/stat501/lesson/1/1.3
+  quote: '"Linear Function: The mean of the response, E(Y_i), at each value of the predictor, x_i, is
+    a Linear function of the x_i." — the "L" in the standard LINE conditions of the simple linear regression
+    model (Penn State STAT 501). Corroborated by the NIST/SEMATECH e-Handbook §4.2, which frames the regression
+    model as a deterministic function component plus random-error assumptions.'
+  note: Linear regression assumes the relationship between predictors and the mean response is linear.
+  confidence: high
+- statistical_method: obo:STATO_0000108
+  assumption: assum:independence
+  evidence: url:https://online.stat.psu.edu/stat501/lesson/4
+  source_url: https://online.stat.psu.edu/stat501/lesson/4
+  quote: 'Among the four conditions of the simple linear regression model (the "LINE" conditions), "I"
+    stands for: the errors, epsilon_i, are Independent — the error for one observation is independent
+    of the error for another observation. Penn State STAT 501, Lesson 4 (SLR Model Assumptions).'
+  note: Linear regression assumes the errors are independent.
+  confidence: high
+- statistical_method: obo:STATO_0000108
+  assumption: assum:homoscedasticity
+  evidence: doi:10.1136/gpsych-2019-100148
+  source_url: https://pmc.ncbi.nlm.nih.gov/articles/PMC6802968/
+  quote: '"there are two additional assumptions ... (A) normal distribution and (B) homoscedasticity,
+    or constant variance σ² for all subjects." (Yang, Tu & Chen 2019, General Psychiatry). Corroborated
+    by NIST/SEMATECH e-Handbook §4.2.1.3: "The random errors have a constant standard deviation."'
+  note: Linear regression assumes constant error variance (homoscedasticity).
+  confidence: high
+- statistical_method: obo:STATO_0000108
+  assumption: assum:normality
+  evidence: url:https://www.itl.nist.gov/div898/handbook/pmd/section2/pmd214.htm
+  source_url: https://www.itl.nist.gov/div898/handbook/pmd/section2/pmd214.htm
+  quote: 'NIST/SEMATECH e-Handbook of Statistical Methods, Section 4.2.1.4, titled verbatim "The random
+    errors follow a normal distribution." It states: "The normal distribution often describes the actual
+    distribution of the random errors in real-world processes reasonably well... In order for [statistical]
+    intervals to truly have their specified probabilistic interpretations, the form of the distribution
+    of the random errors must be known."'
+  note: Linear regression inference assumes the errors are normally distributed.
+  confidence: high
+- statistical_method: obo:STATO_0000149
+  assumption: assum:independence
+  evidence: url:https://www.statology.org/assumptions-of-logistic-regression/
+  source_url: https://www.statology.org/assumptions-of-logistic-regression/
+  quote: '"Assumption #2: The Observations are Independent — Logistic regression assumes that the observations
+    in the dataset are independent of each other." Corroborated by Laerd Statistics'' binomial logistic
+    regression guide: "You should have independence of observations..."'
+  note: Logistic regression assumes the observations are independent.
+  confidence: high
+- statistical_method: obo:STATO_0000149
+  assumption: assum:linearity_of_logit
+  evidence: doi:10.1136/fmch-2021-001290
+  source_url: https://pmc.ncbi.nlm.nih.gov/articles/PMC8710907/
+  quote: '"Continuous predictors are linearly related to a transformed version of the outcome (linearity)."
+    — the transformed outcome being the logit (log-odds); the paper enumerates this among the core assumptions
+    checked in fitting a binary logistic regression model, and elaborates that continuous independent
+    variables must have a linear relationship with the log-odds of the predicted probabilities.'
+  note: Logistic regression assumes linearity between continuous predictors and the log-odds (logit) of
+    the outcome.
+  confidence: high
+- statistical_method: obo:STATO_0000149
+  assumption: assum:no_multicollinearity
+  evidence: doi:10.1002/0471722146
+  source_url: https://doi.org/10.1002/0471722146
+  quote: 'Hosmer & Lemeshow, Applied Logistic Regression (2nd ed., Wiley, 2000; DOI 10.1002/0471722146),
+    Section 4.4 "Numerical Problems" treats collinearity among covariates as a condition that must be
+    addressed: when one covariate is (nearly) a linear combination of others, the maximum-likelihood estimates
+    of the coefficients become unstable, standard errors are inflated, and under perfect (exact) collinearity
+    the design matrix is rank-deficient so a unique estimate of the coefficients cannot be obtained. Corroborated
+    verbatim by Laerd Statistics (binomial logistic regression): "Assumption #4: Your data must not show
+    multicollinearity, which occurs when you have two or more independent variables that are highly correlated
+    with each other," and by Statology''s standard list of logistic-regression assumptions: "Logistic
+    regression assumes that there is no severe multicollinearity among the explanatory variables."'
+  note: Logistic regression assumes the absence of perfect multicollinearity among predictors.
+  confidence: high
+- statistical_method: obo:STATO_0000083
+  assumption: assum:continuous_distribution
+  evidence: url:https://www.itl.nist.gov/div898/handbook/prc/section2/prc212.htm
+  source_url: https://www.itl.nist.gov/div898/handbook/prc/section2/prc212.htm
+  quote: '"the K-S test is only appropriate for testing data against a continuous distribution, such as
+    the normal or Weibull distribution." (One limitation noted: "the distribution must be fully specified.")'
+  note: The Kolmogorov-Smirnov test assumes the underlying distribution is continuous.
+  confidence: high
+- statistical_method: obo:STATO_0000083
+  assumption: assum:independence
+  evidence: url:https://online.stat.psu.edu/stat415/lesson/22/22.1
+  source_url: https://online.stat.psu.edu/stat415/lesson/22/22.1
+  quote: '"Let X1, X2, ..., Xn be a random sample of size n from a continuous distribution F(x)." (PennState
+    STAT 415, Lesson 22, KS Goodness-of-Fit Test). "Random sample" is the standard term denoting independent
+    and identically distributed observations. Corroborated by Wikipedia''s formal definition: "The empirical
+    distribution function Fn for n independent and identically distributed (i.i.d.) ordered observations
+    Xi is defined as..."'
+  note: The KS test assumes the observations are independent and identically distributed.
+  confidence: high
+- statistical_method: obo:STATO_0000073
+  assumption: assum:independence
+  evidence: isbn:9781481417686
+  source_url: http://www.biostathandbook.com/fishers.html
+  quote: '"Fisher''s exact test, like other tests of independence, assumes that the individual observations
+    are independent." — McDonald, J.H. (2014), Handbook of Biological Statistics, 3rd ed., "Fisher''s
+    exact test of independence" (also mirrored on Statistics LibreTexts).'
+  note: Fisher's exact test assumes the observations are independent.
+  confidence: high
+- statistical_method: obo:STATO_0000073
+  assumption: assum:fixed_margins
+  evidence: url:https://stats.libretexts.org/Bookshelves/Applied_Statistics/Biological_Statistics_(McDonald)/02:_Tests_for_Nominal_Variables/2.07:_Fisher's_Exact_Test
+  source_url: https://stats.libretexts.org/Bookshelves/Applied_Statistics/Biological_Statistics_(McDonald)/02:_Tests_for_Nominal_Variables/2.07:_Fisher's_Exact_Test
+  quote: '"Unlike other tests of independence, Fisher''s exact test assumes that the row and column totals
+    are fixed, or ''conditioned.''" (McDonald, Handbook of Biological Statistics, "Fisher''s Exact Test").
+    Corroborated by Wikipedia: "The test assumes that all row and column sums of the contingency table
+    were fixed by design and tends to be conservative and underpowered outside of this setting."'
+  note: Fisher's exact test conditions on fixed marginal totals of the contingency table.
+  confidence: high
+- statistical_method: obo:OBI_0200051
+  assumption: assum:linearity
+  evidence: doi:10.48550/arXiv.1404.1100
+  source_url: https://arxiv.org/abs/1404.1100
+  quote: '"PCA makes one stringent but powerful assumption: linearity. ... With this assumption PCA is
+    now limited to re-expressing the data as a linear combination of its basis vectors." Also, in its
+    "Summary of Assumptions": "Linearity frames the problem as a change of basis." (Shlens, A Tutorial
+    on Principal Component Analysis, Sec. III–IV)'
+  note: PCA assumes the structure of interest is captured by linear combinations of the variables.
+  confidence: high
+- statistical_method: obo:OBI_0200051
+  assumption: assum:variance_is_structure
+  evidence: url:https://arxiv.org/abs/1404.1100
+  source_url: https://arxiv.org/abs/1404.1100
+  quote: 'Assumption II (Section IV.5): "Large variances have important structure. This assumption also
+    encompasses the belief that the data has a high SNR. Hence, principal components with larger associated
+    variances represent interesting structure, while those with lower variances represent noise." Earlier
+    (Section IV.1): "quantitatively we assume that directions with largest variances in our measurement
+    space contain the dynamics of interest... by assumption the dynamics of interest exist along directions
+    with largest variance and presumably highest SNR."'
+  note: PCA assumes that directions of largest variance carry the most informative structure.
+  confidence: high
+- statistical_method: obo:STATO_0000428
+  assumption: assum:correct_model_specification
+  evidence: url:https://www.statlect.com/fundamentals-of-statistics/maximum-likelihood
+  source_url: https://www.statlect.com/fundamentals-of-statistics/maximum-likelihood
+  quote: 'From the formal "Assumptions" section: "A generic term X_j of the sequence is a continuous random
+    vector, whose joint probability density function belongs to a set of joint probability density functions
+    indexed by a parameter theta in Theta" (correct specification), reinforced by the Identification assumption
+    that there is a true parameter theta_0 whose density "is the true probability density function of
+    X_j." Corroborated by Wikipedia (Maximum likelihood estimation): MLE''s consistency and efficiency
+    hold "if the data were generated by f(.;theta_0)" — i.e., the assumed model.'
+  note: Maximum likelihood estimation assumes the parametric model (likelihood) is correctly specified.
+  confidence: high
+- statistical_method: obo:STATO_0000428
+  assumption: assum:independence
+  evidence: url:https://web.stanford.edu/class/archive/cs/cs109/cs109.1208/lectureNotes/LN20_parameters_mle.pdf
+  source_url: https://web.stanford.edu/class/archive/cs/cs109/cs109.1208/lectureNotes/LN20_parameters_mle.pdf
+  quote: '"Both of these approaches [MLE and MAP] assume that your data are IID samples: X1, X2, . . .
+    Xn where all Xi are independent and have the same distribution." and "The data that we are going to
+    use to estimate the parameters are going to be n independent and identically distributed (IID) samples"
+    ... "Since we assumed each data point is independent, the likelihood of all our data is the product
+    of the likelihood of each data point." (Stanford CS109 Lecture Notes #20, "Parameter Estimation /
+    MLE", Lisa Yan/Chris Piech, pp. 1-2)'
+  note: Standard maximum likelihood estimation assumes the observations are independent (iid).
+  confidence: high
+- statistical_method: obo:STATO_0000428
+  assumption: assum:regularity_conditions
+  evidence: url:https://www.statlect.com/fundamentals-of-statistics/maximum-likelihood
+  source_url: https://www.statlect.com/fundamentals-of-statistics/maximum-likelihood
+  quote: 'Under a set of regularity conditions (an IID and identifiable parametric family, an integrable
+    and twice-continuously-differentiable log-likelihood with a unique maximum, and other technical ''well-behaved''
+    conditions on its derivatives), the maximum likelihood estimator is a consistent estimator of the
+    true parameter theta_0 (plim of theta-hat_n = theta_0) and is asymptotically normal. (StatLect, ''Maximum
+    likelihood estimation — Theory, assumptions, properties'': assumptions for consistency and asymptotic
+    normality.)'
+  note: MLE's asymptotic properties (consistency, asymptotic normality) rely on regularity conditions
+    on the likelihood.
+  confidence: high
+- statistical_method: obo:OBI_0200036
+  assumption: assum:independence_or_prds
+  evidence: doi:10.1214/aos/1013699998
+  source_url: https://projecteuclid.org/journals/annals-of-statistics/volume-29/issue-4/The-control-of-the-false-discovery-rate-in-multiple-testing/10.1214/aos/1013699998.full
+  quote: '"We prove that this same procedure also controls the false discovery rate when the test statistics
+    have positive regression dependency on each of the test statistics corresponding to the true null
+    hypotheses." (Benjamini & Yekutieli 2001, abstract, Ann. Statist. 29(4):1165-1188). This complements
+    the original Benjamini & Hochberg (1995) result, which proved FDR control under independence of the
+    test statistics.'
+  note: The Benjamini-Hochberg FDR procedure controls FDR under independence or positive regression dependence
+    (PRDS) of the test statistics.
+  confidence: high

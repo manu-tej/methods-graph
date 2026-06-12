@@ -117,7 +117,8 @@ class AuditResult:
         mt = cov.get("methods_total", 0)
         lines.append(f"  methods_total: {mt}")
         for key in ("with_biotools_id", "with_bioconda_pkg", "with_container",
-                    "with_edam_operation", "with_topic", "with_io_contract"):
+                    "with_edam_operation", "with_topic", "with_io_contract",
+                    "with_statistical_method", "with_inherited_assumption"):
             v = cov.get(key, {})
             lines.append(f"  {key}: {v.get('count', 0)} ({v.get('pct', 0.0)}%)")
 
@@ -310,12 +311,51 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
             f"AND b.kind IN {sorted(_ONTOLOGY_TERM_KINDS)!r}) "
             "RETURN count(*)",
         ),
+        (
+            # Curated cross-links must run strictly Method→StatisticalMethod.
+            # A mistyped endpoint (e.g. a dangling target promoted to some other
+            # kind, or a non-Method source) is a genuine modelling error.
+            "USES_STATISTICAL_METHOD: Method→StatisticalMethod",
+            "MATCH (a)-[r:Rel{kind:'USES_STATISTICAL_METHOD'}]->(b) "
+            "WHERE NOT (a.kind='Method' AND b.kind='StatisticalMethod') "
+            "RETURN count(*)",
+        ),
+        (
+            # Assumptions attach to the statistical method, not the tool.
+            "REQUIRES_ASSUMPTION: StatisticalMethod→Assumption",
+            "MATCH (a)-[r:Rel{kind:'REQUIRES_ASSUMPTION'}]->(b) "
+            "WHERE NOT (a.kind='StatisticalMethod' AND b.kind='Assumption') "
+            "RETURN count(*)",
+        ),
     ]
 
     invariants: list[Invariant] = []
     for inv_name, inv_cypher in _invariant_specs:
         violations = _q1(inv_cypher)
         invariants.append(Invariant(name=inv_name, violations=violations, ok=(violations == 0)))
+
+    # Grounding invariants (computed in Python — evidence lives in the edge's JSON
+    # ``properties``, which Cypher can't introspect).  Every curated cross-link
+    # edge MUST carry a non-empty ``evidence`` token; this is what makes an
+    # "ungrounded curated link" structurally impossible to pass the audit.
+    def _ungrounded_count(edge_kind: str) -> int:
+        rows = _qall(f"MATCH ()-[r:Rel{{kind:'{edge_kind}'}}]->() RETURN r.properties")
+        n = 0
+        for row in rows:
+            try:
+                props = json.loads(row[0] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                props = {}
+            if not str(props.get("evidence", "")).strip():
+                n += 1
+        return n
+
+    for edge_kind, label in (
+        ("USES_STATISTICAL_METHOD", "USES_STATISTICAL_METHOD: grounded (DOI/PMID evidence present)"),
+        ("REQUIRES_ASSUMPTION", "REQUIRES_ASSUMPTION: grounded (evidence present)"),
+    ):
+        ungrounded = _ungrounded_count(edge_kind)
+        invariants.append(Invariant(name=label, violations=ungrounded, ok=(ungrounded == 0)))
 
     # ------------------------------------------------------------------
     # 4. SAME_AS candidates
@@ -371,6 +411,19 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
         "WHERE EXISTS { MATCH (m)-[r:Rel]->(:Entity) WHERE r.kind IN ['INPUT','OUTPUT'] } "
         "RETURN count(m)"
     )
+    with_statistical_method: int = _q1(
+        "MATCH (m:Entity{kind:'Method'}) "
+        "WHERE EXISTS { MATCH (m)-[:Rel{kind:'USES_STATISTICAL_METHOD'}]->(:Entity) } "
+        "RETURN count(m)"
+    )
+    # Methods that inherit a statistical assumption transitively:
+    # Method -USES_STATISTICAL_METHOD-> StatisticalMethod -REQUIRES_ASSUMPTION-> Assumption
+    with_inherited_assumption: int = _q1(
+        "MATCH (m:Entity{kind:'Method'}) "
+        "WHERE EXISTS { MATCH (m)-[:Rel{kind:'USES_STATISTICAL_METHOD'}]->"
+        "(:Entity{kind:'StatisticalMethod'})-[:Rel{kind:'REQUIRES_ASSUMPTION'}]->"
+        "(:Entity{kind:'Assumption'}) } RETURN count(m)"
+    )
 
     # ------------------------------------------------------------------
     # Ontology-node counts (informational; one entry per kind present).
@@ -389,6 +442,12 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
         "with_edam_operation": {"count": with_edam_operation, "pct": _pct(with_edam_operation)},
         "with_topic": {"count": with_topic, "pct": _pct(with_topic)},
         "with_io_contract": {"count": with_io_contract, "pct": _pct(with_io_contract)},
+        "with_statistical_method": {
+            "count": with_statistical_method, "pct": _pct(with_statistical_method),
+        },
+        "with_inherited_assumption": {
+            "count": with_inherited_assumption, "pct": _pct(with_inherited_assumption),
+        },
         "ontology_nodes": ontology_nodes,
     }
 

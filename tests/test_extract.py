@@ -99,3 +99,43 @@ def test_method_neighborhood_io_node_shape(conn_with_io):
     assert fastq["name"] == "FASTQ"
     assert fastq["kind"] == "Format"
     assert "properties" in fastq
+
+
+@pytest.fixture
+def conn_with_assumptions(tmp_path):
+    """deseq2 -USES-> {Wald test, BH-FDR}; each -REQUIRES_ASSUMPTION-> shared/distinct assumptions."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P),
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("obo:OBI_0200036", "BH FDR", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("assum:independence", "independence", NodeKind.ASSUMPTION, {}, P),
+        NodeRecord("assum:asymptotic_normality", "asymptotic normality", NodeKind.ASSUMPTION, {}, P),
+    ]
+    ev = {"basis": "curated", "evidence": "doi:10.1/x"}
+    edges = [
+        EdgeRecord("m:deseq2", "obo:STATO_0000559", EdgeKind.USES_STATISTICAL_METHOD, dict(ev), P),
+        EdgeRecord("m:deseq2", "obo:OBI_0200036", EdgeKind.USES_STATISTICAL_METHOD, dict(ev), P),
+        EdgeRecord("obo:STATO_0000559", "assum:asymptotic_normality",
+                   EdgeKind.REQUIRES_ASSUMPTION, dict(ev), P),
+        EdgeRecord("obo:STATO_0000559", "assum:independence", EdgeKind.REQUIRES_ASSUMPTION, dict(ev), P),
+        EdgeRecord("obo:OBI_0200036", "assum:independence", EdgeKind.REQUIRES_ASSUMPTION, dict(ev), P),
+    ]
+    db_path = tmp_path / "a.kuzu"
+    build_graph(nodes, edges, db_path, staging_dir=tmp_path / "stg")
+    return kuzu.Connection(kuzu.Database(str(db_path)))
+
+
+def test_method_neighborhood_surfaces_statistical_methods(conn_with_assumptions):
+    nb = method_neighborhood(conn_with_assumptions, "m:deseq2")
+    sm = {s["name"]: s["evidence"] for s in nb["statistical_methods"]}
+    assert sm == {"Wald test": "doi:10.1/x", "BH FDR": "doi:10.1/x"}
+
+
+def test_method_neighborhood_inherits_assumptions_deduped(conn_with_assumptions):
+    nb = method_neighborhood(conn_with_assumptions, "m:deseq2")
+    by_name = {a["name"]: a for a in nb["assumptions"]}
+    # independence is reached via BOTH statistical methods -> one deduped entry, two `via`
+    assert set(by_name) == {"independence", "asymptotic normality"}
+    assert set(by_name["independence"]["via"]) == {"Wald test", "BH FDR"}
+    assert by_name["asymptotic normality"]["via"] == ["Wald test"]
+    assert by_name["independence"]["evidence"] == "doi:10.1/x"

@@ -93,6 +93,11 @@ def method_neighborhood(conn: kuzu.Connection, method_id: str) -> dict[str, Any]
     - ``containers``: list of nodes connected via PACKAGED_AS edges
     - ``inputs``: list of Data/Format nodes connected via INPUT edges
     - ``outputs``: list of Data/Format nodes connected via OUTPUT edges
+    - ``statistical_methods``: StatisticalMethod nodes via USES_STATISTICAL_METHOD
+      (each carries the ``evidence`` token grounding the link)
+    - ``assumptions``: Assumption nodes inherited transitively
+      (Method→StatisticalMethod→Assumption), deduped, each with the statistical
+      method(s) it comes ``via`` and the grounding ``evidence``
     """
     method_res = list(conn.execute(
         "MATCH (m:Entity {id: $id}) "
@@ -127,5 +132,39 @@ def method_neighborhood(conn: kuzu.Connection, method_id: str) -> dict[str, Any]
             parameters={"id": method_id, "k": edge_kind},
         )
         out[key] = [_node_dict(x[0], x[1], x[2], x[3]) for x in rows]
+
+    # Statistical methods used directly, each with the evidence grounding it.
+    sm_rows = conn.execute(
+        "MATCH (m:Entity {id: $id})-[r:Rel {kind: 'USES_STATISTICAL_METHOD'}]->(s:Entity) "
+        "RETURN s.id, s.name, s.kind, s.properties, r.properties ORDER BY s.name",
+        parameters={"id": method_id},
+    )
+    statistical_methods = []
+    for x in sm_rows:
+        d = _node_dict(x[0], x[1], x[2], x[3])
+        d["evidence"] = json.loads(x[4] or "{}").get("evidence", "")
+        statistical_methods.append(d)
+    out["statistical_methods"] = statistical_methods
+
+    # Assumptions inherited transitively (Method→StatisticalMethod→Assumption),
+    # deduped by assumption, recording which statistical method(s) it comes via.
+    a_rows = conn.execute(
+        "MATCH (m:Entity {id: $id})-[:Rel {kind: 'USES_STATISTICAL_METHOD'}]->"
+        "(s:Entity)-[ra:Rel {kind: 'REQUIRES_ASSUMPTION'}]->(a:Entity) "
+        "RETURN a.id, a.name, a.kind, a.properties, s.name, ra.properties "
+        "ORDER BY a.name, s.name",
+        parameters={"id": method_id},
+    )
+    assumptions: dict[str, dict[str, Any]] = {}
+    for x in a_rows:
+        aid = x[0]
+        if aid not in assumptions:
+            d = _node_dict(x[0], x[1], x[2], x[3])
+            d["via"] = []
+            d["evidence"] = json.loads(x[5] or "{}").get("evidence", "")
+            assumptions[aid] = d
+        if x[4] not in assumptions[aid]["via"]:
+            assumptions[aid]["via"].append(x[4])
+    out["assumptions"] = list(assumptions.values())
 
     return out
