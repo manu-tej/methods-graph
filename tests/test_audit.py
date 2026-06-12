@@ -698,3 +698,97 @@ def test_audit_requires_assumption_ungrounded_is_violation(tmp_path):
     assert typed.ok
     assert not grounded.ok and grounded.violations == 1
     assert result.ok is False
+
+
+# ---------------------------------------------------------------------------
+# Evidence-token PREFIX validation (tightened grounding)
+#   USES_STATISTICAL_METHOD : evidence must start with doi: or pmid:
+#   REQUIRES_ASSUMPTION     : evidence must start with doi:/pmid:/url:/isbn:/stato:
+# ---------------------------------------------------------------------------
+
+
+def test_audit_uses_statistical_method_non_doi_pmid_evidence_is_violation(tmp_path):
+    """A USES edge whose evidence is well-formed but uses a url:/isbn: token (not
+    doi:/pmid:) must FAIL the USES grounding invariant."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P),
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+    ]
+    edges = [
+        EdgeRecord("m:deseq2", "obo:STATO_0000559", EdgeKind.USES_STATISTICAL_METHOD,
+                   {"basis": "curated", "evidence": "url:https://example.org"}, P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    grounded = next(i for i in _usm_invariants(result) if "grounded" in i.name)
+    assert not grounded.ok and grounded.violations == 1
+    assert result.ok is False
+
+
+def test_audit_uses_statistical_method_pmid_evidence_passes(tmp_path):
+    """A USES edge grounded with a pmid: token passes the grounding invariant."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P),
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+    ]
+    edges = [
+        EdgeRecord("m:deseq2", "obo:STATO_0000559", EdgeKind.USES_STATISTICAL_METHOD,
+                   {"basis": "curated", "evidence": "pmid:25516281"}, P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    assert all(inv.ok for inv in _usm_invariants(result))
+    assert result.ok is True
+
+
+def test_audit_requires_assumption_disallowed_prefix_is_violation(tmp_path):
+    """A REQUIRES edge with an out-of-policy evidence prefix (e.g. 'foo:') must FAIL."""
+    nodes = [
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("assum:normality", "normality", NodeKind.ASSUMPTION, {}, P),
+    ]
+    edges = [
+        EdgeRecord("obo:STATO_0000559", "assum:normality", EdgeKind.REQUIRES_ASSUMPTION,
+                   {"basis": "curated", "evidence": "foo:bar"}, P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    grounded = next(i for i in _ra_invariants(result) if "grounded" in i.name)
+    assert not grounded.ok and grounded.violations == 1
+    assert result.ok is False
+
+
+def test_audit_requires_assumption_stato_evidence_passes(tmp_path):
+    """REQUIRES grounded with a stato: token (an allowed prefix) passes."""
+    nodes = [
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("assum:normality", "normality", NodeKind.ASSUMPTION, {}, P),
+    ]
+    edges = [
+        EdgeRecord("obo:STATO_0000559", "assum:normality", EdgeKind.REQUIRES_ASSUMPTION,
+                   {"basis": "curated", "evidence": "stato:OBI_0000739"}, P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    assert all(inv.ok for inv in _ra_invariants(result))
+    assert result.ok is True

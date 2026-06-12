@@ -336,9 +336,16 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
 
     # Grounding invariants (computed in Python — evidence lives in the edge's JSON
     # ``properties``, which Cypher can't introspect).  Every curated cross-link
-    # edge MUST carry a non-empty ``evidence`` token; this is what makes an
-    # "ungrounded curated link" structurally impossible to pass the audit.
-    def _ungrounded_count(edge_kind: str) -> int:
+    # edge MUST carry an ``evidence`` token whose prefix is allowed for that edge
+    # kind.  This makes an ungrounded OR loosely-grounded curated link (e.g. a
+    # statistical-method link cited only by a bare URL, or any edge with a free-
+    # text token) structurally impossible to pass the audit.
+    #
+    #   USES_STATISTICAL_METHOD : doi: | pmid:  (a primary publication only)
+    #   REQUIRES_ASSUMPTION     : doi: | pmid: | url: | isbn: | stato:
+    #     (assumptions are also groundable in textbooks / authoritative URLs /
+    #     the statistical-method's own STATO definition)
+    def _bad_evidence_count(edge_kind: str, allowed_prefixes: tuple[str, ...]) -> int:
         rows = _qall(f"MATCH ()-[r:Rel{{kind:'{edge_kind}'}}]->() RETURN r.properties")
         n = 0
         for row in rows:
@@ -346,16 +353,19 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
                 props = json.loads(row[0] or "{}")
             except (json.JSONDecodeError, TypeError):
                 props = {}
-            if not str(props.get("evidence", "")).strip():
+            evidence = str(props.get("evidence", "")).strip().lower()
+            if not evidence.startswith(allowed_prefixes):
                 n += 1
         return n
 
-    for edge_kind, label in (
-        ("USES_STATISTICAL_METHOD", "USES_STATISTICAL_METHOD: grounded (DOI/PMID evidence present)"),
-        ("REQUIRES_ASSUMPTION", "REQUIRES_ASSUMPTION: grounded (evidence present)"),
+    for edge_kind, prefixes, label in (
+        ("USES_STATISTICAL_METHOD", ("doi:", "pmid:"),
+         "USES_STATISTICAL_METHOD: grounded (doi:/pmid: evidence)"),
+        ("REQUIRES_ASSUMPTION", ("doi:", "pmid:", "url:", "isbn:", "stato:"),
+         "REQUIRES_ASSUMPTION: grounded (doi:/pmid:/url:/isbn:/stato: evidence)"),
     ):
-        ungrounded = _ungrounded_count(edge_kind)
-        invariants.append(Invariant(name=label, violations=ungrounded, ok=(ungrounded == 0)))
+        bad = _bad_evidence_count(edge_kind, prefixes)
+        invariants.append(Invariant(name=label, violations=bad, ok=(bad == 0)))
 
     # ------------------------------------------------------------------
     # 4. SAME_AS candidates
