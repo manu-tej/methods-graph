@@ -46,6 +46,7 @@ def test_parse_pipeline_infers_downstream_of_by_io_overlap():
     assert edge.properties["derivation"] == "io_inferred"
     assert edge.properties["pipelines"] == ["mini"]
     assert edge.properties["attestations"] == 1
+    assert edge.properties["confidence"] == 0.5
 
 
 def test_parse_pipeline_no_self_loops():
