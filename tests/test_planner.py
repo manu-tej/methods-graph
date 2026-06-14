@@ -187,6 +187,36 @@ def test_expand_skips_executorless_candidate_but_keeps_limit(tmp_path):
     assert [s.module_id for s in out] == ["mod:align", "mod:fastqc"]
 
 
+from methods_graph.planner import seed_from_edge
+
+
+def test_seed_from_edge_includes_dataset_format_and_maps_keywords_to_modules(tmp_path):
+    conn = build_fixture(tmp_path)
+    edge = {"source_label": "STAR", "target_label": "aligned reads", "relation": "aligns"}
+    frontier = seed_from_edge(conn, edge, dataset_format="fmt:fastq")
+    assert "fmt:fastq" in frontier            # dataset always seeded
+    assert "mod:align" in frontier            # "star" -> m:star -> mod:align (via WRAPS)
+
+
+def test_seed_from_edge_dataset_only_when_no_keyword_hits(tmp_path):
+    conn = build_fixture(tmp_path)
+    edge = {"source_label": "zzzznomatch", "target_label": "", "relation": ""}
+    assert seed_from_edge(conn, edge, dataset_format="fmt:fastq") == ["fmt:fastq"]
+
+
+def test_seed_from_edge_empty_when_nothing_resolves(tmp_path):
+    conn = build_fixture(tmp_path)
+    assert seed_from_edge(conn, {"source_label": "zzzznomatch"}) == []
+
+
+def test_seed_from_edge_accepts_object_edge(tmp_path):
+    conn = build_fixture(tmp_path)
+    class E:
+        source_label = "STAR"; target_label = ""; relation = ""
+    frontier = seed_from_edge(conn, E(), dataset_format="fmt:fastq")
+    assert "fmt:fastq" in frontier and "mod:align" in frontier
+
+
 def test_executor_to_dict_is_json_serializable():
     e = Executor("m:star", "star", container="quay.io/biocontainers/star:2.7")
     d = e.to_dict()

@@ -170,3 +170,33 @@ def expand(conn: kuzu.Connection, frontier_ids: list[str], *,
             evidence=c.evidence, assumptions=assumptions, why=why,
         ))
     return out
+
+
+def seed_from_edge(conn: kuzu.Connection, edge: Any, *,
+                   dataset_format: str | None = None) -> list[str]:
+    """Map a quration causal edge (+ optional dataset format) to an expand() frontier.
+
+    Reads `source_label`, `target_label`, `relation` (dict keys or attributes),
+    resolves their words to Method ids via method_ids_matching, maps those to their
+    Modules (via WRAPS), and prepends the dataset Format id. Deduped, order-preserving.
+    Deliberately thin — quration owns the causal layer; biological entity labels often
+    don't match method vocabulary, so the dataset_format is the reliable seed."""
+    def _get(key: str):
+        return edge.get(key) if isinstance(edge, dict) else getattr(edge, key, None)
+
+    labels = [str(_get(k)) for k in ("source_label", "target_label", "relation") if _get(k)]
+    keywords = [w for label in labels for w in label.replace("-", " ").replace("_", " ").split()]
+
+    frontier: list[str] = []
+    if dataset_format:
+        frontier.append(dataset_format)
+    method_ids = method_ids_matching(conn, keywords) if keywords else []
+    if method_ids:
+        for row in conn.execute(
+            "MATCH (mod:Entity {kind:'Module'})-[:Rel {kind:'WRAPS'}]->(m:Entity) "
+            "WHERE list_contains($mids, m.id) "
+            "RETURN DISTINCT mod.id ORDER BY mod.id",
+            parameters={"mids": method_ids},
+        ):
+            frontier.append(row[0])
+    return list(dict.fromkeys(frontier))
