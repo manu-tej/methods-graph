@@ -4,6 +4,10 @@ Reads ``modules.json`` for membership and each vendored module's ``meta.yml``
 for the canonical ``name`` join key (so HAS_MODULE targets ``mod:<name>``, the
 same id the module connector mints — NOT the directory path).
 
+The connector also emits ``DOWNSTREAM_OF`` edges inferred from module I/O
+type-overlap within the pipeline (Option 2): A → B when OUTPUT(A) ∩ INPUT(B)
+is non-empty.
+
 Offline + deterministic: no network, no clock; ``ingested_at`` is injected.
 """
 from __future__ import annotations
@@ -40,6 +44,15 @@ def _module_name(pipeline_dir: Path, rel_path: str) -> str | None:
     return name if isinstance(name, str) and name else None
 
 
+def _module_io(pipeline_dir: Path, rel_path: str) -> tuple[set[str], set[str]]:
+    """(inputs, outputs) EDAM/synthetic-format id sets for a vendored module."""
+    meta_path = pipeline_dir / "modules" / "nf-core" / rel_path / "meta.yml"
+    meta = yaml.safe_load(meta_path.read_text()) or {}
+    if not isinstance(meta, dict):
+        return set(), set()
+    return _io_module_targets(meta, "input"), _io_module_targets(meta, "output")
+
+
 def parse_pipeline(
     pipeline_dir: Path,
     *,
@@ -69,4 +82,23 @@ def parse_pipeline(
         EdgeRecord(pipe_id, mod_id, EdgeKind.HAS_MODULE, {}, prov)
         for mod_id in sorted(set(path_to_modid.values()))
     ]
+
+    # Option-2 wiring: A -DOWNSTREAM_OF-> B when OUTPUT(A) ∩ INPUT(B) ≠ ∅.
+    io: dict[str, tuple[set[str], set[str]]] = {
+        rel: _module_io(pipeline_dir, rel) for rel in path_to_modid
+    }
+    seen_pairs: set[tuple[str, str]] = set()
+    for a_rel, (_a_in, a_out) in sorted(io.items()):
+        for b_rel, (b_in, _b_out) in sorted(io.items()):
+            a_id, b_id = path_to_modid[a_rel], path_to_modid[b_rel]
+            if a_id == b_id:           # no self-loops (incl. name collisions)
+                continue
+            if a_out & b_in and (a_id, b_id) not in seen_pairs:
+                seen_pairs.add((a_id, b_id))
+                edges.append(EdgeRecord(
+                    a_id, b_id, EdgeKind.DOWNSTREAM_OF,
+                    {"pipelines": [name], "attestations": 1,
+                     "derivation": "io_inferred", "confidence": 0.5},
+                    prov,
+                ))
     return nodes, edges
