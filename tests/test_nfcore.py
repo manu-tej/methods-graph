@@ -3,6 +3,8 @@ from methods_graph.connectors.nfcore import (
     parse_module,
     _collect_ontology_edam_uris,
     _edam_uri_to_node_id,
+    _pattern_to_fmt_id,
+    _collect_io_patterns,
 )
 from methods_graph.types import NodeKind, EdgeKind
 
@@ -646,3 +648,35 @@ def test_distinct_biotools_ids_preserved(tmp_path):
     assert methods["m:bcftools"].biotools_id == "bcftools", (
         "bcftools must keep biotools_id='bcftools' — distinct identifiers, no conflict"
     )
+
+
+# ---------------------------------------------------------------------------
+# Format-map plumbing: pattern -> EDAM id, and pattern collection
+# ---------------------------------------------------------------------------
+
+def test_pattern_to_fmt_id_known_unknown_and_case():
+    # Known genomics formats map to their EDAM fmt: ids.
+    assert _pattern_to_fmt_id("*.bam") == "fmt:format_2572"
+    assert _pattern_to_fmt_id("*.vcf.gz") == "fmt:format_3016"
+    assert _pattern_to_fmt_id("*.fastq.gz") == "fmt:format_1930"
+    # Case-insensitive.
+    assert _pattern_to_fmt_id("*.BAM") == "fmt:format_2572"
+    # Mid-string glob still resolves by suffix.
+    assert _pattern_to_fmt_id("sample_*.bam") == "fmt:format_2572"
+    # Unknown extension → synthetic Format id.
+    assert _pattern_to_fmt_id("*.sf") == "fmt:pat:.sf"
+    assert _pattern_to_fmt_id("*.xyz") == "fmt:pat:.xyz"
+
+
+def test_collect_io_patterns_handles_list_of_lists():
+    # Mimics the nf-core meta.yml "- -" grouped-channel (list-of-lists) shape.
+    section = [
+        [
+            {"meta": {"type": "map", "description": "sample info"}},
+            {"reads": {"type": "file", "pattern": "*.fastq.gz"}},
+        ],
+        {"bam": {"type": "file", "pattern": "*.bam"}},
+    ]
+    pats = _collect_io_patterns(section)
+    assert "*.fastq.gz" in pats
+    assert "*.bam" in pats
