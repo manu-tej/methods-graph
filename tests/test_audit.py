@@ -792,3 +792,31 @@ def test_audit_requires_assumption_stato_evidence_passes(tmp_path):
 
     assert all(inv.ok for inv in _ra_invariants(result))
     assert result.ok is True
+
+
+# ---------------------------------------------------------------------------
+# Pipeline-graph invariants (HAS_MODULE, DOWNSTREAM_OF, attestation)
+# ---------------------------------------------------------------------------
+
+
+def test_audit_passes_with_pipeline_graph(tmp_path):
+    from methods_graph.cli import cmd_build
+    from methods_graph.audit import audit_graph
+    import kuzu
+    from pathlib import Path
+
+    fix = Path(__file__).parent / "fixtures"
+    db = tmp_path / "m.kuzu"
+    cmd_build(
+        edam=None,
+        nfcore_modules=fix / "nfcore_pipeline" / "mini" / "modules" / "nf-core",
+        biocontainers=None,
+        nfcore_pipelines=fix / "nfcore_pipeline",
+        db_path=db, staging_dir=tmp_path / "s", ingested_at="2026-06-13",
+    )
+    conn = kuzu.Connection(kuzu.Database(str(db), read_only=True))
+    result = audit_graph(conn)
+    names = {i.name for i in result.invariants}
+    assert any("HAS_MODULE" in n for n in names)
+    assert any("DOWNSTREAM_OF" in n for n in names)
+    assert result.ok  # all invariants pass on a well-formed build

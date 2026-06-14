@@ -327,6 +327,31 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
             "WHERE NOT (a.kind='StatisticalMethod' AND b.kind='Assumption') "
             "RETURN count(*)",
         ),
+        (
+            "HAS_MODULE: Pipeline→Module",
+            "MATCH (a)-[r:Rel{kind:'HAS_MODULE'}]->(b) "
+            "WHERE NOT (a.kind='Pipeline' AND b.kind='Module') RETURN count(*)",
+        ),
+        (
+            "DOWNSTREAM_OF: no self-loops",
+            "MATCH (a)-[r:Rel{kind:'DOWNSTREAM_OF'}]->(b) "
+            "WHERE a.id = b.id RETURN count(*)",
+        ),
+        (
+            "Pipeline: has >=1 HAS_MODULE",
+            "MATCH (p:Entity{kind:'Pipeline'}) "
+            "WHERE NOT EXISTS { MATCH (p)-[:Rel{kind:'HAS_MODULE'}]->() } "
+            "RETURN count(*)",
+        ),
+        (
+            # Endpoint-kind soundness only. The full I/O-overlap soundness check
+            # (OUTPUT(A) ∩ INPUT(B) ≠ ∅) is trivially true under Option-2 inference,
+            # so it is deferred to Option 3.
+            "DOWNSTREAM_OF: endpoints are Method/Module",
+            "MATCH (a)-[r:Rel{kind:'DOWNSTREAM_OF'}]->(b) "
+            "WHERE NOT (a.kind IN ['Method','Module'] AND b.kind IN ['Method','Module']) "
+            "RETURN count(*)",
+        ),
     ]
 
     invariants: list[Invariant] = []
@@ -366,6 +391,29 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
     ):
         bad = _bad_evidence_count(edge_kind, prefixes)
         invariants.append(Invariant(name=label, violations=bad, ok=(bad == 0)))
+
+    # DOWNSTREAM_OF attestation consistency — JSON properties, so computed in
+    # Python (Cypher can't introspect the blob).  attestations must equal the
+    # length of a non-empty, sorted, deduped pipelines list.
+    def _bad_attestation_count() -> int:
+        rows = _qall("MATCH ()-[r:Rel{kind:'DOWNSTREAM_OF'}]->() RETURN r.properties")
+        n = 0
+        for row in rows:
+            try:
+                props = json.loads(row[0] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                props = {}
+            pipes = props.get("pipelines", [])
+            if (not isinstance(pipes, list) or not pipes
+                    or pipes != sorted(set(pipes))
+                    or props.get("attestations") != len(pipes)):
+                n += 1
+        return n
+
+    _att_bad = _bad_attestation_count()
+    invariants.append(Invariant(
+        name="DOWNSTREAM_OF: attestation consistent (attestations==len(pipelines))",
+        violations=_att_bad, ok=(_att_bad == 0)))
 
     # ------------------------------------------------------------------
     # 4. SAME_AS candidates
