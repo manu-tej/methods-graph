@@ -104,6 +104,43 @@ def test_candidates_deterministic(tmp_path):
     assert a == b
 
 
+from methods_graph.planner import _enrich
+
+
+def test_enrich_picks_min_id_executor_and_lists_alternatives(tmp_path):
+    conn = build_fixture(tmp_path)
+    chosen, alts, _assum = _enrich(conn, "mod:multi")
+    assert chosen.method_id == "m:aaa"               # min id
+    assert [a.method_id for a in alts] == ["m:bbb"]
+
+
+def test_enrich_resolves_container_when_present(tmp_path):
+    conn = build_fixture(tmp_path)
+    chosen, _alts, _assum = _enrich(conn, "mod:sort")
+    assert chosen.method_id == "m:samtools"
+    assert chosen.container == "quay.io/biocontainers/samtools:1.17"
+
+
+def test_enrich_container_none_when_absent(tmp_path):
+    conn = build_fixture(tmp_path)
+    chosen, _alts, _assum = _enrich(conn, "mod:align")
+    assert chosen.container is None                   # m:star has no PACKAGED_AS
+
+
+def test_enrich_surfaces_inherited_assumptions(tmp_path):
+    conn = build_fixture(tmp_path)
+    _chosen, _alts, assumptions = _enrich(conn, "mod:multiqc")
+    assert [a["id"] for a in assumptions] == ["assum:norm"]
+    assert assumptions[0]["via"][0]["statistical_method"] == "rank test"
+
+
+def test_enrich_returns_none_when_module_wraps_no_method(tmp_path):
+    conn = build_fixture(tmp_path)
+    # fmt:fastq is not a module and wraps nothing -> defensive None.
+    chosen, alts, assumptions = _enrich(conn, "fmt:fastq")
+    assert chosen is None and alts == [] and assumptions == []
+
+
 def test_executor_to_dict_is_json_serializable():
     e = Executor("m:star", "star", container="quay.io/biocontainers/star:2.7")
     d = e.to_dict()

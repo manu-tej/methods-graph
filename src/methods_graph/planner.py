@@ -109,3 +109,34 @@ def _candidates(conn: kuzu.Connection, frontier_ids: list[str],
             best[mod_id] = cand
 
     return sorted(best.values(), key=lambda c: (-c.count, c.module_id))
+
+
+def _enrich(conn: kuzu.Connection, module_id: str):
+    """Resolve a Module to its executor(s) via WRAPS and enrich the chosen one.
+
+    Returns (chosen: Executor | None, alternatives: list[Executor],
+    assumptions: list[dict]). chosen is the min-id wrapped Method (deterministic);
+    its container (via PACKAGED_AS) and inherited assumptions come from one
+    method_neighborhood call. Returns (None, [], []) if the module wraps no method."""
+    rows = list(conn.execute(
+        "MATCH (mod:Entity {id:$mid})-[:Rel {kind:'WRAPS'}]->(m:Entity {kind:'Method'}) "
+        "RETURN m.id, m.name ORDER BY m.id",
+        parameters={"mid": module_id},
+    ))
+    if not rows:
+        return None, [], []
+    execs = [Executor(r[0], r[1]) for r in rows]
+    base, alternatives = execs[0], execs[1:]
+
+    nb = method_neighborhood(conn, base.method_id)
+    containers = nb.get("containers", [])
+    container = None
+    if containers:
+        c0 = containers[0]
+        container = c0["properties"].get("image_name", c0["name"])
+    chosen = Executor(base.method_id, base.name, container)
+    assumptions = [
+        {"id": a["id"], "name": a["name"], "via": a.get("via", [])}
+        for a in nb.get("assumptions", [])
+    ]
+    return chosen, alternatives, assumptions
