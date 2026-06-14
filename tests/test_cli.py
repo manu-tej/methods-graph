@@ -92,6 +92,31 @@ def test_cmd_build_is_deterministic(tmp_path):
     assert ids_1 == ids_2, f"Non-deterministic build: {ids_1} vs {ids_2}"
 
 
+def test_cmd_build_loads_pipeline_graph(tmp_path):
+    from pathlib import Path
+    from methods_graph.cli import cmd_build
+    import kuzu
+
+    FIX = Path(__file__).parent / "fixtures"
+    db = tmp_path / "m.kuzu"
+    cmd_build(
+        edam=None,
+        nfcore_modules=FIX / "nfcore_pipeline" / "mini" / "modules" / "nf-core",
+        biocontainers=None,
+        nfcore_pipelines=FIX / "nfcore_pipeline",
+        db_path=db,
+        staging_dir=tmp_path / "stage",
+        ingested_at="2026-06-13",
+    )
+    conn = kuzu.Connection(kuzu.Database(str(db), read_only=True))
+    pipes = [r[0] for r in conn.execute(
+        "MATCH (n:Entity {kind:'Pipeline'}) RETURN n.id")]
+    assert "pipe:mini" in pipes
+    dse = [r[0] for r in conn.execute(
+        "MATCH ()-[r:Rel {kind:'DOWNSTREAM_OF'}]->() RETURN r.kind")]
+    assert len(dse) >= 1
+
+
 def test_cmd_build_partial_sources(tmp_path):
     """Build with only nf-core modules (no EDAM, no biocontainers) succeeds."""
     db_path = tmp_path / "methods.kuzu"

@@ -48,6 +48,7 @@ def cmd_build(
     edam: Path | None,
     nfcore_modules: Path | None,
     biocontainers: Path | None,
+    nfcore_pipelines: Path | None = None,
     biotools: Path | None = None,
     stato: Path | None = None,
     obi: Path | None = None,
@@ -67,10 +68,12 @@ def cmd_build(
     # Grouped here for readability (build is the only subcommand that needs these).
     from methods_graph.connectors.edam import parse_edam
     from methods_graph.connectors.nfcore import parse_module
+    from methods_graph.connectors.nfcore_pipeline import parse_pipeline
     from methods_graph.connectors.biocontainers import parse_biocontainer
     from methods_graph.connectors.biotools import load_biotools_edam
     from methods_graph.connectors.ontology import parse_stato, parse_obi
     from methods_graph.resolve.resolver import resolve
+    from methods_graph.pipeline_merge import merge_downstream_of
     from methods_graph.graph.loader import build_graph
     from methods_graph.types import EdgeKind, EdgeRecord, MethodRecord, NodeKind, Provenance
 
@@ -82,6 +85,8 @@ def cmd_build(
         raise FileNotFoundError(f"--edam path does not exist: {edam}")
     if nfcore_modules is not None and not Path(nfcore_modules).exists():
         raise FileNotFoundError(f"--nfcore-modules path does not exist: {nfcore_modules}")
+    if nfcore_pipelines is not None and not Path(nfcore_pipelines).exists():
+        raise FileNotFoundError(f"--nfcore-pipelines path does not exist: {nfcore_pipelines}")
     if biocontainers is not None and not Path(biocontainers).exists():
         raise FileNotFoundError(f"--biocontainers path does not exist: {biocontainers}")
     if biotools is not None and not Path(biotools).exists():
@@ -136,6 +141,13 @@ def cmd_build(
             all_nodes.extend(nodes)
             all_edges.extend(edges)
 
+    # --- nf-core pipelines ---
+    if nfcore_pipelines is not None:
+        for mj in sorted(Path(nfcore_pipelines).rglob("modules.json")):
+            nodes, edges = parse_pipeline(mj.parent, ingested_at=ingested_at)
+            all_nodes.extend(nodes)
+            all_edges.extend(edges)
+
     # --- STATO ---
     if stato is not None:
         stato_nodes, stato_edges = parse_stato(Path(stato), ingested_at=ingested_at)
@@ -163,6 +175,9 @@ def cmd_build(
         src_edges=all_edges,
         ingested_at=ingested_at,
     )
+
+    # Roll up DOWNSTREAM_OF attestation metadata (after resolve's id-remap + dedup).
+    resolved_edges = merge_downstream_of(resolved_edges)
 
     # --- bio.tools EDAM enrichment (post-resolve, pre-load) ---
     bt_edges_added = 0
@@ -589,6 +604,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="path to EDAM TSV snapshot (optional)")
     b.add_argument("--nfcore-modules", type=Path, default=None, dest="nfcore_modules",
                    help="path to directory of nf-core module subdirectories (optional)")
+    b.add_argument("--nfcore-pipelines", type=Path, default=None, dest="nfcore_pipelines",
+                   help="path to a directory tree of nf-core pipeline checkouts (optional)")
     b.add_argument("--biocontainers", type=Path, default=None,
                    help="path to directory of biocontainers JSON files (optional)")
     b.add_argument("--biotools", type=Path, default=None,
@@ -676,6 +693,7 @@ def main(argv: list[str] | None = None) -> int:
             edam=args.edam,
             nfcore_modules=args.nfcore_modules,
             biocontainers=args.biocontainers,
+            nfcore_pipelines=args.nfcore_pipelines,
             biotools=args.biotools,
             stato=args.stato,
             obi=args.obi,
