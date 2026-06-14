@@ -432,6 +432,26 @@ def test_fetch_nfcore_clones_and_returns_manifest(tmp_path: Path) -> None:
     assert len(revparse_cmds) == 1, f"Expected exactly 1 rev-parse command; got {revparse_cmds}"
 
 
+def test_fetch_nfcore_pipeline_clones_and_returns_manifest(tmp_path):
+    from methods_graph.fetch import fetch_nfcore_pipeline
+
+    calls = []
+    def fake_runner(cmd, **kw):
+        calls.append(cmd)
+        class R:  # mimic subprocess.CompletedProcess
+            stdout = "deadbeef\n"
+        # create the clone dir so a subsequent call would reuse it
+        if cmd[:2] == ["git", "clone"]:
+            (tmp_path / "pipelines" / "rnaseq").mkdir(parents=True, exist_ok=True)
+        return R()
+
+    m = fetch_nfcore_pipeline("rnaseq", tmp_path, revision="3.14.0",
+                              fetched_at="2026-06-13T00:00:00Z", runner=fake_runner)
+    assert m["revision"] == "3.14.0"
+    assert m["commit"] == "deadbeef"
+    assert m["path"].endswith("pipelines/rnaseq")
+
+
 def test_fetch_nfcore_skips_clone_if_dir_exists(tmp_path: Path) -> None:
     """If clone dir already exists, the clone command is skipped but rev-parse still runs."""
     clone_dir = tmp_path / "modules"
@@ -732,6 +752,16 @@ def test_write_manifest_includes_biotools(tmp_path: Path) -> None:
     assert bt["n_tools"] == 2
     assert bt["n_failed"] == 0
     assert bt["failed"] == []
+
+
+def test_write_manifest_includes_nfcore_pipelines(tmp_path):
+    from methods_graph.fetch import write_manifest
+    import json
+    p = write_manifest(tmp_path, edam=None, nfcore=None, biocontainers=None,
+                       nfcore_pipelines={"rnaseq": {"commit": "x"}},
+                       created_at="2026-06-13T00:00:00Z")
+    data = json.loads(p.read_text())
+    assert data["sources"]["nfcore_pipelines"] == {"rnaseq": {"commit": "x"}}
 
 
 def test_write_manifest_biotools_null_by_default(tmp_path: Path) -> None:

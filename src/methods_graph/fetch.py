@@ -188,6 +188,7 @@ def write_manifest(
     *,
     edam: dict[str, Any] | None,
     nfcore: dict[str, Any] | None,
+    nfcore_pipelines: dict[str, Any] | None = None,
     biocontainers: dict[str, Any] | None,
     biotools: dict[str, Any] | None = None,
     stato: dict[str, Any] | None = None,
@@ -206,6 +207,7 @@ def write_manifest(
           "sources": {
             "edam":             <edam manifest dict>  | null,
             "nfcore_modules":   <nfcore manifest dict> | null,
+            "nfcore_pipelines": <nfcore pipelines manifest dict> | null,
             "biocontainers":    <biocontainers manifest dict> | null,
             "biotools":         <biotools manifest dict> | null,
             "stato":            <stato manifest dict> | null,
@@ -217,6 +219,8 @@ def write_manifest(
         dest_dir:      Directory to write ``snapshot.json`` into (must exist).
         edam:          Return value of ``fetch_edam``, or ``None``.
         nfcore:        Return value of ``fetch_nfcore``, or ``None``.
+        nfcore_pipelines: Mapping of pipeline name to ``fetch_nfcore_pipeline``
+                       return value, or ``None``.
         biocontainers: Return value of ``fetch_biocontainers``, or ``None``.
         biotools:      Return value of ``fetch_biotools``, or ``None``.
         stato:         Return value of ``fetch_stato``, or ``None``.
@@ -232,6 +236,7 @@ def write_manifest(
         "sources": {
             "edam": edam,
             "nfcore_modules": nfcore,
+            "nfcore_pipelines": nfcore_pipelines,
             "biocontainers": biocontainers,
             "biotools": biotools,
             "stato": stato,
@@ -375,6 +380,36 @@ def fetch_nfcore(
         "repo": repo,
         "commit": commit_sha,
         "modules_path": str(modules_path),
+        "fetched_at": fetched_at,
+    }
+
+
+def fetch_nfcore_pipeline(
+    name: str,
+    dest_dir: Path,
+    *,
+    revision: str,
+    fetched_at: str,
+    runner: Callable[..., Any] = subprocess.run,
+) -> dict[str, Any]:
+    """Shallow-clone nf-core/<name> at *revision* into <dest>/pipelines/<name>.
+
+    Reuses fetch_nfcore's pattern (injectable runner, reuse-existing-clone,
+    rev-parse HEAD) but returns a {repo, commit, revision, path, fetched_at}
+    manifest — note `revision` and `path` (vs fetch_nfcore's `modules_path`)."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    clone_dir = dest_dir / "pipelines" / name
+    repo = f"https://github.com/nf-core/{name}.git"
+    if not clone_dir.exists():
+        runner(["git", "clone", "--depth", "1", "--branch", revision, repo,
+                str(clone_dir)], check=True)
+    result = runner(["git", "-C", str(clone_dir), "rev-parse", "HEAD"],
+                    capture_output=True, text=True, check=True)
+    return {
+        "repo": repo,
+        "commit": result.stdout.strip(),
+        "revision": revision,
+        "path": str(clone_dir),
         "fetched_at": fetched_at,
     }
 
