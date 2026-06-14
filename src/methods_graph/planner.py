@@ -140,3 +140,33 @@ def _enrich(conn: kuzu.Connection, module_id: str):
         for a in nb.get("assumptions", [])
     ]
     return chosen, alternatives, assumptions
+
+
+def expand(conn: kuzu.Connection, frontier_ids: list[str], *,
+           limit: int = 10, exclude: set[str] | None = None) -> list[Suggestion]:
+    """Suggest the attestation-ranked next analysis steps from the current frontier.
+
+    frontier_ids: the nodes the user "has" — Module step ids and/or EDAM Format/Data
+        ids, order-insensitive. Returns up to `limit` Suggestions sorted by
+        (rank_signal.count desc, module_id asc); candidates already in frontier_ids
+        or `exclude` are dropped. Read-only, deterministic, no network.
+    """
+    cands = _candidates(conn, list(frontier_ids), exclude or set())
+    out: list[Suggestion] = []
+    for c in cands:
+        if len(out) >= limit:
+            break
+        chosen, alternatives, assumptions = _enrich(conn, c.module_id)
+        if chosen is None:
+            continue  # module wraps no executable method; skip
+        if c.kind == "downstream":
+            why = f"after {c.source_label}, {c.count} pipeline(s) run {c.module_name} next"
+        else:
+            why = f"{c.count} pipeline(s) start with {c.module_name}"
+        out.append(Suggestion(
+            module_id=c.module_id, module_name=c.module_name,
+            chosen_executor=chosen, alternatives=alternatives,
+            rank_signal={"kind": c.kind, "count": c.count},
+            evidence=c.evidence, assumptions=assumptions, why=why,
+        ))
+    return out

@@ -141,6 +141,52 @@ def test_enrich_returns_none_when_module_wraps_no_method(tmp_path):
     assert chosen is None and alts == [] and assumptions == []
 
 
+from methods_graph.planner import expand
+
+
+def test_expand_continue_returns_ranked_suggestions(tmp_path):
+    conn = build_fixture(tmp_path)
+    out = expand(conn, ["mod:align"])
+    assert [s.module_id for s in out] == ["mod:sort", "mod:index"]
+    assert all(isinstance(s, Suggestion) for s in out)
+    top = out[0]
+    assert top.chosen_executor.method_id == "m:samtools"
+    assert top.chosen_executor.container == "quay.io/biocontainers/samtools:1.17"
+    assert top.rank_signal == {"kind": "downstream", "count": 2}
+    assert top.evidence == ["rnaseq", "sarek"]
+    assert "samtools sort" in top.why and "mod:align" not in top.why  # uses names, not ids
+
+
+def test_expand_surfaces_assumptions_on_executor(tmp_path):
+    conn = build_fixture(tmp_path)
+    out = expand(conn, ["mod:sort"])
+    assert [s.module_id for s in out] == ["mod:multiqc"]
+    assert [a["id"] for a in out[0].assumptions] == ["assum:norm"]
+
+
+def test_expand_respects_limit(tmp_path):
+    conn = build_fixture(tmp_path)
+    out = expand(conn, ["mod:align"], limit=1)
+    assert [s.module_id for s in out] == ["mod:sort"]
+
+
+def test_expand_empty_frontier_returns_empty(tmp_path):
+    conn = build_fixture(tmp_path)
+    assert expand(conn, []) == []
+
+
+def test_expand_no_outgoing_returns_empty(tmp_path):
+    conn = build_fixture(tmp_path)
+    assert expand(conn, ["mod:index"]) == []   # index has no DOWNSTREAM_OF out
+
+
+def test_expand_skips_executorless_candidate_but_keeps_limit(tmp_path):
+    conn = build_fixture(tmp_path)
+    # from fmt:fastq the entry candidates both have executors.
+    out = expand(conn, ["fmt:fastq"], limit=10)
+    assert [s.module_id for s in out] == ["mod:align", "mod:fastqc"]
+
+
 def test_executor_to_dict_is_json_serializable():
     e = Executor("m:star", "star", container="quay.io/biocontainers/star:2.7")
     d = e.to_dict()
