@@ -820,3 +820,45 @@ def test_audit_passes_with_pipeline_graph(tmp_path):
     assert any("HAS_MODULE" in n for n in names)
     assert any("DOWNSTREAM_OF" in n for n in names)
     assert result.ok  # all invariants pass on a well-formed build
+
+
+def test_audit_catches_inconsistent_attestation(tmp_path):
+    """A DOWNSTREAM_OF edge whose attestations (1) != len(pipelines) (2) must fail."""
+    # Two Module nodes + a DOWNSTREAM_OF edge whose attestations (1) != len(pipelines) (2).
+    nodes = [
+        NodeRecord("mod:a", "a", NodeKind.MODULE, {}, P),
+        NodeRecord("mod:b", "b", NodeKind.MODULE, {}, P),
+    ]
+    edges = [
+        EdgeRecord("mod:a", "mod:b", EdgeKind.DOWNSTREAM_OF,
+                   {"pipelines": ["x", "y"], "attestations": 1,
+                    "derivation": "io_inferred", "confidence": 0.5}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    att = next(i for i in result.invariants if "attestation consistent" in i.name)
+    assert att.ok is False
+    assert result.ok is False
+
+
+def test_audit_catches_pipeline_without_modules(tmp_path):
+    """A Pipeline node with no HAS_MODULE edge must fail the HAS_MODULE invariant."""
+    nodes = [NodeRecord("pipe:lonely", "lonely", NodeKind.PIPELINE,
+                        {"n_modules": 0}, P)]
+    db_path = _make_db(tmp_path, nodes, [])
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    inv = next(i for i in result.invariants if "has >=1 HAS_MODULE" in i.name)
+    assert inv.ok is False
+    assert result.ok is False
