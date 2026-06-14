@@ -188,11 +188,11 @@ def write_manifest(
     *,
     edam: dict[str, Any] | None,
     nfcore: dict[str, Any] | None,
-    nfcore_pipelines: dict[str, Any] | None = None,
     biocontainers: dict[str, Any] | None,
     biotools: dict[str, Any] | None = None,
     stato: dict[str, Any] | None = None,
     obi: dict[str, Any] | None = None,
+    nfcore_pipelines: dict[str, Any] | None = None,
     created_at: str,
 ) -> Path:
     """Write a ``snapshot.json`` manifest to *dest_dir*.

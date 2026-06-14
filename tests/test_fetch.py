@@ -450,6 +450,30 @@ def test_fetch_nfcore_pipeline_clones_and_returns_manifest(tmp_path):
     assert m["revision"] == "3.14.0"
     assert m["commit"] == "deadbeef"
     assert m["path"].endswith("pipelines/rnaseq")
+    clone_calls = [c for c in calls if c[:2] == ["git", "clone"]]
+    assert len(clone_calls) == 1
+    assert "--branch" in clone_calls[0]
+    assert "3.14.0" in clone_calls[0]
+    assert any("github.com/nf-core/rnaseq" in str(tok) for tok in clone_calls[0])
+
+
+def test_fetch_nfcore_pipeline_reuses_existing_clone(tmp_path):
+    from methods_graph.fetch import fetch_nfcore_pipeline
+
+    # Pre-create the clone dir so fetch must NOT issue a clone.
+    (tmp_path / "pipelines" / "rnaseq").mkdir(parents=True)
+
+    calls = []
+    def fake_runner(cmd, **kw):
+        calls.append(cmd)
+        class R:
+            stdout = "cafef00d\n"
+        return R()
+
+    m = fetch_nfcore_pipeline("rnaseq", tmp_path, revision="3.14.0",
+                              fetched_at="2026-06-13T00:00:00Z", runner=fake_runner)
+    assert [c for c in calls if c[:2] == ["git", "clone"]] == []  # no re-clone
+    assert m["commit"] == "cafef00d"  # still rev-parsed HEAD of the existing clone
 
 
 def test_fetch_nfcore_skips_clone_if_dir_exists(tmp_path: Path) -> None:
