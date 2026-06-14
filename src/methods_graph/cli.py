@@ -43,6 +43,21 @@ def cmd_methods(*, db_path: Path) -> None:
         print(json.dumps(provider.get_methods(), indent=2))
 
 
+def cmd_suggest(*, db_path: Path, have: list[str], limit: int) -> None:
+    """Print attestation-ranked next-step suggestions for the given frontier as JSON."""
+    import kuzu
+    from methods_graph.planner import expand
+
+    db = kuzu.Database(str(db_path), read_only=True)
+    conn = kuzu.Connection(db)
+    try:
+        suggestions = expand(conn, have, limit=limit)
+    finally:
+        conn.close()
+        db.close()
+    print(json.dumps([s.to_dict() for s in suggestions], indent=2))
+
+
 def cmd_build(
     *,
     edam: Path | None,
@@ -608,6 +623,14 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--db", type=Path, default=Path("data/methods.kuzu"),
                    help="path to the Kùzu database directory")
 
+    sg = sub.add_parser("suggest",
+                        help="suggest attestation-ranked next analysis steps from a frontier")
+    sg.add_argument("--db", type=Path, default=Path("data/methods.kuzu"),
+                    help="path to the Kùzu database directory")
+    sg.add_argument("--have", action="append", dest="have", required=True, metavar="ID",
+                    help="a node id you have: a Module step id or EDAM Format/Data id (repeatable)")
+    sg.add_argument("--limit", type=int, default=10, help="max suggestions (default: 10)")
+
     b = sub.add_parser(
         "build",
         help="build the Kùzu DB from local source snapshots (connectors → resolver → loader)",
@@ -698,6 +721,8 @@ def main(argv: list[str] | None = None) -> int:
         cmd_query(db_path=args.db, keywords=args.keywords, k_hops=args.hops)
     elif args.cmd == "methods":
         cmd_methods(db_path=args.db)
+    elif args.cmd == "suggest":
+        cmd_suggest(db_path=args.db, have=args.have, limit=args.limit)
     elif args.cmd == "build":
         ingested_at = args.ingested_at or datetime.date.today().isoformat()
         staging_dir = args.staging if args.staging is not None else Path(str(args.db) + ".staging")

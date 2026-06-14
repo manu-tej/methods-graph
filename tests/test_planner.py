@@ -217,6 +217,18 @@ def test_seed_from_edge_accepts_object_edge(tmp_path):
     assert "fmt:fastq" in frontier and "mod:align" in frontier
 
 
+def test_cli_suggest_prints_ranked_json(tmp_path, capsys):
+    from methods_graph.cli import main
+    conn = build_fixture(tmp_path)
+    conn.close()                                   # release; CLI reopens read-only
+    rc = main(["suggest", "--db", str(tmp_path / "mg.kuzu"),
+               "--have", "mod:align", "--limit", "5"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert [s["module_id"] for s in out] == ["mod:sort", "mod:index"]
+    assert out[0]["chosen_executor"]["method_id"] == "m:samtools"
+
+
 def test_executor_to_dict_is_json_serializable():
     e = Executor("m:star", "star", container="quay.io/biocontainers/star:2.7")
     d = e.to_dict()
