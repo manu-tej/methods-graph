@@ -146,6 +146,21 @@ def _collect_ontology_edam_uris(section: Any) -> list[str]:
     return uris
 
 
+def _io_module_targets(meta: dict[str, Any], section_key: str) -> set[str]:
+    """Return the set of EDAM/synthetic-format target ids for a meta.yml
+    section ('input' or 'output').  Pure: returns ids only (no node creation).
+    Used by the pipeline connector to infer DOWNSTREAM_OF."""
+    raw_uris = _collect_ontology_edam_uris(meta.get(section_key))
+    ids = {
+        nid for uri in raw_uris
+        if (nid := _edam_uri_to_node_id(uri)) is not None
+        and (nid.startswith("data:") or nid.startswith("fmt:"))
+    }
+    for pat in _collect_io_patterns(meta.get(section_key)):
+        ids.add(_pattern_to_fmt_id(pat))
+    return ids
+
+
 def _edam_uri_to_node_id(uri: str) -> str | None:
     """Convert a full EDAM URI to a graph node id matching the edam.py scheme.
 
@@ -297,25 +312,22 @@ def parse_module(
     # These are attributed to every wrapped method: exact for single-tool modules;
     # an approximation for multi-tool modules (module-level I/O is ambiguous per tool).
     def _io_targets(section_key: str) -> tuple[list[str], list[NodeRecord]]:
-        # 1. EDAM ontology URIs (existing behaviour — these nodes already exist
-        #    in the graph from EDAM ingestion, so no synthetic node is needed).
-        raw_uris = _collect_ontology_edam_uris(meta.get(section_key))
-        onto_ids = {
-            nid for uri in raw_uris
-            if (nid := _edam_uri_to_node_id(uri)) is not None
-            and (nid.startswith("data:") or nid.startswith("fmt:"))
-        }
-        # 2. type/pattern fallback for channels that declare no ontologies.
+        # Single source of truth for the id set (shared with the pipeline
+        # connector via the module-level _io_module_targets helper).
+        ids = _io_module_targets(meta, section_key)
+        # Build synthetic Format nodes for any 'fmt:pat:' ids (channels that
+        # declared a glob pattern with no known EDAM mapping) so the
+        # INPUT/OUTPUT edge is not dangling.  Map each synthetic id back to a
+        # representative pattern for the node's 'pattern' property.
         synth: list[NodeRecord] = []
-        pat_ids: set[str] = set()
+        synth_seen: set[str] = set()
         for pat in _collect_io_patterns(meta.get(section_key)):
             fid = _pattern_to_fmt_id(pat)
-            pat_ids.add(fid)
-            if fid.startswith("fmt:pat:"):
-                # Synthetic Format node so the INPUT/OUTPUT edge is not dangling.
+            if fid.startswith("fmt:pat:") and fid not in synth_seen:
+                synth_seen.add(fid)
                 synth.append(NodeRecord(fid, fid.split(":", 2)[-1], NodeKind.FORMAT,
                                         {"pattern": pat}, prov))
-        return sorted(onto_ids | pat_ids), synth
+        return sorted(ids), synth
 
     input_edam_ids, input_synth = _io_targets("input")
     output_edam_ids, output_synth = _io_targets("output")
