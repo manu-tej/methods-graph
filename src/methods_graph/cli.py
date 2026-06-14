@@ -48,13 +48,16 @@ def cmd_suggest(*, db_path: Path, have: list[str], limit: int) -> None:
     import kuzu
     from methods_graph.planner import expand
 
-    db = kuzu.Database(str(db_path), read_only=True)
-    conn = kuzu.Connection(db)
+    db = conn = None
     try:
+        db = kuzu.Database(str(db_path), read_only=True)
+        conn = kuzu.Connection(db)
         suggestions = expand(conn, have, limit=limit)
     finally:
-        conn.close()
-        db.close()
+        if conn is not None:
+            conn.close()
+        if db is not None:
+            db.close()
     print(json.dumps([s.to_dict() for s in suggestions], indent=2))
 
 

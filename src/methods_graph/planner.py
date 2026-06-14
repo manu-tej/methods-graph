@@ -8,12 +8,15 @@ concrete executor (the wrapped Method) with its container and inherited assumpti
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 import kuzu
 
 from methods_graph.extract.seed import method_ids_matching, method_neighborhood
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -70,11 +73,12 @@ def _candidates(conn: kuzu.Connection, frontier_ids: list[str],
     blocked = set(frontier_ids) | exclude
     best: dict[str, _Candidate] = {}
 
-    # Continue: frontier Module -DOWNSTREAM_OF-> next Module
+    # Continue: frontier Module -DOWNSTREAM_OF-> next Module.
+    # ORDER BY a.id makes the tie winner (and thus source_label/evidence) deterministic.
     for a_name, b_id, b_name, props in conn.execute(
         "MATCH (a:Entity {kind:'Module'})-[r:Rel {kind:'DOWNSTREAM_OF'}]->(b:Entity {kind:'Module'}) "
         "WHERE list_contains($frontier, a.id) "
-        "RETURN a.name, b.id, b.name, r.properties",
+        "RETURN a.name, b.id, b.name, r.properties ORDER BY a.id, b.id",
         parameters={"frontier": frontier_ids},
     ):
         if b_id in blocked:
@@ -96,7 +100,7 @@ def _candidates(conn: kuzu.Connection, frontier_ids: list[str],
         parameters={"frontier": frontier_ids},
     ))
     for mod_id, mod_name in entry_mods:
-        if mod_id in blocked or (mod_id in best and best[mod_id].kind == "downstream"):
+        if mod_id in blocked:
             continue
         pipes = [r[0] for r in conn.execute(
             "MATCH (p:Entity {kind:'Pipeline'})-[:Rel {kind:'HAS_MODULE'}]->(mod:Entity {id:$mid}) "
@@ -105,8 +109,13 @@ def _candidates(conn: kuzu.Connection, frontier_ids: list[str],
         )]
         cand = _Candidate(mod_id, mod_name, "entry", len(pipes), pipes, "")
         cur = best.get(mod_id)
-        if cur is None or cand.count > cur.count:
-            best[mod_id] = cand
+        # Dual-reachable: a downstream (sequencing-evidence) incumbent keeps its slot
+        # on ties and only yields to an entry candidate with a strictly higher count
+        # (spec: "keeps its higher signal; downstream wins ties"). entry_mods is
+        # DISTINCT, so `cur` here is only ever a downstream incumbent.
+        if cur is not None and cur.count >= cand.count:
+            continue
+        best[mod_id] = cand
 
     return sorted(best.values(), key=lambda c: (-c.count, c.module_id))
 
@@ -158,7 +167,11 @@ def expand(conn: kuzu.Connection, frontier_ids: list[str], *,
             break
         chosen, alternatives, assumptions = _enrich(conn, c.module_id)
         if chosen is None:
-            continue  # module wraps no executable method; skip
+            # Only downstream candidates can reach here (entry candidates matched via
+            # WRAPS, so they always have an executor). A downstream Module that wraps
+            # no Method is a graph-integrity defect — surface it rather than hide it.
+            _log.warning("planner: module %s has no WRAPS executor; skipping", c.module_id)
+            continue
         if c.kind == "downstream":
             why = f"after {c.source_label}, {c.count} pipeline(s) run {c.module_name} next"
         else:

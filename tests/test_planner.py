@@ -217,6 +217,60 @@ def test_seed_from_edge_accepts_object_edge(tmp_path):
     assert "fmt:fastq" in frontier and "mod:align" in frontier
 
 
+def _dual_graph(tmp_path, down_att, n_pipes):
+    """A module reachable BOTH via DOWNSTREAM_OF (count=down_att) and as an entry
+    step (HAS_MODULE popularity=n_pipes), for exercising the dual-reachable rule."""
+    nodes = [
+        NodeRecord("mod:up", "up", NodeKind.MODULE, {}, P),
+        NodeRecord("mod:x", "x step", NodeKind.MODULE, {}, P),
+        MethodRecord("m:x", "x", NodeKind.METHOD, {}, P, bioconda_pkg="x"),
+        NodeRecord("fmt:in", "IN", NodeKind.FORMAT, {}, P),
+    ] + [NodeRecord(f"pipe:p{i}", f"p{i}", NodeKind.PIPELINE, {}, P) for i in range(n_pipes)]
+    edges = [
+        EdgeRecord("mod:up", "mod:x", EdgeKind.DOWNSTREAM_OF,
+                   _ds([f"p{i}" for i in range(down_att)], down_att), P),
+        EdgeRecord("mod:x", "m:x", EdgeKind.WRAPS, {}, P),
+        EdgeRecord("m:x", "fmt:in", EdgeKind.INPUT, {}, P),
+    ] + [EdgeRecord(f"pipe:p{i}", "mod:x", EdgeKind.HAS_MODULE, {}, P) for i in range(n_pipes)]
+    db = tmp_path / "dual.kuzu"
+    build_graph(nodes, edges, db, staging_dir=tmp_path / "stg")
+    return kuzu.Connection(kuzu.Database(str(db)))
+
+
+def test_candidates_dual_reachable_higher_count_wins(tmp_path):
+    # downstream att=1 vs entry popularity=3 -> entry (higher signal) wins
+    conn = _dual_graph(tmp_path, down_att=1, n_pipes=3)
+    x = [c for c in _candidates(conn, ["mod:up", "fmt:in"], set()) if c.module_id == "mod:x"][0]
+    assert x.kind == "entry" and x.count == 3
+
+
+def test_candidates_dual_reachable_downstream_wins_tie(tmp_path):
+    # downstream att=2 vs entry popularity=2 -> downstream wins the tie
+    conn = _dual_graph(tmp_path, down_att=2, n_pipes=2)
+    x = [c for c in _candidates(conn, ["mod:up", "fmt:in"], set()) if c.module_id == "mod:x"][0]
+    assert x.kind == "downstream" and x.count == 2
+
+
+def test_enrich_container_deterministic_when_multiple(tmp_path):
+    # A method packaged as 2 containers -> chosen container is the min-id one, stably.
+    nodes = [
+        NodeRecord("mod:m", "m step", NodeKind.MODULE, {}, P),
+        MethodRecord("m:t", "t", NodeKind.METHOD, {}, P, bioconda_pkg="t"),
+        NodeRecord("cont:aaa", "aaa", NodeKind.CONTAINER, {"image_name": "img-aaa"}, P),
+        NodeRecord("cont:zzz", "zzz", NodeKind.CONTAINER, {"image_name": "img-zzz"}, P),
+    ]
+    edges = [
+        EdgeRecord("mod:m", "m:t", EdgeKind.WRAPS, {}, P),
+        EdgeRecord("m:t", "cont:aaa", EdgeKind.PACKAGED_AS, {}, P),
+        EdgeRecord("m:t", "cont:zzz", EdgeKind.PACKAGED_AS, {}, P),
+    ]
+    db = tmp_path / "mc.kuzu"
+    build_graph(nodes, edges, db, staging_dir=tmp_path / "stg")
+    conn = kuzu.Connection(kuzu.Database(str(db)))
+    chosen, _alts, _assum = _enrich(conn, "mod:m")
+    assert chosen.container == "img-aaa"   # cont:aaa < cont:zzz by id
+
+
 def test_cli_suggest_prints_ranked_json(tmp_path, capsys):
     from methods_graph.cli import main
     conn = build_fixture(tmp_path)

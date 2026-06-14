@@ -169,7 +169,7 @@ def method_neighborhood(conn: kuzu.Connection, method_id: str) -> dict[str, Any]
     for key, edge_kind in buckets.items():
         rows = conn.execute(
             "MATCH (m:Entity {id: $id})-[r:Rel {kind: $k}]->(o:Entity) "
-            "RETURN o.id, o.name, o.kind, o.properties",
+            "RETURN o.id, o.name, o.kind, o.properties ORDER BY o.id",
             parameters={"id": method_id, "k": edge_kind},
         )
         out[key] = [_node_dict(x[0], x[1], x[2], x[3]) for x in rows]
