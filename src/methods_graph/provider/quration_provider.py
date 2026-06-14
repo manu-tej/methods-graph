@@ -12,7 +12,7 @@ from typing import Any
 import kuzu
 
 from methods_graph.extract.adapters import to_rag_text
-from methods_graph.extract.seed import seed, method_neighborhood
+from methods_graph.extract.seed import seed, method_neighborhood, method_ids_matching
 
 
 # --- EDAM-label → quration vocabulary maps -------------------------------------
@@ -217,62 +217,8 @@ class KuzuMethodsGraphProvider:
         return to_rag_text(seed(self._conn, seeds, k_hops=k_hops))
 
     def _method_ids_matching(self, keywords: list[str]) -> list[str]:
-        ids: list[str] = []
-        for kw in keywords:
-            # NOTE: n.properties is a JSON string, so this matches both keys and values.
-            # Keywords coinciding with property KEY names (e.g. "version", "description")
-            # will false-positive on every node at scale. Phase 2 should index specific
-            # fields (description, labels) instead of substring-scanning the whole blob.
-
-            # Step 1: find ALL entities whose name or properties contain the keyword.
-            all_rows = self._conn.execute(
-                "MATCH (n:Entity) "
-                "WHERE contains(lower(n.name), lower($kw)) "
-                "   OR contains(lower(n.properties), lower($kw)) "
-                "RETURN n.id, n.kind ORDER BY n.id",
-                parameters={"kw": kw},
-            )
-            direct_method_ids: list[str] = []
-            non_method_ids: list[str] = []
-            matched_assumption_ids: list[str] = []
-            for row in all_rows:
-                nid, kind = row[0], row[1]
-                if kind == "Method":
-                    direct_method_ids.append(nid)
-                else:
-                    non_method_ids.append(nid)
-                    if kind == "Assumption":
-                        matched_assumption_ids.append(nid)
-
-            # Step 2: collect direct method hits.
-            ids.extend(direct_method_ids)
-
-            # Step 3: for non-method hits, walk outward from methods up to 2 hops to
-            # find any method that reaches the matched entity.
-            # NOTE: *1..2 is intentionally asymmetric — it covers
-            #   Method -PERFORMS-> ChildOp -IS_A-> ParentOp
-            # so searching a parent EDAM concept surfaces methods that perform its
-            # specializations.  The reverse (child keyword matching parent's methods)
-            # is NOT covered; that wider expansion is deferred to Phase 2.
-            if non_method_ids:
-                resolved = self._conn.execute(
-                    "MATCH (meth:Entity {kind:'Method'})-[r:Rel*1..2]->(x:Entity) "
-                    "WHERE list_contains($matched, x.id) "
-                    "RETURN DISTINCT meth.id ORDER BY meth.id",
-                    parameters={"matched": non_method_ids},
-                )
-                ids.extend(row[0] for row in resolved)
-
-            # Step 4: seed the matched Assumption nodes directly. An inherited
-            # assumption sits TWO hops from a method
-            #   Method -USES_STATISTICAL_METHOD-> StatisticalMethod -REQUIRES_ASSUMPTION-> Assumption
-            # so the resolving method above is found, but a default 1-hop seed from
-            # that method would not reach the assumption. Seeding the assumption too
-            # pulls it and its StatisticalMethod into the RAG context, so the matched
-            # term and its grounding path are both present.
-            ids.extend(matched_assumption_ids)
-
-        return list(dict.fromkeys(ids))
+        # Behavior-preserving delegation to the shared pure helper (see extract/seed.py).
+        return method_ids_matching(self._conn, keywords)
 
     def score_method(self, method_id: str, *, keywords: list[str]) -> float:
         # Phase 2: graph/EDAM-overlap scoring. MVP returns neutral.

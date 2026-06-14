@@ -83,6 +83,44 @@ def seed(conn: kuzu.Connection, seed_ids: list[str], *, k_hops: int = 1) -> Subg
     return sg
 
 
+def method_ids_matching(conn: kuzu.Connection, keywords: list[str]) -> list[str]:
+    """Resolve keywords to Method ids: direct name/property substring hits, plus
+    methods that reach a matched non-method entity within 1-2 outward hops
+    (asymmetric — covers Method-PERFORMS->ChildOp-IS_A->ParentOp), plus matched
+    Assumption nodes seeded directly. Deduped, order-preserving. Read-only."""
+    ids: list[str] = []
+    for kw in keywords:
+        all_rows = conn.execute(
+            "MATCH (n:Entity) "
+            "WHERE contains(lower(n.name), lower($kw)) "
+            "   OR contains(lower(n.properties), lower($kw)) "
+            "RETURN n.id, n.kind ORDER BY n.id",
+            parameters={"kw": kw},
+        )
+        direct_method_ids: list[str] = []
+        non_method_ids: list[str] = []
+        matched_assumption_ids: list[str] = []
+        for row in all_rows:
+            nid, kind = row[0], row[1]
+            if kind == "Method":
+                direct_method_ids.append(nid)
+            else:
+                non_method_ids.append(nid)
+                if kind == "Assumption":
+                    matched_assumption_ids.append(nid)
+        ids.extend(direct_method_ids)
+        if non_method_ids:
+            resolved = conn.execute(
+                "MATCH (meth:Entity {kind:'Method'})-[r:Rel*1..2]->(x:Entity) "
+                "WHERE list_contains($matched, x.id) "
+                "RETURN DISTINCT meth.id ORDER BY meth.id",
+                parameters={"matched": non_method_ids},
+            )
+            ids.extend(row[0] for row in resolved)
+        ids.extend(matched_assumption_ids)
+    return list(dict.fromkeys(ids))
+
+
 def method_neighborhood(conn: kuzu.Connection, method_id: str) -> dict[str, Any]:
     """Return the 1-hop slice needed to materialize one AnalysisMethod.
 
