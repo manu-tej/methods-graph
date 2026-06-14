@@ -52,3 +52,35 @@ def test_pipeline_is_rebuildable(tmp_path):
     build_graph(nodes, edges, db_path, staging_dir=tmp_path / "stg")  # rebuild must not error
     with KuzuMethodsGraphProvider(db_path) as provider:
         assert any(m["name"] == "salmon" for m in provider.get_methods())
+
+
+def test_build_connects_pipeline_to_shared_module_nodes(tmp_path):
+    from methods_graph.cli import cmd_build
+    from methods_graph.audit import audit_graph
+    import kuzu
+
+    fix = Path(__file__).parent / "fixtures"
+    db = tmp_path / "m.kuzu"
+    cmd_build(
+        edam=None,
+        nfcore_modules=fix / "nfcore_pipeline" / "mini" / "modules" / "nf-core",
+        biocontainers=None,
+        nfcore_pipelines=fix / "nfcore_pipeline",
+        db_path=db, staging_dir=tmp_path / "s", ingested_at="2026-06-13",
+    )
+    conn = kuzu.Connection(kuzu.Database(str(db), read_only=True))
+
+    # HAS_MODULE edges connect the Pipeline to module nodes that the MODULE
+    # connector minted (shared-node join) — i.e. they are NOT dangling.
+    n_has_mod = list(conn.execute(
+        "MATCH (:Entity{kind:'Pipeline'})-[r:Rel{kind:'HAS_MODULE'}]->"
+        "(:Entity{kind:'Module'}) RETURN count(r)"))[0][0]
+    assert n_has_mod == 3
+
+    # The inferred salmon→tximport ordering survived load.
+    n_dse = list(conn.execute(
+        "MATCH (:Entity{id:'mod:salmon_pe'})-[r:Rel{kind:'DOWNSTREAM_OF'}]->"
+        "(:Entity{id:'mod:tximport_agg'}) RETURN count(r)"))[0][0]
+    assert n_dse == 1
+
+    assert audit_graph(conn).ok
