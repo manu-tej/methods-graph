@@ -626,3 +626,31 @@ def test_build_obi_bogus_path_raises(tmp_path):
             staging_dir=tmp_path / "stg",
             ingested_at="2026-06-11",
         )
+
+
+def test_cmd_build_ignores_decoy_modules_json(tmp_path):
+    """A nested modules.json without a modules/nf-core sibling must NOT become a Pipeline."""
+    import shutil
+    from pathlib import Path
+    from methods_graph.cli import cmd_build
+    import kuzu
+
+    fix = Path(__file__).parent / "fixtures" / "nfcore_pipeline" / "mini"
+    root = tmp_path / "pipelines"
+    shutil.copytree(fix, root / "mini")          # real pipeline (has modules/nf-core)
+    decoy_dir = root / "subworkflows" / "decoy"
+    decoy_dir.mkdir(parents=True)
+    (decoy_dir / "modules.json").write_text("{}")  # decoy: no modules/nf-core sibling
+
+    db = tmp_path / "m.kuzu"
+    cmd_build(
+        edam=None,
+        nfcore_modules=root / "mini" / "modules" / "nf-core",
+        biocontainers=None,
+        nfcore_pipelines=root,
+        db_path=db, staging_dir=tmp_path / "stage", ingested_at="2026-06-13",
+    )
+    conn = kuzu.Connection(kuzu.Database(str(db), read_only=True))
+    pipes = sorted(r[0] for r in conn.execute(
+        "MATCH (n:Entity {kind:'Pipeline'}) RETURN n.id"))
+    assert pipes == ["pipe:mini"]  # decoy ignored

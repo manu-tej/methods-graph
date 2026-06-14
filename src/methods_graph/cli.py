@@ -142,8 +142,12 @@ def cmd_build(
             all_edges.extend(edges)
 
     # --- nf-core pipelines ---
+    # A pipeline root is a dir with modules.json AND a modules/nf-core/ tree;
+    # rglob is unanchored, so skip nested/decoy modules.json files.
     if nfcore_pipelines is not None:
         for mj in sorted(Path(nfcore_pipelines).rglob("modules.json")):
+            if not (mj.parent / "modules" / "nf-core").is_dir():
+                continue
             nodes, edges = parse_pipeline(mj.parent, ingested_at=ingested_at)
             all_nodes.extend(nodes)
             all_edges.extend(edges)
@@ -297,11 +301,13 @@ def cmd_build(
         f", {xl_edges_added} stat-method links, {assum_edges_added} assumption links"
         if has_stat_method else ""
     )
+    n_pipes = sum(1 for n in resolved_nodes if n.kind == NodeKind.PIPELINE)
+    pipe_suffix = f", {n_pipes} pipelines" if nfcore_pipelines is not None else ""
 
     print(
         f"Built graph: {n_methods} methods, {summary['nodes']} nodes, "
         f"{summary['edges_loaded']} edges loaded "
-        f"({summary['edges_dropped']} dangling dropped){bt_suffix}{onto_suffix}{xl_suffix} -> {db_path}"
+        f"({summary['edges_dropped']} dangling dropped){pipe_suffix}{bt_suffix}{onto_suffix}{xl_suffix} -> {db_path}"
     )
 
 
