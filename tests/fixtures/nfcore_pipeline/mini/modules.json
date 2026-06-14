@@ -1,0 +1,15 @@
+{
+  "name": "nf-core/mini",
+  "homePage": "https://github.com/nf-core/mini",
+  "repos": {
+    "https://github.com/nf-core/modules.git": {
+      "modules": {
+        "nf-core": {
+          "fastqc": { "branch": "master", "git_sha": "aaa", "installed_by": ["fastqc"] },
+          "salmon": { "branch": "master", "git_sha": "bbb", "installed_by": ["salmon"] },
+          "tximport": { "branch": "master", "git_sha": "ccc", "installed_by": ["tximport"] }
+        }
+      }
+    }
+  }
+}

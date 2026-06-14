@@ -1,0 +1,14 @@
+name: tximport_agg
+description: Aggregate transcript counts to gene level
+tools:
+  - tximport:
+      description: tximport
+      identifier: biotools:tximport
+input:
+  - quant:
+      type: file
+      pattern: "*.sf"
+output:
+  - counts:
+      type: file
+      pattern: "*.tsv"
