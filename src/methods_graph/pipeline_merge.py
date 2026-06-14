@@ -39,5 +39,4 @@ def merge_downstream_of(edges: list[EdgeRecord]) -> list[EdgeRecord]:
                 merged.properties.get("confidence", 0.0),
                 e.properties.get("confidence", 0.0),
             )
-            merged.properties.setdefault("derivation", e.properties.get("derivation"))
     return out

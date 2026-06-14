@@ -29,3 +29,33 @@ def test_merge_leaves_distinct_edges_and_non_downstream_untouched():
     dse = {(e.from_id, e.to_id) for e in out if e.kind == EdgeKind.DOWNSTREAM_OF}
     assert dse == {("mod:a", "mod:b"), ("mod:a", "mod:c")}
     assert other in out  # non-DOWNSTREAM_OF edges pass through unchanged
+
+
+def test_merge_does_not_mutate_input():
+    """The reducer must copy on first encounter — never mutate caller edges."""
+    e1 = _dse("mod:a", "mod:b", ["rnaseq"], 0.5)
+    e2 = _dse("mod:a", "mod:b", ["sarek"], 0.7)
+    out = merge_downstream_of([e1, e2])
+    # Inputs unchanged.
+    assert e1.properties["pipelines"] == ["rnaseq"]
+    assert e1.properties["attestations"] == 1
+    assert e1.properties["confidence"] == 0.5
+    assert e2.properties["pipelines"] == ["sarek"]
+    # Output is a distinct object.
+    assert out[0] is not e1 and out[0] is not e2
+
+
+def test_merge_folds_three_pipelines():
+    edges = [_dse("mod:a", "mod:b", ["rnaseq"], 0.4),
+             _dse("mod:a", "mod:b", ["sarek"], 0.9),
+             _dse("mod:a", "mod:b", ["chipseq"], 0.6)]
+    out = merge_downstream_of(edges)
+    merged = [e for e in out if e.kind == EdgeKind.DOWNSTREAM_OF]
+    assert len(merged) == 1
+    assert merged[0].properties["pipelines"] == ["chipseq", "rnaseq", "sarek"]
+    assert merged[0].properties["attestations"] == 3
+    assert merged[0].properties["confidence"] == 0.9
+
+
+def test_merge_empty_input():
+    assert merge_downstream_of([]) == []
