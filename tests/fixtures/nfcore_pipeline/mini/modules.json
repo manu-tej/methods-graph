@@ -7,7 +7,8 @@
         "nf-core": {
           "fastqc": { "branch": "master", "git_sha": "aaa", "installed_by": ["fastqc"] },
           "salmon": { "branch": "master", "git_sha": "bbb", "installed_by": ["salmon"] },
-          "tximport": { "branch": "master", "git_sha": "ccc", "installed_by": ["tximport"] }
+          "tximport": { "branch": "master", "git_sha": "ccc", "installed_by": ["tximport"] },
+          "ghost": { "branch": "master", "git_sha": "ddd", "installed_by": ["ghost"] }
         }
       }
     }

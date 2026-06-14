@@ -1,8 +1,8 @@
-"""Parse an nf-core PIPELINE checkout into Pipeline + HAS_MODULE + DOWNSTREAM_OF.
+"""Parse an nf-core PIPELINE checkout into a Pipeline node + HAS_MODULE edges.
 
-Reads ``modules.json`` (membership) and each vendored module's ``meta.yml``
-(for the canonical ``name`` join key and the I/O contract used to infer
-DOWNSTREAM_OF ordering — Option 2, see ``_infer_downstream``).
+Reads ``modules.json`` for membership and each vendored module's ``meta.yml``
+for the canonical ``name`` join key (so HAS_MODULE targets ``mod:<name>``, the
+same id the module connector mints — NOT the directory path).
 
 Offline + deterministic: no network, no clock; ``ingested_at`` is injected.
 """
@@ -36,7 +36,8 @@ def _module_name(pipeline_dir: Path, rel_path: str) -> str | None:
     meta = yaml.safe_load(meta_path.read_text()) or {}
     if not isinstance(meta, dict):
         return None
-    return meta.get("name", Path(rel_path).name)
+    name = meta.get("name")
+    return name if isinstance(name, str) and name else None
 
 
 def parse_pipeline(
@@ -66,6 +67,6 @@ def parse_pipeline(
     )]
     edges: list[EdgeRecord] = [
         EdgeRecord(pipe_id, mod_id, EdgeKind.HAS_MODULE, {}, prov)
-        for mod_id in sorted(path_to_modid.values())
+        for mod_id in sorted(set(path_to_modid.values()))
     ]
     return nodes, edges
