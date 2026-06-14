@@ -580,6 +580,34 @@ def test_meta_key_method_id_lowercased(tmp_path):
     )
 
 
+def test_parse_module_io_from_pattern_when_no_ontologies():
+    """salmon_quant has type/pattern but no ontologies; pattern fallback must
+    still emit INPUT (FASTQ→known EDAM fmt) and OUTPUT (*.sf→synthetic Format)."""
+    nodes, edges = parse_module(MODULE, ingested_at="2026-06-08")
+    method = next(n for n in nodes if n.kind == NodeKind.METHOD)
+
+    inputs = {e.to_id for e in edges if e.kind == EdgeKind.INPUT and e.from_id == method.id}
+    outputs = {e.to_id for e in edges if e.kind == EdgeKind.OUTPUT and e.from_id == method.id}
+
+    # *.fastq.gz maps to a known EDAM format id (node provided by EDAM ingestion).
+    assert "fmt:format_1930" in inputs
+    # *.sf has no EDAM mapping → synthetic Format node, which MUST also be emitted.
+    assert "fmt:pat:.sf" in outputs
+    fmt_node = next(n for n in nodes if n.id == "fmt:pat:.sf")
+    assert fmt_node.kind == NodeKind.FORMAT
+
+
+def test_parse_module_ontology_io_still_wins():
+    """fastp_io declares EDAM ontology URIs; those must still be emitted
+    (the pattern fallback must not regress ontology-based extraction)."""
+    nodes, edges = parse_module(FASTP_IO_MODULE, ingested_at="2026-06-08")
+    method = next(n for n in nodes if n.kind == NodeKind.METHOD)
+    inputs = {e.to_id for e in edges if e.kind == EdgeKind.INPUT and e.from_id == method.id}
+    outputs = {e.to_id for e in edges if e.kind == EdgeKind.OUTPUT and e.from_id == method.id}
+    assert "fmt:format_1930" in inputs   # from ontologies
+    assert "fmt:format_3464" in outputs  # from ontologies
+
+
 def test_distinct_biotools_ids_preserved(tmp_path):
     """Multi-tool module where each tool has a DIFFERENT, name-matching identifier.
 

@@ -22,8 +22,12 @@ Real nf-core ``meta.yml`` files carry EDAM URIs on the ``input``/``output``
 channel dicts under the ``ontologies`` key rather than on the tool entry.
 ``parse_module`` walks both sections and emits ``EdgeKind.INPUT`` /
 ``EdgeKind.OUTPUT`` edges from each wrapped Method to the corresponding EDAM
-node.  For single-tool modules this is exact; for multi-tool modules the
-module-level I/O is attributed to every wrapped method — a documented
+node.  When a channel declares no ``ontologies`` but does carry a glob
+``pattern`` (e.g. ``"*.fastq.gz"``), the connector falls back to mapping that
+pattern to a known EDAM format id; unmapped patterns yield a synthetic
+``fmt:pat:<ext>`` Format node so the I/O contract is still expressed without a
+dangling edge.  For single-tool modules this is exact; for multi-tool modules
+the module-level I/O is attributed to every wrapped method — a documented
 approximation until per-tool I/O is available in meta.yml.
 """
 from __future__ import annotations
@@ -46,6 +50,64 @@ _EDAM_PREFIX_MAP = {
     "data_": "data:",
     "format_": "fmt:",
 }
+
+# Glob-suffix → EDAM format id.  Seeded with the common genomics formats
+# (spec Q4); anything not here falls back to a synthetic Format node so the
+# I/O contract is still expressed.  Keys are lowercased extensions WITHOUT the
+# leading '*'.
+_PATTERN_TO_FMT: dict[str, str] = {
+    ".fastq.gz": "fmt:format_1930", ".fq.gz": "fmt:format_1930",
+    ".fastq": "fmt:format_1930", ".fq": "fmt:format_1930",
+    ".fasta": "fmt:format_1929", ".fa": "fmt:format_1929", ".fna": "fmt:format_1929",
+    ".bam": "fmt:format_2572", ".sam": "fmt:format_2573", ".cram": "fmt:format_3462",
+    ".vcf.gz": "fmt:format_3016", ".vcf": "fmt:format_3016", ".bcf": "fmt:format_3020",
+    ".bed": "fmt:format_3003", ".gtf": "fmt:format_2306",
+    ".gff3": "fmt:format_2305", ".gff": "fmt:format_2305",
+    ".bw": "fmt:format_3006", ".bigwig": "fmt:format_3006",
+}
+
+
+def _normalize_pattern_ext(pattern: str) -> str:
+    """'*.fastq.gz' → '.fastq.gz' (lowercased, leading glob stripped)."""
+    p = pattern.strip().lower()
+    star = p.rfind("*")
+    if star != -1:
+        p = p[star + 1:]
+    if not p.startswith("."):
+        p = "." + p.lstrip(".")
+    return p
+
+
+def _pattern_to_fmt_id(pattern: str) -> str:
+    """Map a glob to a known EDAM fmt: id, else a synthetic 'fmt:pat:<ext>' id.
+
+    Longest matching suffix wins so '.vcf.gz' beats '.gz' (when present).
+    """
+    ext = _normalize_pattern_ext(pattern)
+    for known in sorted(_PATTERN_TO_FMT, key=len, reverse=True):
+        if ext.endswith(known):
+            return _PATTERN_TO_FMT[known]
+    return f"fmt:pat:{ext}"
+
+
+def _collect_io_patterns(section: Any) -> list[str]:
+    """Recursively collect every 'pattern' string in an input/output section.
+
+    Tolerates the same irregular shapes as _collect_ontology_edam_uris
+    (list, list-of-lists, channel-dicts).
+    """
+    patterns: list[str] = []
+    if isinstance(section, list):
+        for item in section:
+            patterns.extend(_collect_io_patterns(item))
+    elif isinstance(section, dict):
+        pat = section.get("pattern")
+        if isinstance(pat, str) and pat:
+            patterns.append(pat)
+        for k, v in section.items():
+            if k != "pattern" and isinstance(v, (dict, list)):
+                patterns.extend(_collect_io_patterns(v))
+    return patterns
 
 
 def _collect_ontology_edam_uris(section: Any) -> list[str]:
@@ -234,20 +296,32 @@ def parse_module(
     # Collect module-level I/O EDAM node ids from input/output channel ontologies.
     # These are attributed to every wrapped method: exact for single-tool modules;
     # an approximation for multi-tool modules (module-level I/O is ambiguous per tool).
-    def _io_edam_ids(section_key: str) -> list[str]:
+    def _io_targets(section_key: str) -> tuple[list[str], list[NodeRecord]]:
+        # 1. EDAM ontology URIs (existing behaviour — these nodes already exist
+        #    in the graph from EDAM ingestion, so no synthetic node is needed).
         raw_uris = _collect_ontology_edam_uris(meta.get(section_key))
-        # I/O channels are data/format types; operation/topic EDAM ids
-        # occasionally mis-placed in source ontologies are excluded to preserve
-        # the Method->Data|Format invariant for INPUT/OUTPUT edges.
-        node_ids = sorted({
+        onto_ids = {
             nid for uri in raw_uris
             if (nid := _edam_uri_to_node_id(uri)) is not None
             and (nid.startswith("data:") or nid.startswith("fmt:"))
-        })
-        return node_ids
+        }
+        # 2. type/pattern fallback for channels that declare no ontologies.
+        synth: list[NodeRecord] = []
+        pat_ids: set[str] = set()
+        for pat in _collect_io_patterns(meta.get(section_key)):
+            fid = _pattern_to_fmt_id(pat)
+            pat_ids.add(fid)
+            if fid.startswith("fmt:pat:"):
+                # Synthetic Format node so the INPUT/OUTPUT edge is not dangling.
+                synth.append(NodeRecord(fid, fid.split(":", 2)[-1], NodeKind.FORMAT,
+                                        {"pattern": pat}, prov))
+        return sorted(onto_ids | pat_ids), synth
 
-    input_edam_ids = _io_edam_ids("input")
-    output_edam_ids = _io_edam_ids("output")
+    input_edam_ids, input_synth = _io_targets("input")
+    output_edam_ids, output_synth = _io_targets("output")
+    # Synthetic Format nodes are deduped downstream by the resolver (by id).
+    nodes.extend(input_synth)
+    nodes.extend(output_synth)
 
     for tool_entry in valid_tools:
         tool_name, tool_meta = next(iter(tool_entry.items()))
