@@ -1,7 +1,15 @@
-"""Roll up DOWNSTREAM_OF attestation metadata after resolution.
+"""Roll up DOWNSTREAM_OF attestation metadata across pipelines.
 
-Runs AFTER resolve() (which already remaps ids and dedupes (from,to,kind)).
-This step is metadata accumulation ONLY, not deduplication.
+Runs BEFORE resolve() in the build pipeline.  resolve() dedupes edges by
+(from,to,kind) keeping only the FIRST edge's properties, so if this ran after
+resolve it would have already discarded the per-pipeline metadata of duplicate
+cross-pipeline orderings (attestations stuck at 1).  DOWNSTREAM_OF endpoints are
+module ids (mod:<name>), which resolve does NOT remap (it only remaps method m:
+ids), so merging first keeps the keys final while preserving each pipeline's
+metadata that resolve's (from,to,kind) dedup would otherwise drop.
+
+This step is metadata accumulation ONLY, not deduplication — it is a pure
+reducer over the edge list.
 """
 from __future__ import annotations
 

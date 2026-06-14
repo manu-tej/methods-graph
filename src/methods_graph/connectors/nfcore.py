@@ -7,14 +7,14 @@ emitted per tool.  This captures **intra-module composition** — a module that
 wraps both ``samtools`` and ``bcftools`` will have two WRAPS edges, one to each
 Method.
 
-Pipeline-level DAG gap (Phase 2)
----------------------------------
-Intra-module multi-tool composition is now captured via multiple WRAPS edges
+Pipeline-level DAG
+------------------
+Intra-module multi-tool composition is captured here via multiple WRAPS edges
 from a Module to its Methods.  The PIPELINE-LEVEL DAG — i.e. the
-``DOWNSTREAM_OF`` ordering between modules across a pipeline's ``main.nf``
-workflow file — is STILL NOT ingested and remains Phase 2.  ``parse_module``
-operates on a single module directory and does not read pipeline workflow files.
-The ``DOWNSTREAM_OF`` EdgeKind stays declared-but-unemitted.
+``DOWNSTREAM_OF`` ordering between modules across a pipeline — is now emitted by
+the separate ``connectors/nfcore_pipeline.py`` connector (which infers it from
+module I/O type-overlap within a pipeline).  ``parse_module`` here still operates
+on a single module directory only and does NOT emit DOWNSTREAM_OF.
 
 I/O Ontology edges (INPUT / OUTPUT)
 ------------------------------------

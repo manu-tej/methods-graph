@@ -172,6 +172,15 @@ def cmd_build(
     if not all_nodes:
         _log.warning("build produced an empty graph; no sources resolved to any nodes")
 
+    # Accumulate DOWNSTREAM_OF attestations BEFORE resolve.  resolve() dedupes
+    # edges by (from,to,kind) keeping only the first edge's properties, which
+    # would drop the per-pipeline metadata of duplicate cross-pipeline orderings.
+    # DOWNSTREAM_OF endpoints are module ids (mod:<name>), which resolve does not
+    # remap, so pre-resolve keys are final.  (If method-level DOWNSTREAM_OF is ever
+    # added, this must move after resolve AND resolve must preserve duplicate
+    # DOWNSTREAM_OF metadata.)
+    all_edges = merge_downstream_of(all_edges)
+
     # --- resolve ---
     resolved_nodes, resolved_edges = resolve(
         method_nodes=method_nodes,
@@ -179,9 +188,6 @@ def cmd_build(
         src_edges=all_edges,
         ingested_at=ingested_at,
     )
-
-    # Roll up DOWNSTREAM_OF attestation metadata (after resolve's id-remap + dedup).
-    resolved_edges = merge_downstream_of(resolved_edges)
 
     # --- bio.tools EDAM enrichment (post-resolve, pre-load) ---
     bt_edges_added = 0

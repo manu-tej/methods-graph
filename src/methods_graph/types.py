@@ -30,9 +30,9 @@ class NodeKind(str, Enum):
 
 
 class EdgeKind(str, Enum):
-    HAS_MODULE = "HAS_MODULE"          # Phase 2 — declared for the pipeline DAG; no emitter in MVP
+    HAS_MODULE = "HAS_MODULE"          # pipeline DAG — emitted by connectors/nfcore_pipeline.py
     WRAPS = "WRAPS"
-    DOWNSTREAM_OF = "DOWNSTREAM_OF"   # Phase 2 — declared for the pipeline DAG; no emitter in MVP
+    DOWNSTREAM_OF = "DOWNSTREAM_OF"   # pipeline DAG — emitted by connectors/nfcore_pipeline.py
     PACKAGED_AS = "PACKAGED_AS"
     FROM_PACKAGE = "FROM_PACKAGE"
     PERFORMS = "PERFORMS"
