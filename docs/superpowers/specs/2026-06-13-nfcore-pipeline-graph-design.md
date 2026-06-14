@@ -164,6 +164,24 @@ Pure-function-first, offline, deterministic — mirroring the existing connector
 - Integration (`test_integration.py` extension): build a graph from module fixtures **+** a pipeline fixture; assert `Pipeline` node present, `DOWNSTREAM_OF` edges loaded, audit passes.
 - All existing tests remain green (no regressions to module/EDAM/container paths).
 
+## Schema altitude — node vs attribute (design rationale)
+
+Added 2026-06-14 after validating against the real nf-core/rnaseq build (2,635 nodes). Keep **two entity layers** and push the execution recipe to **attributes**:
+
+| Concept | Example | Treatment | Why |
+|---------|---------|-----------|-----|
+| **Tool** | `samtools` | `Method` **node** | normalization anchor for shared semantics (paper/citation → `quality_metrics`, EDAM ops/topics, bioconda pkg, `USES_STATISTICAL_METHOD`/`REQUIRES_ASSUMPTION`); one per resolved tool; entity-resolution anchor |
+| **Operation / step** | `samtools sort`, `samtools index` | `Module` **node** | the DAG vertex `DOWNSTREAM_OF` connects + the per-step I/O contract. **Cannot** be a tool attribute, or pipeline paths self-loop |
+| **Invocation recipe** | container image, command, cpus/mem | **attribute** on the step | "how to run" has no identity or relationships of its own |
+
+**Evidence (real rnaseq):** one tool maps to many operations — `samtools` = 8 module-steps (faidx/fastq/flagstat/idxstats/index/sort/stats/view), `rseqc` = 8, `hisat2` = 3. Collapsing a tool to one node turns `sort → index → stats` into self-loops and destroys the wiring, so the step **must** be its own vertex; while the tool **must** stay a node or its shared metadata denormalizes across every step (redundancy + update anomalies).
+
+**Nextflow level mapping:** `Workflow` → collapse into `Pipeline`; `Process` → collapse into `Module` (step); `Subworkflow` → **defer** (a reusable cross-pipeline sub-protocol motif — add a `Subworkflow` node only when the planner needs sub-protocol seeding); `Pipeline`/`Module`/`Method` kept.
+
+**`Container`:** currently a node via `PACKAGED_AS` — justified *only* as registry/version normalization ("which tools share an image"); otherwise demote to a step attribute.
+
+**Metrics:** compute centrality on a **projection** — project steps→tool via `WRAPS` for tool-importance, use the module layer for step-importance. Never run naive centrality across both layers (that is the "inflated centrality" risk); Kùzu does the projection in-query.
+
 ## Phasing
 
 - **Phase A1 (this MVP):** schema-value usage (no DDL), `parse_pipeline`, plumbing-coverage improvement, Option-2 wiring, `merge_downstream_of`, CLI `--nfcore-pipelines`, `fetch_nfcore_pipeline`, audit invariants, fixtures + tests.
