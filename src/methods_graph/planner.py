@@ -48,3 +48,64 @@ class Suggestion:
             "assumptions": self.assumptions,
             "why": self.why,
         }
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    module_id: str
+    module_name: str
+    kind: str            # "downstream" | "entry"
+    count: int
+    evidence: list[str]
+    source_label: str    # the frontier step name (for the "why" string); "" for entry
+
+
+def _candidates(conn: kuzu.Connection, frontier_ids: list[str],
+                exclude: set[str]) -> list[_Candidate]:
+    """Gather + rank next-step candidates from a frontier. Continue (step->step via
+    DOWNSTREAM_OF, ranked by attestation count) and start (data->Method INPUT->Module
+    WRAPS, ranked by HAS_MODULE popularity) are unified. When a module is reachable
+    both ways the downstream (sequencing-evidence) candidate is preferred. Candidates
+    in the frontier or `exclude` are dropped. Sorted by (count desc, module_id asc)."""
+    blocked = set(frontier_ids) | exclude
+    best: dict[str, _Candidate] = {}
+
+    # Continue: frontier Module -DOWNSTREAM_OF-> next Module
+    for a_name, b_id, b_name, props in conn.execute(
+        "MATCH (a:Entity {kind:'Module'})-[r:Rel {kind:'DOWNSTREAM_OF'}]->(b:Entity {kind:'Module'}) "
+        "WHERE list_contains($frontier, a.id) "
+        "RETURN a.name, b.id, b.name, r.properties",
+        parameters={"frontier": frontier_ids},
+    ):
+        if b_id in blocked:
+            continue
+        p = json.loads(props or "{}")
+        count = int(p.get("attestations") or len(p.get("pipelines", [])))
+        cand = _Candidate(b_id, b_name, "downstream", count,
+                          sorted(p.get("pipelines", [])), a_name)
+        cur = best.get(b_id)
+        if cur is None or count > cur.count:
+            best[b_id] = cand
+
+    # Start: frontier Format/Data <-INPUT- Method <-WRAPS- Module
+    entry_mods = list(conn.execute(
+        "MATCH (mod:Entity {kind:'Module'})-[:Rel {kind:'WRAPS'}]->"
+        "(m:Entity {kind:'Method'})-[:Rel {kind:'INPUT'}]->(f:Entity) "
+        "WHERE list_contains($frontier, f.id) "
+        "RETURN DISTINCT mod.id, mod.name",
+        parameters={"frontier": frontier_ids},
+    ))
+    for mod_id, mod_name in entry_mods:
+        if mod_id in blocked or (mod_id in best and best[mod_id].kind == "downstream"):
+            continue
+        pipes = [r[0] for r in conn.execute(
+            "MATCH (p:Entity {kind:'Pipeline'})-[:Rel {kind:'HAS_MODULE'}]->(mod:Entity {id:$mid}) "
+            "RETURN p.name ORDER BY p.name",
+            parameters={"mid": mod_id},
+        )]
+        cand = _Candidate(mod_id, mod_name, "entry", len(pipes), pipes, "")
+        cur = best.get(mod_id)
+        if cur is None or cand.count > cur.count:
+            best[mod_id] = cand
+
+    return sorted(best.values(), key=lambda c: (-c.count, c.module_id))
