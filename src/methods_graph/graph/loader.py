@@ -47,8 +47,13 @@ def build_graph(nodes: list[NodeRecord], edges: list[EdgeRecord],
     # Idempotent: drop any prior DB so a rebuild yields an identical graph.
     if db_path.exists():
         shutil.rmtree(db_path) if db_path.is_dir() else db_path.unlink()
-    # Remove any WAL/shadow/lock kuzu left from a prior crashed build (else it replays).
+    # Remove any WAL/shadow/lock files kuzu left from a prior crashed build (else
+    # it replays).  Skip directories: this cleanup targets FILES only, and the
+    # default staging dir (cmd_build uses '<db>.staging') matches this glob —
+    # unlinking a directory raises EPERM ("Operation not permitted") on macOS.
     for sib in db_path.parent.glob(db_path.name + ".*"):
+        if sib.is_dir():
+            continue
         sib.unlink(missing_ok=True)
 
     node_ids = {n.id for n in nodes}

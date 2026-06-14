@@ -33,6 +33,20 @@ def test_build_graph_is_idempotent(tmp_path):
     assert count == 1
 
 
+def test_build_graph_default_staging_sibling_does_not_crash(tmp_path):
+    """Regression: cmd_build's default --staging is '<db>.staging', which matches
+    the loader's '<db>.*' WAL/shadow cleanup glob.  That cleanup targets FILES
+    (WAL/shadow/lock) and must skip directories — otherwise unlinking the staging
+    dir raises EPERM ('Operation not permitted') on macOS and aborts the build."""
+    from pathlib import Path
+    db_path = tmp_path / "methods.kuzu"
+    staging = Path(str(db_path) + ".staging")   # collides with the <db>.* cleanup glob
+    nodes = [NodeRecord("op:x", "X", NodeKind.OPERATION, {}, P)]
+    build_graph(nodes, [], db_path, staging_dir=staging)            # must not raise
+    conn = kuzu.Connection(kuzu.Database(str(db_path)))
+    assert [r for r in conn.execute("MATCH (n:Entity) RETURN count(n)")][0][0] == 1
+
+
 def test_dangling_edge_is_dropped_not_errored(tmp_path):
     nodes = [NodeRecord("op:x", "X", NodeKind.OPERATION, {}, P)]
     dangling = EdgeRecord("op:x", "op:missing", EdgeKind.PERFORMS, {}, P)
