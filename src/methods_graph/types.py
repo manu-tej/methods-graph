@@ -53,6 +53,13 @@ class EdgeKind(str, Enum):
     # StatisticalMethod, not the tool — a Method inherits them transitively via
     # USES_STATISTICAL_METHOD.  Same grounding/typed-endpoint invariants apply.
     REQUIRES_ASSUMPTION = "REQUIRES_ASSUMPTION"
+    # Curated, grounded Operation→StatisticalMethod link: the downstream statistics
+    # *applicable to* the results of an operation (e.g. RNA-Seq quantification →
+    # Wald test / FDR).  Normalized onto the operation, not the tool — a Method is
+    # amenable to a statistic transitively via PERFORMS.  Distinct from
+    # USES_STATISTICAL_METHOD (what a tool uses *internally*).  Same grounding +
+    # typed-endpoint invariants apply.
+    AMENABLE_TO = "AMENABLE_TO"
 
 
 @dataclass(frozen=True)

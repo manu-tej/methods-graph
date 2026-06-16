@@ -1,0 +1,40 @@
+# Curated, literature-grounded "applicable statistics" links: which downstream
+# statistical methods can be run ON the results of an EDAM operation.
+#
+# Normalized onto the OPERATION, not the tool: one row covers every tool that
+# performs the operation (salmon, kallisto, rsem, ... all PERFORM RNA-Seq
+# quantification, so all become AMENABLE_TO these statistics via that operation).
+# Distinct from USES_STATISTICAL_METHOD (what a tool uses internally).
+#
+# Scope: RNA-seq only for now. Each link cites a DOI; the loader rejects an
+# ungrounded link and the audit re-checks endpoint typing + evidence.
+# `operation`/`statistical_method` are graph node ids; `label` is a defense-in-
+# depth human label checked against the resolved node name.
+links:
+  # --- RNA-Seq quantification (op:operation_3800) — salmon, kallisto, rsem, ... ---
+  - operation: "op:operation_3800"
+    statistical_method: "obo:STATO_0000559"
+    label: "Wald test"
+    evidence: {doi: "10.1186/s13059-014-0550-8"}   # DESeq2, Love et al. 2014
+    note: "Per-gene differential-expression significance (negative-binomial GLM Wald test)."
+  - operation: "op:operation_3800"
+    statistical_method: "obo:OBI_0200036"
+    label: "Benjamini and Hochberg false discovery rate correction method"
+    evidence: {doi: "10.1111/j.2517-6161.1995.tb02031.x"}   # Benjamini & Hochberg 1995
+    note: "Multiple-testing correction across thousands of genes."
+  - operation: "op:operation_3800"
+    statistical_method: "obo:OBI_0200169"
+    label: "normalization data transformation"
+    evidence: {doi: "10.1186/gb-2010-11-3-r25"}   # Robinson & Oshlack 2010 (TMM)
+    note: "Between-sample library-size normalization before differential testing."
+  - operation: "op:operation_3800"
+    statistical_method: "obo:OBI_0200051"
+    label: "principal components analysis dimensionality reduction"
+    evidence: {doi: "10.1186/s13059-014-0550-8"}   # DESeq2 (PCA on transformed counts)
+    note: "Sample-level QC / exploratory structure on the expression matrix."
+  # --- Expression analysis (op:operation_2495) — salmon, ... ---
+  - operation: "op:operation_2495"
+    statistical_method: "obo:STATO_0000108"
+    label: "linear regression for analysis of continuous dependent variable"
+    evidence: {doi: "10.1093/nar/gkv007"}   # limma, Ritchie et al. 2015
+    note: "Linear models for expression (e.g. limma) on continuous expression values."

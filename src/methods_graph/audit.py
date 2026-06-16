@@ -328,6 +328,13 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
             "RETURN count(*)",
         ),
         (
+            # Applicable statistics are normalized onto the operation, not the tool.
+            "AMENABLE_TO: Operation→StatisticalMethod",
+            "MATCH (a)-[r:Rel{kind:'AMENABLE_TO'}]->(b) "
+            "WHERE NOT (a.kind='Operation' AND b.kind='StatisticalMethod') "
+            "RETURN count(*)",
+        ),
+        (
             "HAS_MODULE: Pipeline→Module",
             "MATCH (a)-[r:Rel{kind:'HAS_MODULE'}]->(b) "
             "WHERE NOT (a.kind='Pipeline' AND b.kind='Module') RETURN count(*)",
@@ -388,6 +395,8 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
          "USES_STATISTICAL_METHOD: grounded (doi:/pmid: evidence)"),
         ("REQUIRES_ASSUMPTION", ("doi:", "pmid:", "url:", "isbn:", "stato:"),
          "REQUIRES_ASSUMPTION: grounded (doi:/pmid:/url:/isbn:/stato: evidence)"),
+        ("AMENABLE_TO", ("doi:", "pmid:"),
+         "AMENABLE_TO: grounded (doi:/pmid: evidence)"),
     ):
         bad = _bad_evidence_count(edge_kind, prefixes)
         invariants.append(Invariant(name=label, violations=bad, ok=(bad == 0)))

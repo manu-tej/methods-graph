@@ -139,6 +139,11 @@ def method_neighborhood(conn: kuzu.Connection, method_id: str) -> dict[str, Any]
       entries — one per statistical method the assumption is reached through, so
       the grounding evidence is preserved *per via* (a single assumption inherited
       via two methods keeps both citations).
+    - ``amenable_statistics``: StatisticalMethod nodes the method's results are
+      *amenable to* (statistics you can run on its output), reached via
+      Method→PERFORMS→Operation→AMENABLE_TO→StatisticalMethod, deduped by statistic.
+      Each carries a ``via`` list of ``{"operation": <name>, "evidence": <token>}``.
+      Distinct from ``statistical_methods`` (what the tool uses internally).
     """
     method_res = list(conn.execute(
         "MATCH (m:Entity {id: $id}) "
@@ -210,5 +215,29 @@ def method_neighborhood(conn: kuzu.Connection, method_id: str) -> dict[str, Any]
         if not any(v["statistical_method"] == s_name for v in assumptions[aid]["via"]):
             assumptions[aid]["via"].append({"statistical_method": s_name, "evidence": evidence})
     out["assumptions"] = list(assumptions.values())
+
+    # Applicable statistics: what statistics can be run ON this method's results,
+    # reached via PERFORMS→AMENABLE_TO (operation-mediated), deduped by statistic.
+    # Each carries a ``via`` list of {operation, evidence} entries — the operation(s)
+    # the statistic is applicable through, with that link's grounding citation.
+    am_rows = conn.execute(
+        "MATCH (m:Entity {id: $id})-[:Rel {kind: 'PERFORMS'}]->"
+        "(o:Entity {kind: 'Operation'})-[ra:Rel {kind: 'AMENABLE_TO'}]->(s:Entity) "
+        "RETURN s.id, s.name, s.kind, s.properties, o.name, ra.properties "
+        "ORDER BY s.name, o.name",
+        parameters={"id": method_id},
+    )
+    amenable: dict[str, dict[str, Any]] = {}
+    for x in am_rows:
+        sid = x[0]
+        if sid not in amenable:
+            d = _node_dict(x[0], x[1], x[2], x[3])
+            d["via"] = []
+            amenable[sid] = d
+        o_name = x[4]
+        evidence = json.loads(x[5] or "{}").get("evidence", "")
+        if not any(v["operation"] == o_name for v in amenable[sid]["via"]):
+            amenable[sid]["via"].append({"operation": o_name, "evidence": evidence})
+    out["amenable_statistics"] = list(amenable.values())
 
     return out

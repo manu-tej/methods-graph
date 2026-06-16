@@ -246,6 +246,7 @@ def cmd_build(
     # never creates a dangling/mistyped link; skipped links are logged, not
     # silently dropped.
     xl_edges_added = 0
+    amenable_edges_added = 0
     has_stat_method = any(n.kind == NodeKind.STATISTICAL_METHOD for n in resolved_nodes)
     if has_stat_method:
         from methods_graph.crosslinks import build_crosslink_edges
@@ -303,6 +304,30 @@ def cmd_build(
                 "assumptions: minted %d Assumption nodes, added %d REQUIRES_ASSUMPTION edges",
                 len(new_a_nodes), assum_edges_added,
             )
+
+        # Applicable statistics: grounded Operation→StatisticalMethod AMENABLE_TO
+        # edges (what statistics you can run ON a step's results).  A Method becomes
+        # amenable transitively via PERFORMS.  No-op unless Operation nodes exist.
+        from methods_graph.crosslinks.amenable import build_amenable_edges
+
+        am_edges, am_report = build_amenable_edges(resolved_nodes, ingested_at=ingested_at)
+        new_am: list[EdgeRecord] = []
+        for e in am_edges:
+            key = (e.from_id, e.to_id, e.kind.value)
+            if key not in existing_keys:
+                new_am.append(e)
+                existing_keys.add(key)
+        resolved_edges = list(resolved_edges) + new_am
+        amenable_edges_added = len(new_am)
+        if am_report.skipped:
+            _log.info(
+                "amenable: skipped %d unmatched link(s): %s",
+                len(am_report.skipped), am_report.skipped,
+            )
+        for w in am_report.warnings:
+            _log.warning("amenable: %s", w)
+        if amenable_edges_added:
+            _log.info("amenable: added %d AMENABLE_TO edges", amenable_edges_added)
     else:
         assum_edges_added = 0
 
@@ -323,6 +348,7 @@ def cmd_build(
     onto_suffix = f", {n_onto} ontology nodes" if (stato is not None or obi is not None) else ""
     xl_suffix = (
         f", {xl_edges_added} stat-method links, {assum_edges_added} assumption links"
+        f", {amenable_edges_added} amenable-stat links"
         if has_stat_method else ""
     )
     n_pipes = sum(1 for n in resolved_nodes if n.kind == NodeKind.PIPELINE)
