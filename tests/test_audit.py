@@ -847,6 +847,56 @@ def test_audit_catches_inconsistent_attestation(tmp_path):
     assert result.ok is False
 
 
+def test_audit_catches_downstream_cycle(tmp_path):
+    """A nextflow_dsl2 (ground-truth) DOWNSTREAM_OF cycle must fail acyclicity."""
+    nodes = [
+        NodeRecord("mod:a", "a", NodeKind.MODULE, {}, P),
+        NodeRecord("mod:b", "b", NodeKind.MODULE, {}, P),
+    ]
+    props = {"pipelines": ["x"], "attestations": 1,
+             "derivation": "nextflow_dsl2", "confidence": 0.95}
+    edges = [
+        EdgeRecord("mod:a", "mod:b", EdgeKind.DOWNSTREAM_OF, dict(props), P),
+        EdgeRecord("mod:b", "mod:a", EdgeKind.DOWNSTREAM_OF, dict(props), P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    inv = next(i for i in result.invariants if "acyclic" in i.name)
+    assert inv.ok is False
+    assert result.ok is False
+
+
+def test_audit_io_inferred_cycle_is_allowed(tmp_path):
+    """io_inferred is a permissive candidate graph (bidirectional by design);
+    its cycles must NOT trip the acyclicity invariant — only ground-truth does."""
+    nodes = [
+        NodeRecord("mod:a", "a", NodeKind.MODULE, {}, P),
+        NodeRecord("mod:b", "b", NodeKind.MODULE, {}, P),
+    ]
+    props = {"pipelines": ["x"], "attestations": 1,
+             "derivation": "io_inferred", "confidence": 0.5}
+    edges = [
+        EdgeRecord("mod:a", "mod:b", EdgeKind.DOWNSTREAM_OF, dict(props), P),
+        EdgeRecord("mod:b", "mod:a", EdgeKind.DOWNSTREAM_OF, dict(props), P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    inv = next(i for i in result.invariants if "acyclic" in i.name)
+    assert inv.ok is True
+
+
 def test_audit_catches_pipeline_without_modules(tmp_path):
     """A Pipeline node with no HAS_MODULE edge must fail the HAS_MODULE invariant."""
     nodes = [NodeRecord("pipe:lonely", "lonely", NodeKind.PIPELINE,

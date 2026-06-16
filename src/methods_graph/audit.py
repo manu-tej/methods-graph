@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -423,6 +424,45 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
     invariants.append(Invariant(
         name="DOWNSTREAM_OF: attestation consistent (attestations==len(pipelines))",
         violations=_att_bad, ok=(_att_bad == 0)))
+
+    # DOWNSTREAM_OF acyclicity — the GROUND-TRUTH (nextflow_dsl2) ordering layer
+    # must be a DAG so the planner can trust step direction.  Scoped to
+    # derivation=="nextflow_dsl2": the io_inferred fallback is a permissive,
+    # intentionally-bidirectional candidate graph and is exempt.  Computed in
+    # Python (Cypher can't introspect the JSON ``derivation``); violations = count
+    # of nodes left in cycles (0 == acyclic) via Kahn topological elimination.
+    def _downstream_cycle_violations() -> int:
+        rows = _qall("MATCH (a)-[r:Rel{kind:'DOWNSTREAM_OF'}]->(b) "
+                     "RETURN a.id, b.id, r.properties")
+        adj: dict[str, list[str]] = defaultdict(list)
+        indeg: dict[str, int] = defaultdict(int)
+        nodes: set[str] = set()
+        for a_id, b_id, props_str in rows:
+            try:
+                props = json.loads(props_str or "{}")
+            except (json.JSONDecodeError, TypeError):
+                props = {}
+            if props.get("derivation") != "nextflow_dsl2":
+                continue
+            adj[a_id].append(b_id)
+            indeg[b_id] += 1
+            nodes.add(a_id)
+            nodes.add(b_id)
+        q = deque(n for n in nodes if indeg[n] == 0)
+        removed = 0
+        while q:
+            u = q.popleft()
+            removed += 1
+            for w in adj[u]:
+                indeg[w] -= 1
+                if indeg[w] == 0:
+                    q.append(w)
+        return len(nodes) - removed
+
+    _cyc_bad = _downstream_cycle_violations()
+    invariants.append(Invariant(
+        name="DOWNSTREAM_OF: acyclic (nextflow_dsl2 ground-truth)",
+        violations=_cyc_bad, ok=(_cyc_bad == 0)))
 
     # ------------------------------------------------------------------
     # 4. SAME_AS candidates

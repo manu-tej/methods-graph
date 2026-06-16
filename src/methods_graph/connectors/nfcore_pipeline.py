@@ -19,7 +19,8 @@ from typing import Any
 
 import yaml
 
-from methods_graph.connectors.nextflow_dag import parse_dag_edges
+from methods_graph.connectors.nextflow_dag import (
+    break_cycles, parse_dag_process_edges)
 from methods_graph.connectors.nfcore import _io_module_targets
 from methods_graph.types import (EdgeKind, EdgeRecord, NodeKind, NodeRecord,
                                  Provenance)
@@ -115,12 +116,21 @@ def parse_pipeline(
     seen_pairs: set[tuple[str, str]] = set()
     if dag_path.exists():
         proc2mod = _process_to_modid(pipeline_dir, path_to_modid)
-        for a_label, b_label in parse_dag_edges(dag_path.read_text()):
+        # Collapse process-label edges onto module ids, keeping each module pair's
+        # EARLIEST rank.  Aliased instances of one tool (e.g. SAMTOOLS_SORT and
+        # SAMTOOLS_SORT_QUALIMAP both -> mod:samtools_sort) collapse distinct DAG
+        # positions into a single node, which can produce BOTH A->B and B->A — a
+        # cycle.  break_cycles keeps the primary (first-occurring) direction so the
+        # ground-truth DOWNSTREAM_OF layer is a trustworthy DAG.
+        mod_rank: dict[tuple[str, str], int] = {}
+        for a_label, b_label, r in parse_dag_process_edges(dag_path.read_text()):
             a_id, b_id = proc2mod.get(a_label), proc2mod.get(b_label)
             if not a_id or not b_id or a_id == b_id:   # unmapped or self-loop
                 continue
-            if (a_id, b_id) in seen_pairs:
-                continue
+            key = (a_id, b_id)
+            if r < mod_rank.get(key, r + 1):
+                mod_rank[key] = r
+        for a_id, b_id in break_cycles([(a, b, r) for (a, b), r in mod_rank.items()]):
             seen_pairs.add((a_id, b_id))
             edges.append(EdgeRecord(
                 a_id, b_id, EdgeKind.DOWNSTREAM_OF,

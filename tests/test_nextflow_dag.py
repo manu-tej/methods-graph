@@ -1,4 +1,5 @@
-from methods_graph.connectors.nextflow_dag import parse_dag_edges
+from methods_graph.connectors.nextflow_dag import (
+    break_cycles, parse_dag_edges, parse_dag_process_edges)
 
 # TRIM -> ALIGN -> SORT -> {QC, INDEX}, plus a versions/multiqc accumulator hub
 # (v10) that 5 processes feed and that flows to MULTIQC. The accumulator (in>=5)
@@ -60,6 +61,44 @@ def test_deterministic_sorted_output():
     assert parse_dag_edges(DAG) == sorted(parse_dag_edges(DAG))
 
 
+# --- ranked process edges + cycle breaking (the C1 fix) ---
+
+
+def test_parse_dag_process_edges_ranks_by_producer_vid():
+    # producer A is v0, so the A->B edge carries rank 0 (its earliest instance).
+    dag = ('flowchart TB\n v0(["A"])\n v1["c"]\n v2(["B"])\n'
+           ' v0 --> v1\n v1 --> v2\n')
+    assert parse_dag_process_edges(dag) == [("A", "B", 0)]
+
+
+def test_parse_dag_process_edges_keeps_min_producer_vid():
+    # A runs twice (v0 and v9); the edge to B keeps the EARLIEST producer rank (0).
+    dag = ('flowchart TB\n v0(["A"])\n v1["c"]\n v2(["B"])\n v9(["A"])\n v10["c2"]\n'
+           ' v0 --> v1\n v1 --> v2\n v9 --> v10\n v10 --> v2\n')
+    assert parse_dag_process_edges(dag) == [("A", "B", 0)]
+
+
+def test_break_cycles_keeps_earliest_direction():
+    # a->b established first (rank 1); the reverse b->a (rank 9) would close a
+    # cycle -> dropped. The earlier/primary dataflow direction wins.
+    assert break_cycles([("a", "b", 1), ("b", "a", 9)]) == [("a", "b")]
+
+
+def test_break_cycles_drops_back_arc_of_three_cycle():
+    assert break_cycles([("a", "b", 1), ("b", "c", 2), ("c", "a", 3)]) == [
+        ("a", "b"), ("b", "c")]
+
+
+def test_break_cycles_leaves_acyclic_input_intact():
+    edges = [("a", "b", 1), ("a", "c", 2), ("b", "c", 3)]
+    assert break_cycles(edges) == [("a", "b"), ("a", "c"), ("b", "c")]
+
+
+def test_break_cycles_is_deterministic_on_equal_ranks():
+    # equal ranks -> tie-break by (src, dst); a->b precedes b->a, so a->b wins.
+    assert break_cycles([("b", "a", 5), ("a", "b", 5)]) == [("a", "b")]
+
+
 # --- integration: parse_pipeline prefers a cached dag.mmd over I/O-overlap ---
 
 import shutil
@@ -98,6 +137,29 @@ def test_parse_pipeline_falls_back_to_io_overlap_without_dag():
     _nodes, edges = parse_pipeline(MINI, ingested_at="2026-06-16")
     ds = [e for e in edges if e.kind == EdgeKind.DOWNSTREAM_OF]
     assert ds and all(e.properties["derivation"] == "io_inferred" for e in ds)
+
+
+def test_parse_pipeline_breaks_alias_induced_cycle(tmp_path):
+    # A tool used at two pipeline stages under aliases (FASTQC + FASTQC_AFTER, both
+    # -> mod:fastqc_qc) collapses FASTQC->SALMON and SALMON->FASTQC_AFTER into a
+    # mod:fastqc_qc <-> mod:salmon_pe cycle.  parse_pipeline must keep the EARLIEST
+    # (primary) direction and drop the re-entrant back-edge, leaving an acyclic graph.
+    p = tmp_path / "mini"
+    shutil.copytree(MINI, p)
+    (p / "workflows").mkdir()
+    (p / "workflows" / "main.nf").write_text(
+        "include { FASTQC } from '../modules/nf-core/fastqc'\n"
+        "include { SALMON } from '../modules/nf-core/salmon'\n"
+        "include { FASTQC as FASTQC_AFTER } from '../modules/nf-core/fastqc'\n"
+    )
+    (p / "dag.mmd").write_text(
+        'flowchart TB\n v0(["FASTQC"])\n v1["c1"]\n v2(["SALMON"])\n'
+        ' v3["c2"]\n v4(["FASTQC_AFTER"])\n'
+        ' v0 --> v1\n v1 --> v2\n v2 --> v3\n v3 --> v4\n'
+    )
+    _nodes, edges = parse_pipeline(p, ingested_at="2026-06-16")
+    ds = {(e.from_id, e.to_id) for e in edges if e.kind == EdgeKind.DOWNSTREAM_OF}
+    assert ds == {("mod:fastqc_qc", "mod:salmon_pe")}
 
 
 # --- fetch-time: nextflow preview generates + caches dag.mmd (injected runner) ---
