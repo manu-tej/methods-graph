@@ -102,7 +102,9 @@ def test_parse_pipeline_falls_back_to_io_overlap_without_dag():
 
 # --- fetch-time: nextflow preview generates + caches dag.mmd (injected runner) ---
 
-from methods_graph.fetch import fetch_nfcore_pipeline
+from methods_graph.fetch import _stub_missing_includes, fetch_nfcore_pipeline
+
+_DAG = 'flowchart TB\n v0(["A"])\n v1(["B"])\n v0 --> v1\n'   # has an edge -> a "real" DAG
 
 
 class _R:
@@ -110,37 +112,69 @@ class _R:
         self.stdout = stdout
 
 
-def test_fetch_generates_and_caches_dag(tmp_path):
+def _base_runner(on_nextflow):
     def runner(cmd, **kw):
         if cmd[:2] == ["git", "clone"]:
             Path(cmd[-1]).mkdir(parents=True, exist_ok=True)
             return _R()
         if "rev-parse" in cmd:
             return _R("deadbeef\n")
-        if cmd[0] == "nextflow":                      # simulate -with-dag writing the file
-            Path(cmd[cmd.index("-with-dag") + 1]).write_text('flowchart TB\n v0(["A"])\n')
-            return _R()
+        if cmd[0] == "nextflow":
+            return on_nextflow(cmd, kw)
+        return _R()
+    return runner
+
+
+def test_fetch_generates_and_caches_dag(tmp_path):
+    def on_nf(cmd, kw):
+        Path(cmd[cmd.index("-with-dag") + 1]).write_text(_DAG)
         return _R()
 
     m = fetch_nfcore_pipeline("rnaseq", tmp_path, revision="3.14",
-                              fetched_at="2026-06-16", runner=runner)
+                              fetched_at="2026-06-16", runner=_base_runner(on_nf))
     assert m["dag"] == "dag.mmd"
     assert m["commit"] == "deadbeef"
     assert (tmp_path / "pipelines" / "rnaseq" / "dag.mmd").exists()
 
 
-def test_fetch_degrades_gracefully_when_nextflow_missing(tmp_path):
-    def runner(cmd, **kw):
-        if cmd[:2] == ["git", "clone"]:
-            Path(cmd[-1]).mkdir(parents=True, exist_ok=True)
+def test_fetch_falls_back_to_v1_parser(tmp_path):
+    # v2 (default) compile fails; legacy v1 parser succeeds -> DAG still produced.
+    def on_nf(cmd, kw):
+        if (kw.get("env") or {}).get("NXF_SYNTAX_PARSER") == "v1":
+            Path(cmd[cmd.index("-with-dag") + 1]).write_text(_DAG)
             return _R()
-        if "rev-parse" in cmd:
-            return _R("abc\n")
-        if cmd[0] == "nextflow":
-            raise FileNotFoundError("nextflow not installed")
+        raise RuntimeError("Script compilation failed (v2 parser)")
+
+    m = fetch_nfcore_pipeline("methylseq", tmp_path, revision="4.2.0",
+                              fetched_at="2026-06-16", runner=_base_runner(on_nf))
+    assert m["dag"] == "dag.mmd"
+
+
+def test_fetch_degrades_gracefully_when_nextflow_missing(tmp_path):
+    def on_nf(cmd, kw):
+        raise FileNotFoundError("nextflow not installed")
+
+    m = fetch_nfcore_pipeline("rnaseq", tmp_path, revision="3.14",
+                              fetched_at="2026-06-16", runner=_base_runner(on_nf))
+    assert m["dag"] is None
+    assert not (tmp_path / "pipelines" / "rnaseq" / "dag.mmd").exists()
+
+
+def test_fetch_ignores_empty_header_dag(tmp_path):
+    # a failed run leaves a header-only file (no edges) -> not treated as a DAG
+    def on_nf(cmd, kw):
+        Path(cmd[cmd.index("-with-dag") + 1]).write_text("flowchart TB\n")
         return _R()
 
     m = fetch_nfcore_pipeline("rnaseq", tmp_path, revision="3.14",
-                              fetched_at="2026-06-16", runner=runner)
+                              fetched_at="2026-06-16", runner=_base_runner(on_nf))
     assert m["dag"] is None
-    assert not (tmp_path / "pipelines" / "rnaseq" / "dag.mmd").exists()
+
+
+def test_stub_missing_includes(tmp_path):
+    (tmp_path / "nextflow.config").write_text(
+        "profiles { aws_batch { includeConfig 'conf/aws/batch/nextflow.config' } }\n"
+    )
+    stubbed = _stub_missing_includes(tmp_path)
+    assert (tmp_path / "conf" / "aws" / "batch" / "nextflow.config").exists()
+    assert len(stubbed) == 1

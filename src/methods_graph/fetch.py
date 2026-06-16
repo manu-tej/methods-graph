@@ -384,6 +384,69 @@ def fetch_nfcore(
     }
 
 
+_INCLUDE_CFG = re.compile(r"includeConfig\s+'([^']+)'")
+_NF_VERSION = re.compile(r"nextflowVersion\s*=\s*'[^0-9]*(\d+\.\d+\.\d+)")
+
+
+def _stub_missing_includes(clone_dir: Path) -> list[Path]:
+    """Touch any ``includeConfig`` targets that don't exist on disk.
+
+    Nextflow's strict config parser ERRORS (not warns) on an include of a missing
+    file — e.g. an unused ``aws_batch`` profile's config that the pipeline ships
+    conditionally.  Stubbing the missing targets lets ``-preview`` parse; the
+    profile is not activated by ``-profile test`` so the empty stub is inert.
+    Returns the stubs created (for logging)."""
+    stubbed: list[Path] = []
+    cfgs = list(clone_dir.glob("*.config")) + list((clone_dir / "conf").glob("*.config"))
+    for cfg in cfgs:
+        try:
+            text = cfg.read_text(errors="ignore")
+        except OSError:
+            continue
+        for rel in _INCLUDE_CFG.findall(text):
+            target = cfg.parent / rel
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("// stubbed by methods-graph fetch (missing optional include)\n")
+                stubbed.append(target)
+    return stubbed
+
+
+def _generate_pipeline_dag(clone_dir: Path, launch_dir: Path, name: str,
+                           runner: Callable[..., Any]) -> bool:
+    """Cache ``<clone>/dag.mmd`` via ``nextflow -preview -with-dag`` (zero tasks).
+
+    Robustness ladder for the real-world nf-core/Nextflow friction:
+    stub missing includes, then try the default (v2) parser and fall back to the
+    legacy (v1) parser for pre-v2 pipelines.  Honours a caller-set ``NXF_VER``.
+    Best-effort: returns False (build falls back to I/O-overlap) if Nextflow is
+    absent or every attempt fails.  A real DAG contains edges (``-->``); an
+    empty header file from a failed run does not."""
+    import os
+
+    dag_path = clone_dir / "dag.mmd"
+    launch_dir.mkdir(parents=True, exist_ok=True)
+    _stub_missing_includes(clone_dir)
+    base_env = dict(os.environ)
+
+    cmd = ["nextflow", "run", str(clone_dir), "-profile", "test",
+           "--outdir", str(launch_dir / "out"), "-preview", "-with-dag", str(dag_path)]
+    for parser in (None, "v1"):          # v2 (default) first, legacy fallback second
+        env = dict(base_env)
+        if parser:
+            env["NXF_SYNTAX_PARSER"] = parser
+        try:
+            if dag_path.exists():
+                dag_path.unlink()
+            runner(cmd, check=True, cwd=str(launch_dir), env=env)
+            if dag_path.exists() and "-->" in dag_path.read_text(errors="ignore"):
+                return True
+        except Exception as exc:   # noqa: BLE001 - nextflow optional; degrade gracefully
+            _log.warning("nextflow preview (parser=%s) failed for %s: %s",
+                         parser or "v2", name, exc)
+    return False
+
+
 def fetch_nfcore_pipeline(
     name: str,
     dest_dir: Path,
@@ -408,18 +471,10 @@ def fetch_nfcore_pipeline(
 
     # Ground-truth wiring: Nextflow preview BUILDS the channel DAG and runs ZERO
     # tasks (no containers, no data).  Cached as <clone>/dag.mmd for the offline
-    # build to parse (derivation="nextflow_dsl2").  Best-effort: if Nextflow is
-    # absent or preview fails, the build falls back to Option-2 I/O-overlap.
-    dag_path = clone_dir / "dag.mmd"
-    dag_ok = False
-    try:
-        runner(["nextflow", "run", str(clone_dir), "-profile", "test",
-                "--outdir", str(dest_dir / "_preview" / name),
-                "-preview", "-with-dag", str(dag_path)], check=True)
-        dag_ok = dag_path.exists()
-    except Exception as exc:   # noqa: BLE001 - nextflow optional; degrade gracefully
-        _log.warning("nextflow preview DAG failed for %s (%s); build will fall "
-                     "back to I/O-overlap wiring", name, exc)
+    # build to parse (derivation="nextflow_dsl2").  Best-effort: stubs missing
+    # includes + falls back to the legacy parser; if Nextflow is absent or every
+    # attempt fails, the build falls back to Option-2 I/O-overlap.
+    dag_ok = _generate_pipeline_dag(clone_dir, dest_dir / "_preview" / name, name, runner)
     return {
         "repo": repo,
         "commit": result.stdout.strip(),
