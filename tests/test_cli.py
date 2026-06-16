@@ -43,7 +43,8 @@ def test_cmd_build_end_to_end(tmp_path):
     # salmon should exist with RNA-Seq tag and container image
     assert "salmon" in method_by_name, f"salmon not found; methods: {list(method_by_name)}"
     salmon = method_by_name["salmon"]
-    assert "RNA-Seq" in salmon["tags"], f"expected EDAM RNA-Seq tag; got {salmon['tags']}"
+    # tags = EDAM operation labels (topics removed)
+    assert "Read summarisation" in salmon["tags"], f"expected EDAM operation tag; got {salmon['tags']}"
     assert "salmon:1.10.0" in salmon["compute_requirements"]["container_image"]
 
     # Cross-module dedup: samtools appears in BOTH samtools_stats and samtools_helper;
@@ -208,19 +209,20 @@ def test_main_build_subcommand(tmp_path):
     assert db_path.exists()
 
 
-def test_cmd_build_biotools_adds_performs_and_has_topic(tmp_path):
-    """bio.tools enrichment adds PERFORMS and HAS_TOPIC edges that connect to EDAM nodes.
+def test_cmd_build_biotools_adds_performs(tmp_path):
+    """bio.tools enrichment adds PERFORMS edges that connect to EDAM nodes.
 
     Setup:
-    - edam_sample.tsv has operation_3798, operation_2495, and topic_3170
+    - edam_sample.tsv has operation_3798 and operation_2495
     - nfcore/salmon_quant has salmon with biotools_id "salmon" and edam_operations:
         [operation_3798] (but NOT operation_2495)
-    - biotools_build/salmon.json maps salmon → operation_3798, operation_2495, topic_3170
-      (all three are in edam_sample.tsv so edges survive the loader)
+    - biotools_build/salmon.json maps salmon → operation_3798, operation_2495
+      (both are in edam_sample.tsv so edges survive the loader)
 
     operation_2495 is present in biotools_build/salmon.json but NOT in salmon_quant/meta.yml,
     so the PERFORMS edge m:salmon -> op:operation_2495 can ONLY come from the bio.tools
     enrichment path.  Its presence proves the enrichment code contributed it.
+    (Topics were removed, so no HAS_TOPIC edges are produced.)
     """
     db_path = tmp_path / "methods.kuzu"
     cmd_build(
@@ -239,7 +241,7 @@ def test_cmd_build_biotools_adds_performs_and_has_topic(tmp_path):
     method_names = {m["name"] for m in methods}
     assert "salmon" in method_names, f"salmon not found in methods: {method_names}"
 
-    # Query the kuzu DB directly for PERFORMS and HAS_TOPIC edges from salmon.
+    # Query the kuzu DB directly for PERFORMS edges from salmon.
     db = kuzu.Database(str(db_path))
     conn = kuzu.Connection(db)
     try:
@@ -252,14 +254,11 @@ def test_cmd_build_biotools_adds_performs_and_has_topic(tmp_path):
             f"Expected PERFORMS edge m:salmon -> op:operation_3798; got {performs_rows}"
         )
 
-        # HAS_TOPIC edge: salmon → topic:topic_3170 (present in both nf-core and bio.tools)
+        # No HAS_TOPIC edges should exist anywhere (Topic layer removed).
         topic_rows = list(conn.execute(
-            "MATCH (m:Entity {id: 'm:salmon'})-[r:Rel {kind: 'HAS_TOPIC'}]->(t:Entity {id: 'topic:topic_3170'}) "
-            "RETURN m.id, t.id"
+            "MATCH ()-[r:Rel {kind: 'HAS_TOPIC'}]->() RETURN count(r)"
         ))
-        assert len(topic_rows) >= 1, (
-            f"Expected HAS_TOPIC edge m:salmon -> topic:topic_3170; got {topic_rows}"
-        )
+        assert topic_rows[0][0] == 0, f"Expected zero HAS_TOPIC edges; got {topic_rows}"
 
         # Enrichment-only edge: salmon → op:operation_2495 (bio.tools ONLY — not in meta.yml).
         # This edge can ONLY exist if the bio.tools enrichment path ran successfully.
@@ -294,9 +293,9 @@ def test_cmd_build_biotools_missing_path_raises(tmp_path):
 def test_cmd_build_biotools_deduplicates_existing_edges(tmp_path, capsys):
     """bio.tools edges that already exist from nf-core are NOT duplicated.
 
-    salmon_quant/meta.yml already has edam_operations: [operation_3798] and
-    edam_topics: [topic_3170]. The biotools_build fixture adds the same ones.
-    The loaded graph should have exactly one PERFORMS and one HAS_TOPIC for salmon.
+    salmon_quant/meta.yml already has edam_operations: [operation_3798]. The
+    biotools_build fixture adds the same one. The loaded graph should have
+    exactly one PERFORMS edge for salmon -> operation_3798.
     """
     db_path = tmp_path / "methods.kuzu"
     cmd_build(

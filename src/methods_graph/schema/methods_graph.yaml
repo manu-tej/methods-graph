@@ -65,7 +65,6 @@ classes:
       - description
       - implementation_type
       - performs
-      - has_topic
       - packaged_as
       - inputs
       - outputs
@@ -103,10 +102,6 @@ classes:
       is_a links are permitted (range is Operation).
     slots:
       - operation_is_a
-
-  Topic:
-    is_a: GraphNode
-    description: An EDAM topic term (e.g. edam:topic_3308 Transcriptomics).
 
   Data:
     is_a: GraphNode
@@ -369,12 +364,6 @@ slots:
     multivalued: true
     inlined: false
     description: Operations this method performs (EDAM).
-
-  has_topic:
-    range: Topic
-    multivalued: true
-    inlined: false
-    description: EDAM topic(s) associated with this method.
 
   packaged_as:
     range: Container

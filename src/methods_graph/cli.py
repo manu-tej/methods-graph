@@ -4,7 +4,7 @@ Implemented subcommands:
   query      -- seed a subgraph by keyword and print RAG text
   methods    -- dump all methods as AnalysisMethod-shaped JSON
   build      -- build the Kùzu DB from local source snapshots (connectors → resolver → loader)
-                optionally enriched with bio.tools EDAM operations/topics via --biotools <dir>
+                optionally enriched with bio.tools EDAM operations via --biotools <dir>
   fetch      -- download real source snapshots (EDAM, nf-core/modules, BioContainers)
                 and record a versioned snapshot.json manifest for seamless upgrades
   audit      -- run correctness checks (schema invariants, provenance, dup ids, coverage)
@@ -77,7 +77,7 @@ def cmd_build(
     """Build a Kùzu graph from local source snapshots: connectors → resolver → loader.
 
     Optional ``--biotools <dir>`` enriches each Method whose biotoolsID matches a
-    bio.tools JSON record with PERFORMS (operation) and HAS_TOPIC edges.
+    bio.tools JSON record with PERFORMS (operation) edges.
 
     Optional ``--stato <path>`` and ``--obi <path>`` load STATO/OBI OWL ontology
     files into StatisticalMethod, Assay, Protocol, StudyDesign, Instrument, and
@@ -229,15 +229,10 @@ def cmd_build(
                 if key not in existing_edge_keys:
                     extra_edges.append(EdgeRecord(node.id, op_id, EdgeKind.PERFORMS, {}, bt_prov))
                     existing_edge_keys.add(key)
-            for topic_id in info["topics"]:
-                key = (node.id, topic_id, EdgeKind.HAS_TOPIC.value)
-                if key not in existing_edge_keys:
-                    extra_edges.append(EdgeRecord(node.id, topic_id, EdgeKind.HAS_TOPIC, {}, bt_prov))
-                    existing_edge_keys.add(key)
         resolved_edges = list(resolved_edges) + extra_edges
         bt_edges_added = len(extra_edges)
         if bt_edges_added:
-            _log.info("bio.tools enrichment: added %d PERFORMS/HAS_TOPIC edges", bt_edges_added)
+            _log.info("bio.tools enrichment: added %d PERFORMS edges", bt_edges_added)
 
     # --- curated module-context operation corrections + backfill (review I2 + I1) ---
     # bio.tools tags the *tool*; nf-core uses a specific *subcommand*, so some

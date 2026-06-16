@@ -35,7 +35,7 @@ def test_full_pipeline_salmon(tmp_path):
         salmon = next(m for m in methods if m["name"] == "salmon")
 
         # End-to-end assertions spanning all three sources:
-        assert "RNA-Seq" in salmon["tags"]                                 # EDAM topic via nf-core ref
+        assert "Read summarisation" in salmon["tags"]                      # EDAM operation via nf-core ref (topics removed)
         assert "salmon:1.10.0" in salmon["compute_requirements"]["container_image"]  # BioContainers
         ctx = provider.retrieve_context_for_keywords(["salmon"])
         assert "Read summarisation" in ctx                                 # EDAM operation in RAG text

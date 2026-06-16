@@ -54,13 +54,11 @@ def test_audit_clean_graph_passes(tmp_path):
             bioconda_pkg="salmon", biotools_id="salmon",
         ),
         NodeRecord("op:operation_3798", "Read summarisation", NodeKind.OPERATION, {}, P),
-        NodeRecord("topic:topic_3170", "RNA-Seq", NodeKind.TOPIC, {}, P),
         NodeRecord("cnt:salmon_1.10.0", "salmon:1.10.0", NodeKind.CONTAINER, {}, P),
         NodeRecord("fmt:data_2044", "Sequence", NodeKind.FORMAT, {}, P),
     ]
     edges = [
         EdgeRecord("m:salmon", "op:operation_3798", EdgeKind.PERFORMS, {}, P),
-        EdgeRecord("m:salmon", "topic:topic_3170", EdgeKind.HAS_TOPIC, {}, P),
         EdgeRecord("m:salmon", "cnt:salmon_1.10.0", EdgeKind.PACKAGED_AS, {}, P),
         EdgeRecord("m:salmon", "fmt:data_2044", EdgeKind.INPUT, {}, P),
     ]
@@ -84,7 +82,6 @@ def test_audit_clean_graph_passes(tmp_path):
     assert cov["with_bioconda_pkg"]["count"] == 1
     assert cov["with_container"]["count"] == 1
     assert cov["with_edam_operation"]["count"] == 1
-    assert cov["with_topic"]["count"] == 1
     assert cov["with_io_contract"]["count"] == 1
 
     # No SAME_AS edges
@@ -204,7 +201,6 @@ def test_audit_coverage_metrics(tmp_path):
     assert cov["with_bioconda_pkg"]["count"] == 1
     assert cov["with_bioconda_pkg"]["pct"] == 50.0
     # bare method has nothing
-    assert cov["with_topic"]["count"] == 0
     assert cov["with_io_contract"]["count"] == 0
 
 
@@ -229,18 +225,19 @@ def _write_edam_tsv(path: Path, rows: list[dict]) -> None:
 def test_audit_reconciliation_edam_match(tmp_path):
     """Graph nodes match TSV counts → reconciliation match=True for loaded kinds."""
     snap = tmp_path / "snap"
-    # Two operations + one topic; one obsolete operation (should be excluded from count)
+    # Two operations + one topic; one obsolete operation (should be excluded from count).
+    # The topic_0001 row is present in the TSV but must be IGNORED by reconciliation
+    # (the Topic layer was removed — topics are no longer ingested or reconciled).
     _write_edam_tsv(snap / "EDAM.tsv", [
         {"local": "operation_0001", "label": "Op1"},
         {"local": "operation_0002", "label": "Op2"},
         {"local": "operation_0003", "label": "ObsoleteOp", "obsolete": "TRUE"},
         {"local": "topic_0001", "label": "Topic1"},
     ])
-    # Build graph with exactly 2 Operation nodes and 1 Topic node (matching non-obsolete TSV counts)
+    # Build graph with exactly 2 Operation nodes (no Topic node — topics not ingested).
     nodes = [
         NodeRecord("op:operation_0001", "Op1", NodeKind.OPERATION, {}, P),
         NodeRecord("op:operation_0002", "Op2", NodeKind.OPERATION, {}, P),
-        NodeRecord("topic:topic_0001", "Topic1", NodeKind.TOPIC, {}, P),
     ]
     db_path = _make_db(tmp_path, nodes, [])
     db, conn = _open_conn(db_path)
@@ -255,8 +252,8 @@ def test_audit_reconciliation_edam_match(tmp_path):
     assert edam["operation"]["tsv"] == 2
     assert edam["operation"]["graph"] == 2
     assert edam["operation"]["match"] is True
-    assert edam["topic"]["tsv"] == 1
-    assert edam["topic"]["match"] is True
+    # topic is NOT reconciled (layer removed) — the TSV topic row must not cause a mismatch
+    assert "topic" not in edam
     # data/format: tsv=0, graph=0 → match
     assert edam["data"]["match"] is True
     assert edam["format"]["match"] is True

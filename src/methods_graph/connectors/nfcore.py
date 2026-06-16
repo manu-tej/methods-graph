@@ -463,12 +463,11 @@ def parse_module(
             # repeated tool name yields exactly one Method + one WRAPS + one
             # set of EDAM edges (no duplicates).
             edges.append(EdgeRecord(module_id, method_id, EdgeKind.WRAPS, {}, prov))
-            # edam_operations / edam_topics — supported legacy shape used in some
-            # test fixtures and occasionally in real modules.
+            # edam_operations — supported legacy shape used in some test fixtures
+            # and occasionally in real modules.  (edam_topics is no longer emitted:
+            # the Topic layer was removed.)
             for op in tool_meta.get("edam_operations", []):
                 edges.append(EdgeRecord(method_id, f"op:{op}", EdgeKind.PERFORMS, {}, prov))
-            for tp in tool_meta.get("edam_topics", []):
-                edges.append(EdgeRecord(method_id, f"topic:{tp}", EdgeKind.HAS_TOPIC, {}, prov))
             # I/O ontology edges — parsed from input/output channel ontologies.
             for edam_id in input_edam_ids:
                 edges.append(EdgeRecord(method_id, edam_id, EdgeKind.INPUT, {}, prov))

@@ -118,7 +118,7 @@ class AuditResult:
         mt = cov.get("methods_total", 0)
         lines.append(f"  methods_total: {mt}")
         for key in ("with_biotools_id", "with_bioconda_pkg", "with_container",
-                    "with_edam_operation", "with_topic", "with_io_contract",
+                    "with_edam_operation", "with_io_contract",
                     "with_statistical_method", "with_inherited_assumption"):
             v = cov.get(key, {})
             lines.append(f"  {key}: {v.get('count', 0)} ({v.get('pct', 0.0)}%)")
@@ -131,7 +131,7 @@ class AuditResult:
             lines.append(sep)
             edam = self.reconciliation.get("edam", {})
             lines.append("  EDAM non-obsolete classes vs graph nodes (must match exactly):")
-            for kind in ("operation", "topic", "data", "format"):
+            for kind in ("operation", "data", "format"):
                 entry = edam.get(kind, {})
                 match_str = "OK" if entry.get("match") else "MISMATCH"
                 lines.append(
@@ -165,7 +165,7 @@ class AuditResult:
             if self.reconciliation is not None:
                 edam = self.reconciliation.get("edam", {})
                 failed_count += sum(
-                    1 for k in ("operation", "topic", "data", "format")
+                    1 for k in ("operation", "data", "format")
                     if not edam.get(k, {}).get("match", True)
                 )
             lines.append(f"AUDIT RESULT: {failed_count} CHECK(S) FAILED")
@@ -197,16 +197,16 @@ _ONTOLOGY_TERM_KINDS: frozenset[str] = frozenset({
 # EDAM kind prefixes (local name → tsv key)
 # ---------------------------------------------------------------------------
 
+# Topic intentionally excluded: the Topic layer was removed, so EDAM topic rows
+# are not ingested and must not be reconciled against the graph.
 _EDAM_PREFIXES: dict[str, str] = {
     "operation_": "operation",
-    "topic_": "topic",
     "data_": "data",
     "format_": "format",
 }
 
 _EDAM_KINDS_GRAPH: dict[str, str] = {
     "operation": "Operation",
-    "topic": "Topic",
     "data": "Data",
     "format": "Format",
 }
@@ -264,11 +264,6 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
             "WHERE NOT (a.kind='Method' AND b.kind='Operation') RETURN count(*)",
         ),
         (
-            "HAS_TOPIC: Method→Topic",
-            "MATCH (a)-[r:Rel{kind:'HAS_TOPIC'}]->(b) "
-            "WHERE NOT (a.kind='Method' AND b.kind='Topic') RETURN count(*)",
-        ),
-        (
             "PACKAGED_AS: Method→Container",
             "MATCH (a)-[r:Rel{kind:'PACKAGED_AS'}]->(b) "
             "WHERE NOT (a.kind='Method' AND b.kind='Container') RETURN count(*)",
@@ -289,9 +284,9 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
             "WHERE NOT (a.kind='Container' AND b.kind='Package') RETURN count(*)",
         ),
         (
-            # EDAM itself contains a small number of cross-branch subClassOf edges
-            # (e.g. operation_3923 Genome-resequencing → topic_3168 Sequencing).
-            # Our graph faithfully represents those, so we must NOT require both
+            # IS_A endpoints may legitimately differ in kind: STATO/OBI cross-link
+            # into ontology classes of other kinds, and an external ontology may
+            # carry cross-branch subClassOf edges.  So we must NOT require both
             # endpoints to share the same kind.  The invariant only rejects IS_A
             # edges whose endpoints are not ontology classes at all (e.g. Method or
             # Container nodes as src/dst) — those would be a genuine modelling error.
@@ -509,10 +504,6 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
         "MATCH (m:Entity{kind:'Method'}) "
         "WHERE EXISTS { MATCH (m)-[:Rel{kind:'PERFORMS'}]->(:Entity) } RETURN count(m)"
     )
-    with_topic: int = _q1(
-        "MATCH (m:Entity{kind:'Method'}) "
-        "WHERE EXISTS { MATCH (m)-[:Rel{kind:'HAS_TOPIC'}]->(:Entity) } RETURN count(m)"
-    )
     with_io_contract: int = _q1(
         "MATCH (m:Entity{kind:'Method'}) "
         "WHERE EXISTS { MATCH (m)-[r:Rel]->(:Entity) WHERE r.kind IN ['INPUT','OUTPUT'] } "
@@ -547,7 +538,6 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
         "with_bioconda_pkg": {"count": with_bioconda_pkg, "pct": _pct(with_bioconda_pkg)},
         "with_container": {"count": with_container, "pct": _pct(with_container)},
         "with_edam_operation": {"count": with_edam_operation, "pct": _pct(with_edam_operation)},
-        "with_topic": {"count": with_topic, "pct": _pct(with_topic)},
         "with_io_contract": {"count": with_io_contract, "pct": _pct(with_io_contract)},
         "with_statistical_method": {
             "count": with_statistical_method, "pct": _pct(with_statistical_method),
@@ -578,7 +568,7 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
         edam_section = reconciliation.get("edam", {})
         if not all(
             edam_section.get(k, {}).get("match", True)
-            for k in ("operation", "topic", "data", "format")
+            for k in ("operation", "data", "format")
         ):
             ok = False
 

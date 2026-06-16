@@ -127,7 +127,6 @@ def method_neighborhood(conn: kuzu.Connection, method_id: str) -> dict[str, Any]
     Returns a dict with keys:
     - ``method``: the method node dict (includes bioconda_pkg, biotools_id)
     - ``operations``: list of nodes connected via PERFORMS edges
-    - ``topics``: list of nodes connected via HAS_TOPIC edges
     - ``containers``: list of nodes connected via PACKAGED_AS edges
     - ``inputs``: list of Data/Format nodes connected via INPUT edges
     - ``outputs``: list of Data/Format nodes connected via OUTPUT edges
@@ -165,7 +164,6 @@ def method_neighborhood(conn: kuzu.Connection, method_id: str) -> dict[str, Any]
 
     buckets = {
         "operations": "PERFORMS",
-        "topics": "HAS_TOPIC",
         "containers": "PACKAGED_AS",
         "inputs": "INPUT",
         "outputs": "OUTPUT",

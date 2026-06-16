@@ -12,10 +12,10 @@ def test_parse_edam_extracts_typed_nodes():
     nodes, _ = parse_edam(FIXTURE, ingested_at="2026-06-08")
     by_kind = {n.kind for n in nodes}
     assert NodeKind.OPERATION in by_kind
-    assert NodeKind.TOPIC in by_kind
+    assert NodeKind.TOPIC not in by_kind  # Topic layer removed: topic_ rows not ingested
     assert NodeKind.DATA in by_kind
     assert NodeKind.FORMAT in by_kind
-    assert len(nodes) == 5  # 6 rows minus 1 obsolete
+    assert len(nodes) == 4  # 6 rows minus 1 obsolete minus 1 topic (not ingested)
 
 
 def test_parse_edam_skips_obsolete():

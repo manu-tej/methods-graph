@@ -239,7 +239,6 @@ EXPECTED_NODE_CLASSES = {
     "Container",
     "Package",
     "Operation",
-    "Topic",
     "Data",
     "Format",
     "Paper",
@@ -265,7 +264,7 @@ EXPECTED_EXTENSION_CLASSES = {
 
 
 def test_extension_point_classes_present(schema_view: SchemaView):
-    """All 8 extension-point classes, all 10 node classes, and all 4 workflow
+    """All 8 extension-point classes, all 9 node classes, and all 4 workflow
     classes must be defined in the schema."""
     all_class_names = set(schema_view.all_classes().keys())
 

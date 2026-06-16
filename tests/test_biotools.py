@@ -13,42 +13,41 @@ FX = Path(__file__).parent / "fixtures"
 
 
 class TestBiotoolsRecordToEdam:
-    def test_extracts_ops_and_topics(self):
-        """Feed the salmon fixture record and assert correct sorted node ids."""
+    def test_extracts_operations(self):
+        """Feed the salmon fixture record and assert correct sorted operation ids."""
         record = json.loads((FX / "biotools" / "salmon.json").read_text())
         result = _biotools_record_to_edam(record)
 
         assert result["biotools_id"] == "salmon"
         # operation_2495 < operation_3800 lexicographically (sorted by full node id string)
         assert result["operations"] == ["op:operation_2495", "op:operation_3800"]
-        assert result["topics"] == ["topic:topic_3170"]
+        # topics are no longer extracted (Topic layer removed)
+        assert "topics" not in result
 
     def test_robust_to_missing_keys(self):
-        """Record with no function/topic keys → empty lists, no crash."""
+        """Record with no function key → empty operations, no crash."""
         record = {"biotoolsID": "minimal_tool"}
         result = _biotools_record_to_edam(record)
 
         assert result["biotools_id"] == "minimal_tool"
         assert result["operations"] == []
-        assert result["topics"] == []
 
     def test_robust_to_empty_lists(self):
-        """Record with empty function/topic → empty lists."""
+        """Record with empty function → empty operations."""
         record = {"biotoolsID": "empty_tool", "function": [], "topic": []}
         result = _biotools_record_to_edam(record)
 
         assert result["operations"] == []
-        assert result["topics"] == []
 
     def test_robust_to_missing_biotools_id(self):
-        """Record with no biotoolsID → empty string id, lists populated normally."""
+        """Record with no biotoolsID → empty string id; topic input ignored."""
         record = {
             "topic": [{"uri": "http://edamontology.org/topic_3170", "term": "RNA-Seq"}],
         }
         result = _biotools_record_to_edam(record)
 
         assert result["biotools_id"] == ""
-        assert result["topics"] == ["topic:topic_3170"]
+        assert result["operations"] == []  # the topic input is ignored now
 
     def test_deduplicates_and_sorts(self):
         """Duplicate URIs across function blocks are deduped and sorted."""
@@ -66,8 +65,8 @@ class TestBiotoolsRecordToEdam:
         # Should be deduped and sorted
         assert result["operations"] == ["op:operation_2495", "op:operation_3800"]
 
-    def test_skips_non_op_topic_uris(self):
-        """data_ and format_ URIs are ignored in operations/topics."""
+    def test_skips_non_operation_uris(self):
+        """Only operation_ URIs are extracted; data_/format_/topic_ are ignored."""
         record = {
             "biotoolsID": "multikind",
             "function": [
@@ -79,24 +78,22 @@ class TestBiotoolsRecordToEdam:
                 }
             ],
             "topic": [
-                {"uri": "http://edamontology.org/format_1930", "term": "FASTQ"},
                 {"uri": "http://edamontology.org/topic_3170", "term": "RNA-Seq"},
             ],
         }
         result = _biotools_record_to_edam(record)
 
-        # data_ in function.operation should be skipped (only op: extracted)
+        # data_ in function.operation is skipped (only op: extracted); the topic
+        # block is ignored entirely (Topic layer removed).
         assert result["operations"] == ["op:operation_3798"]
-        # format_ in topic should be skipped (only topic: extracted)
-        assert result["topics"] == ["topic:topic_3170"]
+        assert "topics" not in result
 
     def test_handles_none_values_gracefully(self):
-        """Explicit None for function/topic → empty lists, no crash."""
+        """Explicit None for function → empty operations, no crash."""
         record = {"biotoolsID": "nulltest", "function": None, "topic": None}
         result = _biotools_record_to_edam(record)
 
         assert result["operations"] == []
-        assert result["topics"] == []
 
 
 class TestLoadBiotoolsEdam:
@@ -120,8 +117,8 @@ class TestLoadBiotoolsEdam:
         assert "Salmon" not in result, "Key must be lowercased"
         assert "" not in result, "Empty-id records must be skipped"
 
-        assert result["salmon"]["topics"] == ["topic:topic_3170"]
         assert result["salmon"]["operations"] == []
+        assert "topics" not in result["salmon"]  # Topic layer removed
 
     def test_skips_malformed_json(self, tmp_path):
         """Malformed JSON files are skipped without crashing."""
@@ -144,7 +141,7 @@ class TestLoadBiotoolsEdam:
 
         assert "salmon" in result
         assert result["salmon"]["operations"] == ["op:operation_2495", "op:operation_3800"]
-        assert result["salmon"]["topics"] == ["topic:topic_3170"]
+        assert "topics" not in result["salmon"]
 
     def test_empty_dir_returns_empty_map(self, tmp_path):
         """An empty directory yields an empty map without error."""

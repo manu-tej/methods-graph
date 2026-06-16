@@ -15,73 +15,10 @@ from methods_graph.extract.adapters import to_rag_text
 from methods_graph.extract.seed import seed, method_neighborhood, method_ids_matching
 
 
-# --- EDAM-label → quration vocabulary maps -------------------------------------
-# Keys are lowercased EDAM *topic* Preferred Labels (only HAS_TOPIC→topic nodes
-# feed these maps); values are quration enum *values* (DataModality /
-# MethodCategory). Every key below was verified against the non-obsolete EDAM
-# topic vocabulary (EDAM.tsv, ~260 topics) — guessed/operation/data labels were
-# removed so the tables don't overstate coverage. Unknown topics are dropped
-# rather than guessed, so a method is never silently mislabelled.
-#
-# Honest coverage gaps: EDAM has NO topic for ATAC-seq, single-cell sequencing,
-# bisulfite/methylation assay, or sequence alignment, so the corresponding
-# quration values (atac_seq, single_cell*, bisulfite_seq, alignment) are not
-# reachable from topics alone — Phase 2 can derive these from operations instead.
-
-_TOPIC_TO_MODALITY: dict[str, str] = {
-    "rna-seq": "rna_seq",
-    "transcriptomics": "rna_seq",
-    "chip-seq": "chip_seq",
-    "dna polymorphism": "dna_seq",
-    "genetic variation": "dna_seq",
-    "copy number variation": "dna_seq",
-    "structural variation": "dna_seq",
-    "whole genome sequencing": "dna_seq",
-    "exome sequencing": "dna_seq",
-    "genomics": "dna_seq",
-    "metagenomics": "metagenomics",
-    "metagenomic sequencing": "metagenomics",
-    "metatranscriptomics": "metatranscriptomics",
-}
-
-_TOPIC_TO_CATEGORY: dict[str, str] = {
-    "rna-seq": "rna_seq",
-    "transcriptomics": "rna_seq",
-    "gene expression": "differential_expression",
-    "chip-seq": "chip_seq",
-    "dna polymorphism": "variant_calling",
-    "genetic variation": "variant_calling",
-    "copy number variation": "variant_calling",
-    "structural variation": "variant_calling",
-    "sequence assembly": "assembly",
-    "metagenomics": "metagenomics",
-    "metagenomic sequencing": "metagenomics",
-    "data quality management": "quality_control",
-    "quality affairs": "quality_control",
-    "methylated dna immunoprecipitation": "methylation",
-    "molecular interactions, pathways and networks": "pathway_analysis",
-}
-
-
-def _map_modalities(topic_labels: list[str]) -> list[str]:
-    """Map EDAM topic labels to quration DataModality values, dropping unknowns.
-
-    De-duplicated and order-stable (first occurrence wins)."""
-    out: list[str] = []
-    for label in topic_labels:
-        modality = _TOPIC_TO_MODALITY.get(label.strip().lower())
-        if modality and modality not in out:
-            out.append(modality)
-    return out
-
-
-def _derive_category(topic_labels: list[str]) -> str:
-    """Pick the first recognised MethodCategory from the topics, else 'custom'."""
-    for label in topic_labels:
-        category = _TOPIC_TO_CATEGORY.get(label.strip().lower())
-        if category:
-            return category
-    return "custom"
+# NOTE: ``category`` and ``supported_modalities`` were previously derived from the
+# HAS_TOPIC→Topic layer.  That layer has been removed, so both fields now fall back
+# to defaults (category='custom', supported_modalities=[]).  A future, more reliable
+# derivation can come from PERFORMS→Operation rather than coarse topics.
 
 
 def _quality_metrics(props: dict[str, Any], *, has_container: bool) -> dict[str, Any]:
@@ -140,8 +77,7 @@ def _io_specs(nodes: list[dict[str, Any]], *, is_input: bool) -> list[dict[str, 
 def _neighborhood_to_method_dict(nb: dict[str, Any]) -> dict[str, Any]:
     m = nb["method"]
     props = m.get("properties", {})
-    topic_labels = [t["name"] for t in nb["topics"]]
-    tags = [o["name"] for o in nb["operations"]] + topic_labels
+    tags = [o["name"] for o in nb["operations"]]
     containers = nb["containers"]
     compute = {}
     if containers:
@@ -150,7 +86,7 @@ def _neighborhood_to_method_dict(nb: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": m["id"],
         "name": m["name"],
-        "category": _derive_category(topic_labels),
+        "category": "custom",
         "description": props.get("description", ""),
         "implementation_type": props.get("implementation_type", "tool"),
         "version": props.get("version", ""),
@@ -158,7 +94,7 @@ def _neighborhood_to_method_dict(nb: dict[str, Any]) -> dict[str, Any]:
         "tags": tags,
         "inputs": _io_specs(nb.get("inputs", []), is_input=True),
         "outputs": _io_specs(nb.get("outputs", []), is_input=False),
-        "supported_modalities": _map_modalities(topic_labels),
+        "supported_modalities": [],
         "quality_metrics": _quality_metrics(props, has_container=bool(containers)),
         "compute_requirements": compute,
         "status": "active",
@@ -190,9 +126,9 @@ class KuzuMethodsGraphProvider:
         return [r[0] for r in self._conn.execute(
             "MATCH (m:Entity {kind:'Method'}) RETURN m.id")]
 
-    # NOTE: get_methods issues ~4 queries per method (one for operations, one for topics,
-    # one for containers, and one for the method itself via method_neighborhood).
-    # This N+1 pattern is acceptable for small graphs; batching is a Phase 2 optimisation.
+    # NOTE: get_methods issues several queries per method (operations, containers,
+    # I/O, stats, plus the method itself) via method_neighborhood. This N+1 pattern
+    # is acceptable for small graphs; batching is a Phase 2 optimisation.
     def get_methods(self) -> list[dict[str, Any]]:
         out = []
         for mid in self._all_method_ids():

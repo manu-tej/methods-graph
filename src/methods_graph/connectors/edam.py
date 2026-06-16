@@ -6,15 +6,17 @@ from pathlib import Path
 
 from methods_graph.types import EdgeKind, EdgeRecord, NodeKind, NodeRecord, Provenance
 
+# Topic_ rows are intentionally NOT ingested: the Topic layer was removed (it was
+# coarse domain bucketing, ~90% orphan EDAM-tail, and its only consumers derived
+# low-value Canvas fields).  Dropping it here means no Topic nodes and no topic
+# IS_A edges (a topic parent simply fails the id_by_uri lookup in pass 2).
 _PREFIX_TO_KIND = {
     "operation_": NodeKind.OPERATION,
-    "topic_": NodeKind.TOPIC,
     "data_": NodeKind.DATA,
     "format_": NodeKind.FORMAT,
 }
 _KIND_TO_IDPREFIX = {
     NodeKind.OPERATION: "op:",
-    NodeKind.TOPIC: "topic:",
     NodeKind.DATA: "data:",
     NodeKind.FORMAT: "fmt:",
 }

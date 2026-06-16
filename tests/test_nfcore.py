@@ -31,9 +31,9 @@ def test_parse_module_links_to_edam():
     nodes, edges = parse_module(MODULE, ingested_at="2026-06-08")
     method = next(n for n in nodes if n.kind == NodeKind.METHOD)
     performs = [e for e in edges if e.kind == EdgeKind.PERFORMS]
-    has_topic = [e for e in edges if e.kind == EdgeKind.HAS_TOPIC]
     assert any(e.from_id == method.id and e.to_id == "op:operation_3798" for e in performs)
-    assert any(e.from_id == method.id and e.to_id == "topic:topic_3170" for e in has_topic)
+    # HAS_TOPIC no longer emitted (Topic layer removed)
+    assert not any(e.kind == EdgeKind.HAS_TOPIC for e in edges)
 
 
 def test_parse_module_emits_module_and_wraps_edge():
@@ -89,14 +89,13 @@ def test_parse_module_assigns_correct_pkg_per_tool():
 
 
 def test_parse_module_per_tool_edam():
-    """PERFORMS edge from m:samtools and HAS_TOPIC edge from m:bcftools are emitted."""
+    """Per-tool PERFORMS edges are emitted (HAS_TOPIC dropped with the Topic layer)."""
     _, edges = parse_module(MULTI_TOOL_MODULE, ingested_at="2026-06-09")
 
     performs = [e for e in edges if e.kind == EdgeKind.PERFORMS]
-    has_topic = [e for e in edges if e.kind == EdgeKind.HAS_TOPIC]
 
     assert any(e.from_id == "m:samtools" and e.to_id == "op:operation_2403" for e in performs)
-    assert any(e.from_id == "m:bcftools" and e.to_id == "topic:topic_3168" for e in has_topic)
+    assert not any(e.kind == EdgeKind.HAS_TOPIC for e in edges)
 
 
 # ---------------------------------------------------------------------------

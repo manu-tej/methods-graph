@@ -1,16 +1,16 @@
-"""Parse local bio.tools API JSON records into EDAM operation/topic node-id maps.
+"""Parse local bio.tools API JSON records into an EDAM operation node-id map.
 
 This module provides BUILD-TIME enrichment only — no network calls.
 Given a directory of bio.tools API JSON files (one per tool, named <anything>.json),
-it extracts EDAM operation and topic node ids for each tool and returns a lookup
-map keyed by lowercased biotoolsID.
+it extracts EDAM operation node ids for each tool and returns a lookup map keyed
+by lowercased biotoolsID.
 
 The node-id scheme matches edam.py exactly:
   http://edamontology.org/operation_3800  →  op:operation_3800
-  http://edamontology.org/topic_3170      →  topic:topic_3170
 
-Only operation_ and topic_ URIs are extracted (data_/format_ are ignored here
-because this module feeds PERFORMS/HAS_TOPIC edges, not INPUT/OUTPUT edges).
+Only operation_ URIs are extracted (topic_/data_/format_ are ignored: this module
+feeds PERFORMS edges only — the Topic layer was removed, and INPUT/OUTPUT come
+from the module connector).
 """
 from __future__ import annotations
 
@@ -20,33 +20,28 @@ from pathlib import Path
 
 _log = logging.getLogger(__name__)
 
-# Only these two URI local-name prefixes are relevant for PERFORMS / HAS_TOPIC.
+# Only the operation_ URI local-name prefix is relevant for PERFORMS.
 _OP_PREFIX = "operation_"
-_TOPIC_PREFIX = "topic_"
 
 
 def _edam_uri_to_node_id(uri: str) -> str | None:
-    """Convert an EDAM URI to a graph node id (op: or topic: only).
+    """Convert an EDAM operation URI to a graph node id (op: only).
 
     Examples::
         http://edamontology.org/operation_3800  →  op:operation_3800
-        http://edamontology.org/topic_3170      →  topic:topic_3170
-        http://edamontology.org/data_3494       →  None  (not handled here)
         <anything else>                         →  None
 
-    This matches the scheme in edam.py (_KIND_TO_IDPREFIX) and nfcore.py
-    (_EDAM_PREFIX_MAP) exactly, ensuring PERFORMS/HAS_TOPIC edges connect.
+    This matches the scheme in edam.py (_KIND_TO_IDPREFIX), ensuring PERFORMS
+    edges connect.
     """
     local = uri.rsplit("/", 1)[-1]
     if local.startswith(_OP_PREFIX):
         return f"op:{local}"
-    if local.startswith(_TOPIC_PREFIX):
-        return f"topic:{local}"
     return None
 
 
 def _biotools_record_to_edam(record: dict) -> dict:
-    """Extract EDAM operation and topic node ids from a single bio.tools record.
+    """Extract EDAM operation node ids from a single bio.tools record.
 
     Args:
         record: A dict parsed from a bio.tools API JSON response.
@@ -55,7 +50,6 @@ def _biotools_record_to_edam(record: dict) -> dict:
         A dict with keys:
           - "biotools_id": str  (value of biotoolsID, or "" if absent)
           - "operations":  list[str]  (sorted, deduped op: node ids)
-          - "topics":      list[str]  (sorted, deduped topic: node ids)
 
     This is a PURE function — no I/O, no network, no clock.
     """
@@ -75,21 +69,9 @@ def _biotools_record_to_edam(record: dict) -> dict:
                 if node_id is not None:
                     op_ids.add(node_id)
 
-    # Collect topic uris from the top-level topic list.
-    topic_ids: set[str] = set()
-    for topic_entry in record.get("topic") or []:
-        if not isinstance(topic_entry, dict):
-            continue
-        uri = topic_entry.get("uri")
-        if isinstance(uri, str) and uri:
-            node_id = _edam_uri_to_node_id(uri)
-            if node_id is not None:
-                topic_ids.add(node_id)
-
     return {
         "biotools_id": biotools_id,
         "operations": sorted(op_ids),
-        "topics": sorted(topic_ids),
     }
 
 
@@ -100,7 +82,7 @@ def load_biotools_edam(biotools_dir: Path) -> dict[str, dict]:
         biotools_dir: Directory containing bio.tools API JSON files.
 
     Returns:
-        A dict mapping lowercased biotoolsID → {"operations": [...], "topics": [...]}.
+        A dict mapping lowercased biotoolsID → {"operations": [...]}.
         Records with an empty biotoolsID are skipped.
         Malformed/unparseable JSON files are skipped with a warning (no crash).
 
@@ -127,7 +109,6 @@ def load_biotools_edam(biotools_dir: Path) -> dict[str, dict]:
         key = bt_id.lower()
         result[key] = {
             "operations": parsed["operations"],
-            "topics": parsed["topics"],
         }
 
     return result

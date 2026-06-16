@@ -16,13 +16,11 @@ def db_path(tmp_path):
                      {"version": "1.10.0", "description": "quant", "implementation_type": "nextflow"},
                      P, bioconda_pkg="salmon", biotools_id="salmon"),
         NodeRecord("op:operation_3798", "Read summarisation", NodeKind.OPERATION, {}, P),
-        NodeRecord("topic:topic_3170", "RNA-Seq", NodeKind.TOPIC, {}, P),
         NodeRecord("ctr:salmon", "quay.io/biocontainers/salmon:1.10.0", NodeKind.CONTAINER,
                    {"image_name": "quay.io/biocontainers/salmon:1.10.0"}, P),
     ]
     edges = [
         EdgeRecord("m:salmon", "op:operation_3798", EdgeKind.PERFORMS, {}, P),
-        EdgeRecord("m:salmon", "topic:topic_3170", EdgeKind.HAS_TOPIC, {}, P),
         EdgeRecord("m:salmon", "ctr:salmon", EdgeKind.PACKAGED_AS, {}, P),
     ]
     path = tmp_path / "m.kuzu"
@@ -36,7 +34,7 @@ def test_get_methods_returns_method_dicts(db_path):
         salmon = next(m for m in methods if m["name"] == "salmon")
         assert salmon["id"] == "m:salmon"
         assert salmon["implementation_type"] == "nextflow"
-        assert "RNA-Seq" in salmon["tags"]
+        assert "Read summarisation" in salmon["tags"]  # tags = operation labels (topics removed)
         assert salmon["compute_requirements"]["container_image"].endswith("salmon:1.10.0")
 
 
@@ -76,14 +74,6 @@ def test_build_analysis_method_requires_quration():
 # ---------------------------------------------------------------------------
 # Broad keyword retrieval tests (TDD — new behaviour)
 # ---------------------------------------------------------------------------
-
-def test_retrieve_matches_via_topic_label(db_path):
-    """'RNA-Seq' matches Topic node 'RNA-Seq'; should resolve back to salmon Method."""
-    with KuzuMethodsGraphProvider(db_path) as p:
-        ctx = p.retrieve_context_for_keywords(["RNA-Seq"])
-    assert ctx != "", "Expected non-empty context via topic match"
-    assert "salmon" in ctx, "Expected salmon to appear in context via HAS_TOPIC → RNA-Seq"
-
 
 def test_retrieve_matches_via_operation_label(db_path):
     """'summarisation' is a substring of 'Read summarisation'; should resolve to salmon."""
@@ -151,19 +141,12 @@ def test_get_methods_dict_has_all_required_fields(db_path):
     assert not missing, f"emitted method dict missing required keys: {missing}"
 
 
-def test_get_methods_maps_topic_to_modality_value(db_path):
-    """EDAM topic 'RNA-Seq' must become the quration DataModality value 'rna_seq'."""
+def test_get_methods_category_and_modalities_default(db_path):
+    """The Topic layer was removed, so category/modalities fall back to defaults."""
     with KuzuMethodsGraphProvider(db_path) as provider:
         salmon = next(m for m in provider.get_methods() if m["name"] == "salmon")
-    assert salmon["supported_modalities"] == ["rna_seq"], salmon["supported_modalities"]
-    # human-readable topic label is preserved separately in tags
-    assert "RNA-Seq" in salmon["tags"]
-
-
-def test_get_methods_derives_category(db_path):
-    with KuzuMethodsGraphProvider(db_path) as provider:
-        salmon = next(m for m in provider.get_methods() if m["name"] == "salmon")
-    assert salmon["category"] == "rna_seq", salmon["category"]
+    assert salmon["category"] == "custom", salmon["category"]
+    assert salmon["supported_modalities"] == [], salmon["supported_modalities"]
 
 
 def test_get_methods_quality_metrics_shape(db_path):
@@ -183,55 +166,6 @@ def test_get_methods_inputs_outputs_are_lists(db_path):
     assert isinstance(salmon["outputs"], list)
 
 
-# --- pure mapping helpers (no graph / no quration needed) ------------------
-
-def test_map_modalities_known_and_unknown():
-    from methods_graph.provider.quration_provider import _map_modalities
-    assert _map_modalities(["RNA-Seq"]) == ["rna_seq"]
-    assert _map_modalities(["ChIP-seq"]) == ["chip_seq"]
-    # unknown topics are dropped, not guessed
-    assert _map_modalities(["Phylogenetics"]) == []
-    # de-duplicated, order-stable
-    assert _map_modalities(["RNA-Seq", "RNA-Seq"]) == ["rna_seq"]
-
-
-def test_derive_category_known_and_default():
-    from methods_graph.provider.quration_provider import _derive_category
-    assert _derive_category(["RNA-Seq"]) == "rna_seq"
-    assert _derive_category(["Sequence assembly"]) == "assembly"
-    # no recognisable topic → custom (never silently mislabel)
-    assert _derive_category(["Phylogenetics"]) == "custom"
-    assert _derive_category([]) == "custom"
-
-
-# Mirror of quration's MethodCategory / DataModality enum values. Hardcoded here
-# on purpose: quration is an optional dependency not installed in this venv, so a
-# typo in a map value (e.g. "rnaseq" instead of "rna_seq") would otherwise stay
-# invisible until it hit pydantic on a real quration install. This guard fails fast.
-_QURATION_DATA_MODALITY = {
-    "dna_seq", "rna_seq", "chip_seq", "atac_seq", "bisulfite_seq",
-    "single_cell_rna", "single_cell_atac", "metagenomics", "metatranscriptomics", "unknown",
-}
-_QURATION_METHOD_CATEGORY = {
-    "variant_calling", "rna_seq", "chip_seq", "atac_seq", "methylation", "single_cell",
-    "metagenomics", "quality_control", "alignment", "assembly", "differential_expression",
-    "pathway_analysis", "custom",
-}
-
-
-def test_map_values_are_valid_quration_enum_values():
-    from methods_graph.provider.quration_provider import _TOPIC_TO_MODALITY, _TOPIC_TO_CATEGORY
-    assert set(_TOPIC_TO_MODALITY.values()) <= _QURATION_DATA_MODALITY
-    assert set(_TOPIC_TO_CATEGORY.values()) <= _QURATION_METHOD_CATEGORY
-
-
-def test_map_keys_are_lowercased():
-    """Lookups lowercase the topic label, so keys must already be lowercase."""
-    from methods_graph.provider.quration_provider import _TOPIC_TO_MODALITY, _TOPIC_TO_CATEGORY
-    for k in (*_TOPIC_TO_MODALITY, *_TOPIC_TO_CATEGORY):
-        assert k == k.lower(), f"map key not lowercased: {k!r}"
-
-
 def test_build_analysis_method_happy_path(db_path):
     """When quration IS installed, the enriched dict constructs a valid AnalysisMethod."""
     pytest.importorskip("quration")
@@ -240,7 +174,7 @@ def test_build_analysis_method_happy_path(db_path):
         salmon = next(m for m in provider.get_methods() if m["name"] == "salmon")
     method = build_analysis_method(salmon)
     assert method.id == "m:salmon"
-    assert method.category.value == "rna_seq"
+    assert method.category.value == "custom"  # Topic layer removed -> default category
 
 
 # ---------------------------------------------------------------------------

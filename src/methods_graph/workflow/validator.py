@@ -156,11 +156,12 @@ def validate_workflow(
                 continue
 
             # Check semantic edge from method to evidence node.
-            # Only PERFORMS, HAS_TOPIC, INPUT, and OUTPUT count as genuine
-            # EDAM grounding; non-semantic edges (e.g. PACKAGED_AS) do not.
+            # Only PERFORMS, INPUT, and OUTPUT count as genuine EDAM grounding;
+            # non-semantic edges (e.g. PACKAGED_AS) do not.  (HAS_TOPIC was dropped
+            # with the Topic layer.)
             edge_res = list(conn.execute(
                 "MATCH (m:Entity {id: $mid})-[r:Rel]->(e:Entity {id: $eid}) "
-                "WHERE r.kind IN ['PERFORMS','HAS_TOPIC','INPUT','OUTPUT'] RETURN e.id",
+                "WHERE r.kind IN ['PERFORMS','INPUT','OUTPUT'] RETURN e.id",
                 parameters={"mid": mid, "eid": eid},
             ))
             if not edge_res:
@@ -168,7 +169,7 @@ def validate_workflow(
                     step_id=sid,
                     code="evidence_missing",
                     detail=(
-                        f"No semantic grounding edge (PERFORMS/HAS_TOPIC/INPUT/OUTPUT) "
+                        f"No semantic grounding edge (PERFORMS/INPUT/OUTPUT) "
                         f"from method '{mid}' to evidence node '{eid}'."
                     ),
                 ))
