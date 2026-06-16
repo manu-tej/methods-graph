@@ -239,6 +239,32 @@ def cmd_build(
         if bt_edges_added:
             _log.info("bio.tools enrichment: added %d PERFORMS/HAS_TOPIC edges", bt_edges_added)
 
+    # --- curated module-context operation corrections + backfill (review I2 + I1) ---
+    # bio.tools tags the *tool*; nf-core uses a specific *subcommand*, so some
+    # tool-level PERFORMS edges are wrong (removed here) and utility tools are
+    # missing (backfilled here).  Runs AFTER bio.tools enrichment so removes can
+    # delete bio.tools edges; adds emit only when both endpoints exist.
+    from methods_graph.crosslinks.method_operations import build_operation_edits
+
+    mo_add, mo_remove, mo_report = build_operation_edits(resolved_nodes, ingested_at=ingested_at)
+    _before_mo = len(resolved_edges)
+    if mo_remove:
+        resolved_edges = [
+            e for e in resolved_edges
+            if (e.from_id, e.to_id, e.kind.value) not in mo_remove
+        ]
+    mo_removed = _before_mo - len(resolved_edges)
+    mo_existing = {(e.from_id, e.to_id, e.kind.value) for e in resolved_edges}
+    new_mo = [e for e in mo_add if (e.from_id, e.to_id, e.kind.value) not in mo_existing]
+    resolved_edges = list(resolved_edges) + new_mo
+    mo_edges_added = len(new_mo)
+    if mo_report.skipped:
+        _log.info("method-operations: skipped %d add(s) (no matching node in this build): %s",
+                  len(mo_report.skipped), mo_report.skipped)
+    if mo_removed or mo_edges_added:
+        _log.info("method-operations: removed %d wrong PERFORMS edge(s), added %d curated PERFORMS edge(s)",
+                  mo_removed, mo_edges_added)
+
     # --- curated Method→StatisticalMethod cross-links (post-resolve, pre-load) ---
     # Only runs when StatisticalMethod nodes are present (i.e. STATO/OBI loaded);
     # otherwise the targets cannot exist and the step is a no-op.  The builder
@@ -353,11 +379,15 @@ def cmd_build(
     )
     n_pipes = sum(1 for n in resolved_nodes if n.kind == NodeKind.PIPELINE)
     pipe_suffix = f", {n_pipes} pipelines" if nfcore_pipelines is not None else ""
+    mo_suffix = (
+        f", curated PERFORMS (+{mo_edges_added}/-{mo_removed})"
+        if (mo_edges_added or mo_removed) else ""
+    )
 
     print(
         f"Built graph: {n_methods} methods, {summary['nodes']} nodes, "
         f"{summary['edges_loaded']} edges loaded "
-        f"({summary['edges_dropped']} dangling dropped){pipe_suffix}{bt_suffix}{onto_suffix}{xl_suffix} -> {db_path}"
+        f"({summary['edges_dropped']} dangling dropped){pipe_suffix}{bt_suffix}{onto_suffix}{xl_suffix}{mo_suffix} -> {db_path}"
     )
 
 

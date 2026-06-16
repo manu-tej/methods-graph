@@ -1,0 +1,36 @@
+# Curated module-context EDAM operation corrections + backfill.
+#
+# Keys are nf-core tool names (the `m:<name>` Method id without the prefix).
+# Values: `remove` deletes a wrong PERFORMS edge (usually a bio.tools tool-level
+# tag that does not match the module's actual subcommand); `add` backfills the
+# correct module-context operation (ids are EDAM operation local names).
+#
+# This is applied AFTER bio.tools enrichment, so removes can delete bio.tools
+# edges and adds supply operations bio.tools doesn't list.
+
+methods:
+  # --- I2: corrections (wrong tool-level tags) ---
+  picard:
+    remove: [operation_3197]   # "Genetic variation analysis" — wrong: rnaseq module is picard MarkDuplicates
+    add:     [operation_3963]  # Duplication detection
+    note: "nf-core uses picard MarkDuplicates (duplicate marking/QC), not variant calling"
+  tximeta:
+    remove: [operation_0524, operation_3630]  # "De-novo assembly"; "Protein quantification"
+    note: "tximport/metadata import for RNA-seq; keeps operation_3800 RNA-Seq quantification"
+
+  # --- I1: backfill (utility/aligner tools bio.tools doesn't annotate) ---
+  bowtie2:     {add: [operation_3198], note: "Read mapping"}
+  parabricks:  {add: [operation_3198], note: "GPU-accelerated read mapping (rnafq2bam)"}
+  umitools:    {add: [operation_3219, operation_3963], note: "UMI extract (read pre-processing) + dedup (duplication detection)"}
+  umicollapse: {add: [operation_3963], note: "UMI-based duplication detection"}
+  sylphtax:    {add: [operation_3460], note: "Taxonomic classification (sylph taxonomy)"}
+  ucsc:        {add: [operation_3434], note: "Conversion (bedGraph -> bigWig)"}
+  ea-utils:    {add: [operation_3192], note: "Sequence trimming (fastq-mcf)"}
+  fq:          {add: [operation_3218], note: "Sequencing quality control (fastq lint)"}
+  rustqc:      {add: [operation_3218], note: "Sequencing quality control"}
+  cat:         {add: [operation_2409], note: "Data handling (concatenate fastq)"}
+  gunzip:      {add: [operation_2409], note: "Data handling (decompression)"}
+  untar:       {add: [operation_2409], note: "Data handling (archive extraction)"}
+  # m:custom is intentionally omitted: it collapses heterogeneous custom modules
+  # (catadditionalfasta / dumpsoftwareversions / tx2gene / getchromsizes), so no
+  # single operation is honest.
