@@ -13,14 +13,20 @@ Offline + deterministic: no network, no clock; ``ingested_at`` is injected.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from methods_graph.connectors.nextflow_dag import parse_dag_edges
 from methods_graph.connectors.nfcore import _io_module_targets
 from methods_graph.types import (EdgeKind, EdgeRecord, NodeKind, NodeRecord,
                                  Provenance)
+
+_INCLUDE = re.compile(r"include\s*\{([^}]*)\}\s*from\s*['\"]([^'\"]+)['\"]")
+_NAME_AS = re.compile(r"([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?")
+_REL_FROM_PATH = re.compile(r"modules/nf-core/(.+?)(?:/main)?$")
 
 
 def _module_paths_from_modules_json(modules_json: dict[str, Any]) -> list[str]:
@@ -39,6 +45,28 @@ def _load_meta(pipeline_dir: Path, rel_path: str) -> dict[str, Any] | None:
         return None
     meta = yaml.safe_load(meta_path.read_text()) or {}
     return meta if isinstance(meta, dict) else None
+
+
+def _process_to_modid(pipeline_dir: Path, path_to_modid: dict[str, str]) -> dict[str, str]:
+    """Map each DSL2 process invocation name (the alias used at the call site, e.g.
+    ``KRAKEN2`` from ``include { KRAKEN2_KRAKEN2 as KRAKEN2 }``) to ``mod:<name>``
+    by scanning the pipeline's ``.nf`` files for module includes and resolving the
+    include path to the module's meta.yml-name id. Only nf-core modules already
+    resolved into ``path_to_modid`` are mapped, so a DAG edge can never dangle."""
+    out: dict[str, str] = {}
+    for nf in sorted(pipeline_dir.rglob("*.nf")):
+        for body, path in _INCLUDE.findall(nf.read_text(errors="ignore")):
+            m = _REL_FROM_PATH.search(path)
+            if not m:
+                continue
+            mod_id = path_to_modid.get(m.group(1))
+            if not mod_id:
+                continue
+            for piece in re.split(r"[;\n]", body):
+                nm = _NAME_AS.match(piece.strip())
+                if nm:
+                    out[nm.group(2) or nm.group(1)] = mod_id
+    return out
 
 
 def parse_pipeline(
@@ -79,22 +107,41 @@ def parse_pipeline(
         for mod_id in sorted(set(path_to_modid.values()))
     ]
 
-    # Option-2 wiring: A -DOWNSTREAM_OF-> B when OUTPUT(A) ∩ INPUT(B) ≠ ∅.
-    # If two modules are mutually I/O-compatible, BOTH directions are emitted;
-    # these confidence-0.5 io_inferred edges form a CANDIDATE graph, not a DAG —
-    # downstream consumers must break cycles / topo-sort.
+    # Wiring.  Prefer the GROUND-TRUTH Nextflow DAG (cached at fetch time as
+    # dag.mmd) when present: real channel wiring, derivation="nextflow_dsl2".
+    # Otherwise fall back to Option-2 I/O-overlap inference (derivation=
+    # "io_inferred", a permissive candidate graph).  Same DOWNSTREAM_OF contract.
+    dag_path = pipeline_dir / "dag.mmd"
     seen_pairs: set[tuple[str, str]] = set()
-    for a_rel, (_a_in, a_out) in sorted(io.items()):
-        for b_rel, (b_in, _b_out) in sorted(io.items()):
-            a_id, b_id = path_to_modid[a_rel], path_to_modid[b_rel]
-            if a_id == b_id:           # no self-loops (incl. name collisions)
+    if dag_path.exists():
+        proc2mod = _process_to_modid(pipeline_dir, path_to_modid)
+        for a_label, b_label in parse_dag_edges(dag_path.read_text()):
+            a_id, b_id = proc2mod.get(a_label), proc2mod.get(b_label)
+            if not a_id or not b_id or a_id == b_id:   # unmapped or self-loop
                 continue
-            if a_out & b_in and (a_id, b_id) not in seen_pairs:
-                seen_pairs.add((a_id, b_id))
-                edges.append(EdgeRecord(
-                    a_id, b_id, EdgeKind.DOWNSTREAM_OF,
-                    {"pipelines": [name], "attestations": 1,
-                     "derivation": "io_inferred", "confidence": 0.5},
-                    prov,
-                ))
+            if (a_id, b_id) in seen_pairs:
+                continue
+            seen_pairs.add((a_id, b_id))
+            edges.append(EdgeRecord(
+                a_id, b_id, EdgeKind.DOWNSTREAM_OF,
+                {"pipelines": [name], "attestations": 1,
+                 "derivation": "nextflow_dsl2", "confidence": 0.95},
+                prov,
+            ))
+    else:
+        # Option-2: A -DOWNSTREAM_OF-> B when OUTPUT(A) ∩ INPUT(B) ≠ ∅.  Mutually
+        # I/O-compatible modules emit BOTH directions — a candidate graph, not a DAG.
+        for a_rel, (_a_in, a_out) in sorted(io.items()):
+            for b_rel, (b_in, _b_out) in sorted(io.items()):
+                a_id, b_id = path_to_modid[a_rel], path_to_modid[b_rel]
+                if a_id == b_id:           # no self-loops (incl. name collisions)
+                    continue
+                if a_out & b_in and (a_id, b_id) not in seen_pairs:
+                    seen_pairs.add((a_id, b_id))
+                    edges.append(EdgeRecord(
+                        a_id, b_id, EdgeKind.DOWNSTREAM_OF,
+                        {"pipelines": [name], "attestations": 1,
+                         "derivation": "io_inferred", "confidence": 0.5},
+                        prov,
+                    ))
     return nodes, edges

@@ -405,11 +405,27 @@ def fetch_nfcore_pipeline(
                 str(clone_dir)], check=True)
     result = runner(["git", "-C", str(clone_dir), "rev-parse", "HEAD"],
                     capture_output=True, text=True, check=True)
+
+    # Ground-truth wiring: Nextflow preview BUILDS the channel DAG and runs ZERO
+    # tasks (no containers, no data).  Cached as <clone>/dag.mmd for the offline
+    # build to parse (derivation="nextflow_dsl2").  Best-effort: if Nextflow is
+    # absent or preview fails, the build falls back to Option-2 I/O-overlap.
+    dag_path = clone_dir / "dag.mmd"
+    dag_ok = False
+    try:
+        runner(["nextflow", "run", str(clone_dir), "-profile", "test",
+                "--outdir", str(dest_dir / "_preview" / name),
+                "-preview", "-with-dag", str(dag_path)], check=True)
+        dag_ok = dag_path.exists()
+    except Exception as exc:   # noqa: BLE001 - nextflow optional; degrade gracefully
+        _log.warning("nextflow preview DAG failed for %s (%s); build will fall "
+                     "back to I/O-overlap wiring", name, exc)
     return {
         "repo": repo,
         "commit": result.stdout.strip(),
         "revision": revision,
         "path": str(clone_dir),
+        "dag": "dag.mmd" if dag_ok else None,
         "fetched_at": fetched_at,
     }
 
