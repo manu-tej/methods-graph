@@ -199,6 +199,22 @@ def test_fetch_generates_and_caches_dag(tmp_path):
     assert (tmp_path / "pipelines" / "rnaseq" / "dag.mmd").exists()
 
 
+def test_fetch_pins_nxf_version(tmp_path):
+    # nxf_ver is threaded into the nextflow env (NXF_VER) and recorded in the manifest.
+    seen = {}
+
+    def on_nf(cmd, kw):
+        seen["NXF_VER"] = (kw.get("env") or {}).get("NXF_VER")
+        Path(cmd[cmd.index("-with-dag") + 1]).write_text(_DAG)
+        return _R()
+
+    m = fetch_nfcore_pipeline("rnaseq", tmp_path, revision="3.14", nxf_ver="23.10.0",
+                              fetched_at="2026-06-16", runner=_base_runner(on_nf))
+    assert seen["NXF_VER"] == "23.10.0"
+    assert m["nxf_ver"] == "23.10.0"
+    assert m["dag"] == "dag.mmd"
+
+
 def test_fetch_falls_back_to_v1_parser(tmp_path):
     # v2 (default) compile fails; legacy v1 parser succeeds -> DAG still produced.
     def on_nf(cmd, kw):

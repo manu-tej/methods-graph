@@ -7,6 +7,9 @@ Implemented subcommands:
                 optionally enriched with bio.tools EDAM operations via --biotools <dir>
   fetch      -- download real source snapshots (EDAM, nf-core/modules, BioContainers)
                 and record a versioned snapshot.json manifest for seamless upgrades
+  ingest     -- reproducible build from a declarative manifest: fetch the pinned
+                pipelines, resolve declared shared sources (fail loudly if any is
+                missing), build, gate on the audit, and write an ingest.lock.json
   audit      -- run correctness checks (schema invariants, provenance, dup ids, coverage)
                 against a built Kùzu DB; exits 0 if all checks pass, 1 otherwise
   export-kgx -- export the graph to KGX TSV format (nodes.tsv + edges.tsv) for
@@ -143,9 +146,20 @@ def cmd_build(
             # override is needed: the directory IS the tool and the meta.yml
             # tool key already matches it.
             rel = meta_file.relative_to(nfcore_modules)
-            # rel.parts includes 'meta.yml' at the end; a nested module has
-            # at least ['<tool>', '<subcommand>', 'meta.yml'] → len >= 3.
-            tool_id = rel.parts[0] if len(rel.parts) >= 3 else None
+            # Anchor the tool name on the 'nf-core' path segment when present, so
+            # nfcore_modules may point at a TREE of pipeline checkouts (ingest):
+            #   <pipeline>/modules/nf-core/<tool>/[<subcommand>/]meta.yml
+            # Otherwise nfcore_modules IS the modules root: <tool>/[<sub>/]meta.yml.
+            parts = rel.parts
+            if "nf-core" in parts:
+                j = len(parts) - 1 - parts[::-1].index("nf-core")
+                after = parts[j + 1:-1]   # components between 'nf-core' and 'meta.yml'
+            else:
+                after = parts[:-1]        # strip trailing 'meta.yml'
+            # A nested (subcommand) module is <tool>/<subcommand> → override the
+            # generic meta key with the directory-derived tool; a flat <tool> dir
+            # already matches its meta key, so no override (None).
+            tool_id = after[0] if len(after) >= 2 else None
             nodes, edges = parse_module(module_dir, ingested_at=ingested_at,
                                         tool_id=tool_id)
             all_nodes.extend(nodes)
@@ -384,6 +398,113 @@ def cmd_build(
         f"{summary['edges_loaded']} edges loaded "
         f"({summary['edges_dropped']} dangling dropped){pipe_suffix}{bt_suffix}{onto_suffix}{xl_suffix}{mo_suffix} -> {db_path}"
     )
+
+
+def cmd_ingest(
+    *,
+    manifest_path: Path,
+    dest: Path,
+    db_path: Path,
+    staging_dir: Path,
+    ingested_at: str,
+    runner: Callable[..., Any] = subprocess.run,
+) -> dict:
+    """Reproducible, declarative ingest: fetch declared pipelines, resolve declared
+    shared sources (fail loudly if any is missing), build, gate on the audit, and
+    write an ``ingest.lock.json`` recording exactly what went in.
+
+    Method nodes + DAG wiring come from each pipeline's OWN vendored modules
+    (version-matched), so ``nfcore_modules``/``nfcore_pipelines`` both point at the
+    fetched pipelines tree.  The audit runs as a HARD gate: a graph that fails any
+    invariant raises (the lock is still written, recording the failure).
+    """
+    import hashlib
+
+    import kuzu
+
+    from methods_graph.audit import audit_graph
+    from methods_graph.fetch import fetch_nfcore_pipeline
+    from methods_graph.ingest import load_manifest, resolve_sources
+
+    dest = Path(dest)
+    spec = load_manifest(manifest_path)
+
+    # 1. Resolve shared sources FIRST — cheap, no network; fails loudly listing
+    #    every declared-but-missing source so a build never silently drops a layer.
+    sources = resolve_sources(spec)
+
+    # 2. Fetch each declared pipeline (clone@revision + ground-truth DAG, NXF pinned).
+    dest.mkdir(parents=True, exist_ok=True)
+    pipeline_manifests: list[dict] = []
+    for p in spec.pipelines:
+        pm = fetch_nfcore_pipeline(p.name, dest, revision=p.revision, nxf_ver=p.nxf_ver,
+                                   fetched_at=ingested_at, runner=runner)
+        pipeline_manifests.append(pm)
+        _log.info("ingest: fetched %s@%s commit=%s dag=%s",
+                  p.name, p.revision, (pm["commit"] or "")[:12], pm["dag"])
+
+    pipelines_root = dest / "pipelines"
+    have_pipelines = bool(spec.pipelines)
+
+    # 3. Build from the resolved shared sources + the pipelines' vendored modules.
+    cmd_build(
+        edam=sources.get("edam"),
+        nfcore_modules=pipelines_root if have_pipelines else None,
+        nfcore_pipelines=pipelines_root if have_pipelines else None,
+        biocontainers=sources.get("biocontainers"),
+        biotools=sources.get("biotools"),
+        stato=sources.get("stato"),
+        obi=sources.get("obi"),
+        db_path=db_path,
+        staging_dir=staging_dir,
+        ingested_at=ingested_at,
+    )
+
+    # 4. Audit gate.
+    db = conn = None
+    try:
+        db = kuzu.Database(str(db_path), read_only=True)
+        conn = kuzu.Connection(db)
+        audit = audit_graph(conn)
+    finally:
+        if conn is not None:
+            conn.close()
+        if db is not None:
+            db.close()
+
+    # 5. Lock — record exactly what went in (written even on audit failure).
+    def _digest(p: Path) -> str:
+        p = Path(p)
+        if p.is_file():
+            return "sha256:" + hashlib.sha256(p.read_bytes()).hexdigest()[:16]
+        return "dir"
+
+    lock = {
+        "ingested_at": ingested_at,
+        "manifest": str(Path(manifest_path)),
+        "db": str(db_path),
+        "pipelines": pipeline_manifests,
+        "sources": {k: {"path": str(v), "digest": _digest(v)} for k, v in sources.items()},
+        "audit": {
+            "ok": audit.ok,
+            "node_count": audit.node_count,
+            "invariants_total": len(audit.invariants),
+            "invariants_passed": sum(1 for i in audit.invariants if i.ok),
+        },
+    }
+    lock_path = dest / "ingest.lock.json"
+    lock_path.write_text(json.dumps(lock, indent=2, sort_keys=True))
+
+    if not audit.ok:
+        failing = [i.name for i in audit.invariants if not i.ok]
+        raise RuntimeError(f"ingest: audit FAILED {failing}; lock written to {lock_path}")
+
+    print(
+        f"Ingested {len(spec.pipelines)} pipeline(s): {audit.node_count} nodes, "
+        f"audit OK ({lock['audit']['invariants_passed']}/{lock['audit']['invariants_total']}) "
+        f"-> {db_path}  (lock: {lock_path})"
+    )
+    return lock
 
 
 def cmd_audit(*, db_path: Path, snapshot_dir: Path | None, as_json: bool) -> int:
@@ -710,6 +831,22 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--ingested-at", type=str, default=None, dest="ingested_at",
                    help="ISO date string for provenance (default: today)")
 
+    ing = sub.add_parser(
+        "ingest",
+        help="reproducible build from a declarative manifest "
+             "(fetch pipelines -> build -> audit gate -> lock)",
+    )
+    ing.add_argument("--manifest", type=Path, required=True, dest="manifest_path",
+                     help="path to the ingestion manifest (YAML)")
+    ing.add_argument("--dest", type=Path, required=True,
+                     help="work dir for pipeline clones + the ingest.lock.json")
+    ing.add_argument("--db", type=Path, required=True,
+                     help="path to output Kùzu database directory")
+    ing.add_argument("--staging", type=Path, default=None,
+                     help="path to staging directory (default: <db>.staging)")
+    ing.add_argument("--ingested-at", type=str, default=None, dest="ingested_at",
+                     help="ISO date string for provenance (default: today)")
+
     au = sub.add_parser(
         "audit",
         help="run correctness checks against a built Kùzu DB; exits 1 if any check fails",
@@ -788,6 +925,16 @@ def main(argv: list[str] | None = None) -> int:
             biotools=args.biotools,
             stato=args.stato,
             obi=args.obi,
+            db_path=args.db,
+            staging_dir=staging_dir,
+            ingested_at=ingested_at,
+        )
+    elif args.cmd == "ingest":
+        ingested_at = args.ingested_at or datetime.date.today().isoformat()
+        staging_dir = args.staging if args.staging is not None else Path(str(args.db) + ".staging")
+        cmd_ingest(
+            manifest_path=args.manifest_path,
+            dest=args.dest,
             db_path=args.db,
             staging_dir=staging_dir,
             ingested_at=ingested_at,

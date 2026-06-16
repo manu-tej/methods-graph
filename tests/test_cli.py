@@ -14,6 +14,23 @@ P = Provenance("test", "x", "2026-06-08")
 FX = Path(__file__).parent / "fixtures"
 
 
+def test_build_resolves_tool_from_nested_nfcore_tree(tmp_path):
+    """When --nfcore-modules points at a tree of pipeline checkouts (paths like
+    <pipeline>/modules/nf-core/<tool>/meta.yml), the tool name must anchor on the
+    'nf-core' segment — NOT collapse every module onto the 'modules' path component."""
+    mini = FX / "nfcore_pipeline" / "mini"   # has modules/nf-core/{fastqc,salmon,tximport}
+    db_path = tmp_path / "m.kuzu"
+    cmd_build(
+        edam=None, nfcore_modules=mini, biocontainers=None,
+        db_path=db_path, staging_dir=tmp_path / "stg", ingested_at="2026-06-10",
+    )
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        ids = {m["id"] for m in provider.get_methods()}
+    # method ids are the vendored tool keys, anchored correctly under nf-core/
+    assert {"m:fastqc", "m:salmon", "m:tximport"} <= ids, f"expected vendored tools; got {ids}"
+    assert "m:modules" not in ids, "module path component must not become a method id"
+
+
 def test_cmd_query_prints_rag_text(tmp_path, capsys):
     nodes = [MethodRecord("m:salmon", "salmon", NodeKind.METHOD,
                           {"version": "1.10.0"}, P, bioconda_pkg="salmon")]

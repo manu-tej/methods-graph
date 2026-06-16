@@ -413,12 +413,13 @@ def _stub_missing_includes(clone_dir: Path) -> list[Path]:
 
 
 def _generate_pipeline_dag(clone_dir: Path, launch_dir: Path, name: str,
-                           runner: Callable[..., Any]) -> bool:
+                           runner: Callable[..., Any], nxf_ver: str | None = None) -> bool:
     """Cache ``<clone>/dag.mmd`` via ``nextflow -preview -with-dag`` (zero tasks).
 
     Robustness ladder for the real-world nf-core/Nextflow friction:
     stub missing includes, then try the default (v2) parser and fall back to the
-    legacy (v1) parser for pre-v2 pipelines.  Honours a caller-set ``NXF_VER``.
+    legacy (v1) parser for pre-v2 pipelines.  Pins ``NXF_VER`` when *nxf_ver* is
+    given (a pipeline release often needs a matching Nextflow version).
     Best-effort: returns False (build falls back to I/O-overlap) if Nextflow is
     absent or every attempt fails.  A real DAG contains edges (``-->``); an
     empty header file from a failed run does not."""
@@ -428,6 +429,8 @@ def _generate_pipeline_dag(clone_dir: Path, launch_dir: Path, name: str,
     launch_dir.mkdir(parents=True, exist_ok=True)
     _stub_missing_includes(clone_dir)
     base_env = dict(os.environ)
+    if nxf_ver:
+        base_env["NXF_VER"] = nxf_ver
 
     cmd = ["nextflow", "run", str(clone_dir), "-profile", "test",
            "--outdir", str(launch_dir / "out"), "-preview", "-with-dag", str(dag_path)]
@@ -453,13 +456,15 @@ def fetch_nfcore_pipeline(
     *,
     revision: str,
     fetched_at: str,
+    nxf_ver: str | None = None,
     runner: Callable[..., Any] = subprocess.run,
 ) -> dict[str, Any]:
     """Shallow-clone nf-core/<name> at *revision* into <dest>/pipelines/<name>.
 
     Reuses fetch_nfcore's pattern (injectable runner, reuse-existing-clone,
-    rev-parse HEAD) but returns a {repo, commit, revision, path, fetched_at}
-    manifest — note `revision` and `path` (vs fetch_nfcore's `modules_path`)."""
+    rev-parse HEAD) and returns a {repo, commit, revision, nxf_ver, path, dag,
+    fetched_at} manifest.  When *nxf_ver* is given it is pinned (NXF_VER) for the
+    DAG-preview run — a pipeline release often needs a matching Nextflow version."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     clone_dir = dest_dir / "pipelines" / name
     repo = f"https://github.com/nf-core/{name}.git"
@@ -474,11 +479,13 @@ def fetch_nfcore_pipeline(
     # build to parse (derivation="nextflow_dsl2").  Best-effort: stubs missing
     # includes + falls back to the legacy parser; if Nextflow is absent or every
     # attempt fails, the build falls back to Option-2 I/O-overlap.
-    dag_ok = _generate_pipeline_dag(clone_dir, dest_dir / "_preview" / name, name, runner)
+    dag_ok = _generate_pipeline_dag(clone_dir, dest_dir / "_preview" / name, name,
+                                    runner, nxf_ver=nxf_ver)
     return {
         "repo": repo,
         "commit": result.stdout.strip(),
         "revision": revision,
+        "nxf_ver": nxf_ver,
         "path": str(clone_dir),
         "dag": "dag.mmd" if dag_ok else None,
         "fetched_at": fetched_at,
