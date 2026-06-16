@@ -4,6 +4,7 @@ from methods_graph.connectors.nfcore import (
     _collect_ontology_edam_uris,
     _edam_uri_to_node_id,
     _pattern_to_fmt_id,
+    _pattern_to_fmt_ids,
     _collect_io_patterns,
 )
 from methods_graph.types import NodeKind, EdgeKind
@@ -666,6 +667,39 @@ def test_pattern_to_fmt_id_known_unknown_and_case():
     # Unknown extension → synthetic Format id.
     assert _pattern_to_fmt_id("*.sf") == "fmt:pat:.sf"
     assert _pattern_to_fmt_id("*.xyz") == "fmt:pat:.xyz"
+
+
+def test_pattern_to_fmt_ids_expands_braces():
+    # THE bug: nf-core's dominant '*.{bam}' form used to fall through to junk.
+    assert _pattern_to_fmt_ids("*.{bam}") == ["fmt:format_2572"]
+    # multi-extension brace -> one EDAM id per alternative (an input that accepts
+    # bam OR cram OR sam relates to all three formats).
+    assert set(_pattern_to_fmt_ids("*.{bam,cram,sam}")) == {
+        "fmt:format_2572", "fmt:format_3462", "fmt:format_2573"}
+    # alternatives that collapse to the same format dedupe to one id.
+    assert _pattern_to_fmt_ids("*.{fastq,fq}.gz") == ["fmt:format_1930"]
+    # pipe-separated alternation with mixed known/unknown extensions.
+    assert set(_pattern_to_fmt_ids("*.bai|csi|crai")) == {
+        "fmt:format_3327", "fmt:pat:.csi", "fmt:pat:.crai"}
+
+
+def test_pattern_to_fmt_ids_suffix_and_template():
+    # prefixed real extensions resolve by suffix ('_fastqc.html' -> HTML).
+    assert _pattern_to_fmt_ids("*_fastqc.html") == ["fmt:format_2331"]
+    # a Nextflow template prefix is ignored; the real extension wins.
+    assert _pattern_to_fmt_ids("*.${prefix}.{gtf}") == ["fmt:format_2306"]
+    # gff3 is more specific than generic gff.
+    assert _pattern_to_fmt_ids("*.gff3") == ["fmt:format_1975"]
+    # unknown extension stays synthetic.
+    assert _pattern_to_fmt_ids("*.sf") == ["fmt:pat:.sf"]
+    # optional-suffix bracket '[.gz]' is stripped to the base extension.
+    assert _pattern_to_fmt_ids("*.fasta[.gz]") == ["fmt:format_1929"]
+    assert _pattern_to_fmt_ids("*.fastq[.gz]") == ["fmt:format_1930"]
+
+
+def test_pattern_to_fmt_id_returns_primary_of_ids():
+    # the singular form (kept for back-compat) returns the first mapped id.
+    assert _pattern_to_fmt_id("*.{bam}") == "fmt:format_2572"
 
 
 def test_collect_io_patterns_handles_list_of_lists():

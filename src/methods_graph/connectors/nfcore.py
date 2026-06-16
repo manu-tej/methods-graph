@@ -56,38 +56,107 @@ _EDAM_PREFIX_MAP = {
 # I/O contract is still expressed.  Keys are lowercased extensions WITHOUT the
 # leading '*'.
 _PATTERN_TO_FMT: dict[str, str] = {
+    # sequences / reads
     ".fastq.gz": "fmt:format_1930", ".fq.gz": "fmt:format_1930",
     ".fastq": "fmt:format_1930", ".fq": "fmt:format_1930",
     ".fasta": "fmt:format_1929", ".fa": "fmt:format_1929", ".fna": "fmt:format_1929",
+    ".faa": "fmt:format_1929", ".fas": "fmt:format_1929", ".fsa": "fmt:format_1929",
+    # alignments + indexes
     ".bam": "fmt:format_2572", ".sam": "fmt:format_2573", ".cram": "fmt:format_3462",
+    ".bai": "fmt:format_3327", ".tbi": "fmt:format_3700",
+    # variants
     ".vcf.gz": "fmt:format_3016", ".vcf": "fmt:format_3016", ".bcf": "fmt:format_3020",
-    ".bed": "fmt:format_3003", ".gtf": "fmt:format_2306",
-    ".gff3": "fmt:format_2305", ".gff": "fmt:format_2305",
-    ".bw": "fmt:format_3006", ".bigwig": "fmt:format_3006",
+    # annotation / intervals (gff3 is more specific than generic gff)
+    ".bed": "fmt:format_3003", ".gtf": "fmt:format_2306", ".gtf.gz": "fmt:format_2306",
+    ".gff3": "fmt:format_1975", ".gff": "fmt:format_2305", ".gff.gz": "fmt:format_2305",
+    # coverage tracks
+    ".bw": "fmt:format_3006", ".bigwig": "fmt:format_3006", ".bb": "fmt:format_3004",
+    ".bigbed": "fmt:format_3004", ".wig": "fmt:format_3005",
+    ".bedgraph": "fmt:format_3583", ".bg": "fmt:format_3583",
+    # tabular / structured data
+    ".tsv": "fmt:format_3475", ".tab": "fmt:format_3475", ".csv": "fmt:format_3752",
+    ".json": "fmt:format_3464", ".yaml": "fmt:format_3750", ".yml": "fmt:format_3750",
+    # documents / reports / images / archives
+    ".html": "fmt:format_2331", ".txt": "fmt:format_2330", ".log": "fmt:format_2330",
+    ".pdf": "fmt:format_3508", ".png": "fmt:format_3603", ".svg": "fmt:format_3604",
+    ".zip": "fmt:format_3987", ".tar": "fmt:format_3981", ".gz": "fmt:format_3989",
 }
 
+# Brace / pipe alternation in a glob: '{a,b}' and 'a|b' both mean "any of".
+_BRACE = re.compile(r"\{([^{}]*)\}")
 
-def _normalize_pattern_ext(pattern: str) -> str:
-    """'*.fastq.gz' → '.fastq.gz' (lowercased, leading glob stripped)."""
+
+def _expand_alternation(token: str) -> list[str]:
+    """Expand one level of '{a,b}' / 'a|b' alternation into concrete strings.
+
+    '.{bam,cram}' → ['.bam', '.cram'];  '.bai|csi' → ['.bai', 'csi'];
+    '.{fastq,fq}.gz' → ['.fastq.gz', '.fq.gz'].  Recurses for nested braces.
+    """
+    m = _BRACE.search(token)
+    if m:
+        pre, body, post = token[:m.start()], m.group(1), token[m.end():]
+        out: list[str] = []
+        for opt in re.split(r"[,|]", body):
+            out.extend(_expand_alternation(pre + opt + post))
+        return out
+    if "|" in token:
+        out = []
+        for opt in token.split("|"):
+            out.extend(_expand_alternation(opt))
+        return out
+    return [token]
+
+
+def _normalize_pattern_exts(pattern: str) -> list[str]:
+    """Glob → list of normalised extensions, expanding brace/pipe alternation.
+
+    '*.{bam,cram}' → ['.bam', '.cram'];  '*.fastq.gz' → ['.fastq.gz'].
+    The leading directory glob (everything up to the last '*') is stripped, then
+    each alternative is lowercased and given a leading '.'.
+    """
     p = pattern.strip().lower()
+    p = re.sub(r"\[[^\]]*\]", "", p)   # drop optional-suffix brackets: '.fasta[.gz]' → '.fasta'
     star = p.rfind("*")
     if star != -1:
         p = p[star + 1:]
-    if not p.startswith("."):
-        p = "." + p.lstrip(".")
-    return p
+    exts: list[str] = []
+    for tok in _expand_alternation(p):
+        tok = re.sub(r"\.{2,}", ".", tok.strip())   # collapse accidental '..'
+        if not tok:
+            continue
+        if not tok.startswith("."):
+            tok = "." + tok.lstrip(".")
+        exts.append(tok)
+    return exts or ["."]
+
+
+def _normalize_pattern_ext(pattern: str) -> str:
+    """First normalised extension of *pattern* (back-compat single-value form)."""
+    return _normalize_pattern_exts(pattern)[0]
+
+
+def _pattern_to_fmt_ids(pattern: str) -> list[str]:
+    """Map a glob to EDAM ``fmt:`` ids (one per alternative), else synthetic ids.
+
+    Longest matching suffix wins so '.vcf.gz' beats '.gz' and '.gff3' beats
+    '.gff'.  Order-preserving and de-duplicated.
+    """
+    out: list[str] = []
+    for ext in _normalize_pattern_exts(pattern):
+        fid: str | None = None
+        for known in sorted(_PATTERN_TO_FMT, key=len, reverse=True):
+            if ext.endswith(known):
+                fid = _PATTERN_TO_FMT[known]
+                break
+        out.append(fid or f"fmt:pat:{ext}")
+    # de-dup, preserve first-seen order
+    seen: set[str] = set()
+    return [x for x in out if not (x in seen or seen.add(x))]
 
 
 def _pattern_to_fmt_id(pattern: str) -> str:
-    """Map a glob to a known EDAM fmt: id, else a synthetic 'fmt:pat:<ext>' id.
-
-    Longest matching suffix wins so '.vcf.gz' beats '.gz' (when present).
-    """
-    ext = _normalize_pattern_ext(pattern)
-    for known in sorted(_PATTERN_TO_FMT, key=len, reverse=True):
-        if ext.endswith(known):
-            return _PATTERN_TO_FMT[known]
-    return f"fmt:pat:{ext}"
+    """Primary EDAM ``fmt:`` id for a glob (back-compat single-value form)."""
+    return _pattern_to_fmt_ids(pattern)[0]
 
 
 def _collect_io_patterns(section: Any) -> list[str]:
@@ -157,7 +226,7 @@ def _io_module_targets(meta: dict[str, Any], section_key: str) -> set[str]:
         and (nid.startswith("data:") or nid.startswith("fmt:"))
     }
     for pat in _collect_io_patterns(meta.get(section_key)):
-        ids.add(_pattern_to_fmt_id(pat))
+        ids.update(_pattern_to_fmt_ids(pat))
     return ids
 
 
@@ -322,11 +391,11 @@ def parse_module(
         synth: list[NodeRecord] = []
         synth_seen: set[str] = set()
         for pat in _collect_io_patterns(meta.get(section_key)):
-            fid = _pattern_to_fmt_id(pat)
-            if fid.startswith("fmt:pat:") and fid not in synth_seen:
-                synth_seen.add(fid)
-                synth.append(NodeRecord(fid, fid.split(":", 2)[-1], NodeKind.FORMAT,
-                                        {"pattern": pat}, prov))
+            for fid in _pattern_to_fmt_ids(pat):
+                if fid.startswith("fmt:pat:") and fid not in synth_seen:
+                    synth_seen.add(fid)
+                    synth.append(NodeRecord(fid, fid.split(":", 2)[-1], NodeKind.FORMAT,
+                                            {"pattern": pat}, prov))
         return sorted(ids), synth
 
     input_edam_ids, input_synth = _io_targets("input")
