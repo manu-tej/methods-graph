@@ -274,6 +274,26 @@ def cmd_build(
         _log.info("method-operations: removed %d wrong PERFORMS edge(s), added %d curated PERFORMS edge(s)",
                   mo_removed, mo_edges_added)
 
+    # --- curated data-type handoffs (post-resolve, pre-load) ---
+    # Type tool I/O on data CONTENT (EDAM Data: count matrix, ...) so pipelines
+    # compose on what actually flows between them, not on coarse file formats
+    # (where everything "matches" via TSV/GZIP).  Emitted only when both the
+    # Method and the Data node exist; skips are logged, never silently dropped.
+    from methods_graph.crosslinks.data_handoffs import build_data_io_edges
+
+    dio_existing = {(e.from_id, e.to_id, e.kind.value) for e in resolved_edges}
+    dio_edges, dio_report = build_data_io_edges(resolved_nodes, ingested_at=ingested_at)
+    new_dio = [e for e in dio_edges
+               if (e.from_id, e.to_id, e.kind.value) not in dio_existing]
+    resolved_edges = list(resolved_edges) + new_dio
+    dio_edges_added = len(new_dio)
+    if dio_report.skipped:
+        _log.info("data-handoffs: skipped %d unresolved I/O edge(s): %s",
+                  len(dio_report.skipped), dio_report.skipped)
+    if dio_edges_added:
+        _log.info("data-handoffs: added %d Method->Data I/O edges (semantic composition)",
+                  dio_edges_added)
+
     # --- curated Method→StatisticalMethod cross-links (post-resolve, pre-load) ---
     # Only runs when StatisticalMethod nodes are present (i.e. STATO/OBI loaded);
     # otherwise the targets cannot exist and the step is a no-op.  The builder
@@ -392,11 +412,12 @@ def cmd_build(
         f", curated PERFORMS (+{mo_edges_added}/-{mo_removed})"
         if (mo_edges_added or mo_removed) else ""
     )
+    dio_suffix = f", {dio_edges_added} data-typed I/O edges" if dio_edges_added else ""
 
     print(
         f"Built graph: {n_methods} methods, {summary['nodes']} nodes, "
         f"{summary['edges_loaded']} edges loaded "
-        f"({summary['edges_dropped']} dangling dropped){pipe_suffix}{bt_suffix}{onto_suffix}{xl_suffix}{mo_suffix} -> {db_path}"
+        f"({summary['edges_dropped']} dangling dropped){pipe_suffix}{bt_suffix}{onto_suffix}{xl_suffix}{mo_suffix}{dio_suffix} -> {db_path}"
     )
 
 
