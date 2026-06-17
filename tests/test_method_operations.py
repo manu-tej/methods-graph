@@ -30,6 +30,24 @@ def test_shipped_yaml_loads_with_corrections_and_backfill():
     assert "m:custom" not in by
 
 
+def test_shipped_yaml_grounds_differentialabundance_tools():
+    """nf-core/differentialabundance modules ship no `identifier: biotools:` field,
+    so these arrive unannotated; the curated layer is their only grounding path."""
+    by = {e.method_id: e for e in load_method_operations()}
+    # differential expression
+    assert {"op:operation_3223", "op:operation_3680"} <= set(by["m:deseq2"].add)
+    assert "op:operation_3223" in by["m:limma"].add
+    # gene-set enrichment: bio.tools mis-tags GSEA as DGE -> override
+    assert "op:operation_3223" in by["m:gsea"].remove   # not differential expression
+    assert "op:operation_2436" in by["m:gsea"].add      # Gene-set enrichment analysis
+    # functional enrichment (bio.tools id 'gprofiler' != module name 'gprofiler2')
+    assert {"op:operation_3501", "op:operation_3672"} <= set(by["m:gprofiler2"].add)
+    # microarray + proteomics modalities
+    assert "op:operation_2495" in by["m:affy"].add       # Expression analysis
+    assert "op:operation_3630" in by["m:proteus"].add    # Protein quantification (NOT sequence analysis)
+    assert "op:operation_2479" not in by["m:proteus"].add
+
+
 # --- builder: add ---
 
 

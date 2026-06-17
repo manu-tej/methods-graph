@@ -17,6 +17,30 @@ methods:
   tximeta:
     remove: [operation_0524, operation_3630]  # "De-novo assembly"; "Protein quantification"
     note: "tximport/metadata import for RNA-seq; keeps operation_3800 RNA-Seq quantification"
+  gsea:
+    remove: [operation_3223]   # "Differential gene expression profiling" — wrong: GSEA consumes a ranked/labelled matrix, it does not compute DE
+    add:     [operation_2436]  # Gene-set enrichment analysis
+    note: "gsea_gsea runs in GSEA mode (gene-set enrichment), not differential expression"
+
+  # --- differentialabundance: backfill ---
+  # These nf-core meta.yml files ship NO `identifier: biotools:` field, so the
+  # methods arrive with biotools_id='' and bio.tools auto-enrichment skips them.
+  # The curated layer is the only grounding path until a tool-name fallback exists.
+  deseq2:
+    add: [operation_3223, operation_3680]  # Differential gene expression profiling; RNA-Seq analysis
+    note: "deseq2_differential: negative-binomial differential expression (no meta.yml bio.tools id)"
+  limma:
+    add: [operation_3223]  # Differential gene expression profiling
+    note: "limma_differential: linear-model differential expression (no meta.yml bio.tools id)"
+  affy:
+    add: [operation_2495]  # Expression analysis
+    note: "affy_justrma: RMA normalisation of Affymetrix microarrays (no meta.yml bio.tools id)"
+  proteus:
+    add: [operation_3630]  # Protein quantification
+    note: "proteus_readproteingroups: imports/normalises maxQuant protein-group intensities (no meta.yml bio.tools id)"
+  gprofiler2:
+    add: [operation_3501, operation_3672]  # Enrichment analysis; Gene functional annotation
+    note: "gprofiler2_gost functional enrichment; bio.tools id is 'gprofiler' (!= module name 'gprofiler2') so no auto-match"
 
   # --- I1: backfill (utility/aligner tools bio.tools doesn't annotate) ---
   bowtie2:     {add: [operation_3198], note: "Read mapping"}
