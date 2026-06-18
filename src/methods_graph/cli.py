@@ -409,6 +409,29 @@ def cmd_build(
     else:
         assum_edges_added = 0
 
+    # --- assumption diagnostics (post-resolve, pre-load) ---
+    # For each assumption a method relies on (via USES_STATISTICAL_METHOD →
+    # REQUIRES_ASSUMPTION), attach the diagnostic test/plot/procedure that checks
+    # whether the available data MEETS it.  Runs AFTER assumptions are minted;
+    # grounded — a Diagnostic is emitted only when an Assumption node it checks exists.
+    diag_nodes_added = 0
+    from methods_graph.crosslinks.assumption_diagnostics import build_diagnostic_records
+
+    dg_nodes, dg_edges, dg_report = build_diagnostic_records(resolved_nodes, ingested_at=ingested_at)
+    _existing_ids = {n.id for n in resolved_nodes}
+    new_dg_nodes = [n for n in dg_nodes if n.id not in _existing_ids]
+    resolved_nodes = list(resolved_nodes) + new_dg_nodes
+    _dg_existing = {(e.from_id, e.to_id, e.kind.value) for e in resolved_edges}
+    new_dg_edges = [e for e in dg_edges if (e.from_id, e.to_id, e.kind.value) not in _dg_existing]
+    resolved_edges = list(resolved_edges) + new_dg_edges
+    diag_nodes_added = len(new_dg_nodes)
+    if dg_report.skipped:
+        _log.info("diagnostics: skipped %d (assumption not present): %s",
+                  len(dg_report.skipped), dg_report.skipped[:8])
+    if diag_nodes_added:
+        _log.info("diagnostics: minted %d Diagnostic nodes + %d CHECKED_BY edges",
+                  diag_nodes_added, len(new_dg_edges))
+
     # --- load ---
     summary = build_graph(resolved_nodes, resolved_edges, db_path, staging_dir=staging_dir)
 
@@ -437,11 +460,12 @@ def cmd_build(
     )
     dio_suffix = f", {dio_edges_added} data-typed I/O edges" if dio_edges_added else ""
     exec_suffix = f", {exec_nodes_added} execution specs" if exec_nodes_added else ""
+    diag_suffix = f", {diag_nodes_added} diagnostics" if diag_nodes_added else ""
 
     print(
         f"Built graph: {n_methods} methods, {summary['nodes']} nodes, "
         f"{summary['edges_loaded']} edges loaded "
-        f"({summary['edges_dropped']} dangling dropped){pipe_suffix}{bt_suffix}{onto_suffix}{xl_suffix}{mo_suffix}{dio_suffix}{exec_suffix} -> {db_path}"
+        f"({summary['edges_dropped']} dangling dropped){pipe_suffix}{bt_suffix}{onto_suffix}{xl_suffix}{mo_suffix}{dio_suffix}{exec_suffix}{diag_suffix} -> {db_path}"
     )
 
 

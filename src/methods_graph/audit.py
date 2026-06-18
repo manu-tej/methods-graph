@@ -331,6 +331,21 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
             "RETURN count(*)",
         ),
         (
+            # Diagnostics check assumptions: the test/plot/procedure that evaluates
+            # whether the data meets an assumption attaches to the Assumption.
+            "CHECKED_BY: Assumption→Diagnostic",
+            "MATCH (a)-[r:Rel{kind:'CHECKED_BY'}]->(b) "
+            "WHERE NOT (a.kind='Assumption' AND b.kind='Diagnostic') "
+            "RETURN count(*)",
+        ),
+        (
+            # The runnable recipe attaches to the Module it was extracted from.
+            "RUNS_AS: Module→ExecutionSpec",
+            "MATCH (a)-[r:Rel{kind:'RUNS_AS'}]->(b) "
+            "WHERE NOT (a.kind='Module' AND b.kind='ExecutionSpec') "
+            "RETURN count(*)",
+        ),
+        (
             "HAS_MODULE: Pipeline→Module",
             "MATCH (a)-[r:Rel{kind:'HAS_MODULE'}]->(b) "
             "WHERE NOT (a.kind='Pipeline' AND b.kind='Module') RETURN count(*)",
@@ -393,6 +408,8 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
          "REQUIRES_ASSUMPTION: grounded (doi:/pmid:/url:/isbn:/stato: evidence)"),
         ("AMENABLE_TO", ("doi:", "pmid:"),
          "AMENABLE_TO: grounded (doi:/pmid: evidence)"),
+        ("CHECKED_BY", ("doi:", "pmid:", "url:", "isbn:"),
+         "CHECKED_BY: grounded (doi:/pmid:/url:/isbn: evidence)"),
     ):
         bad = _bad_evidence_count(edge_kind, prefixes)
         invariants.append(Invariant(name=label, violations=bad, ok=(bad == 0)))

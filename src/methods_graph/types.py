@@ -66,6 +66,12 @@ class EdgeKind(str, Enum):
     # Module→ExecutionSpec: the runnable recipe for a module (pinned container +
     # command + typed I/O), emitted only when the Module node exists.
     RUNS_AS = "RUNS_AS"
+    # Curated, grounded Assumption→Diagnostic link: the test/plot/procedure that
+    # checks whether the available data MEETS an assumption (normality → Shapiro–Wilk
+    # / Q–Q plot, independence → batch-design review, …).  Turns "edge is evaluable"
+    # into "edge result is trustworthy".  Carries an evidence token; emitted only when
+    # the Assumption node exists.
+    CHECKED_BY = "CHECKED_BY"
 
 
 @dataclass(frozen=True)
