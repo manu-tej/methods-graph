@@ -76,8 +76,13 @@ def cmd_build(
     db_path: Path,
     staging_dir: Path,
     ingested_at: str,
+    no_wiring: bool = False,
 ) -> None:
     """Build a Kùzu graph from local source snapshots: connectors → resolver → loader.
+
+    ``no_wiring=True`` skips DOWNSTREAM_OF generation for pipelines (used for bulk
+    catalog imports, where no Nextflow DAG exists and io_inferred wiring would be
+    O(modules^2) noise that drowns the real nextflow_dsl2 DAGs).
 
     Optional ``--biotools <dir>`` enriches each Method whose biotoolsID matches a
     bio.tools JSON record with PERFORMS (operation) edges.
@@ -126,6 +131,7 @@ def cmd_build(
     # --- nf-core modules ---
     # Discover recursively: any directory that directly contains a meta.yml is a module dir.
     # Sorted for deterministic, reproducible builds. De-duplicated via dict-keyed set.
+    module_parse_failures = 0
     if nfcore_modules is not None:
         seen_dirs: set[Path] = set()
         for meta_file in sorted(Path(nfcore_modules).rglob("meta.yml")):
@@ -160,10 +166,19 @@ def cmd_build(
             # generic meta key with the directory-derived tool; a flat <tool> dir
             # already matches its meta key, so no override (None).
             tool_id = after[0] if len(after) >= 2 else None
-            nodes, edges = parse_module(module_dir, ingested_at=ingested_at,
-                                        tool_id=tool_id)
+            # Bulk catalog imports parse thousands of third-party modules; a single
+            # malformed meta.yml must not abort the whole build.  Skip + log + count.
+            try:
+                nodes, edges = parse_module(module_dir, ingested_at=ingested_at,
+                                            tool_id=tool_id)
+            except Exception as exc:  # noqa: BLE001 — robustness over diverse inputs
+                module_parse_failures += 1
+                _log.warning("skipping unparseable module %s: %s", module_dir, exc)
+                continue
             all_nodes.extend(nodes)
             all_edges.extend(edges)
+    if module_parse_failures:
+        _log.warning("module parse: skipped %d unparseable module(s)", module_parse_failures)
 
     # --- biocontainers ---
     if biocontainers is not None:
@@ -180,7 +195,12 @@ def cmd_build(
         for mj in sorted(Path(nfcore_pipelines).rglob("modules.json")):
             if not (mj.parent / "modules" / "nf-core").is_dir():
                 continue
-            nodes, edges = parse_pipeline(mj.parent, ingested_at=ingested_at)
+            try:
+                nodes, edges = parse_pipeline(mj.parent, ingested_at=ingested_at,
+                                              emit_wiring=not no_wiring)
+            except Exception as exc:  # noqa: BLE001 — robustness over diverse inputs
+                _log.warning("skipping unparseable pipeline %s: %s", mj.parent, exc)
+                continue
             all_nodes.extend(nodes)
             all_edges.extend(edges)
 
@@ -921,6 +941,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="path to staging directory (default: <db>.staging)")
     b.add_argument("--ingested-at", type=str, default=None, dest="ingested_at",
                    help="ISO date string for provenance (default: today)")
+    b.add_argument("--no-wiring", action="store_true", dest="no_wiring",
+                   help="skip DOWNSTREAM_OF generation for pipelines (bulk catalog import)")
 
     ing = sub.add_parser(
         "ingest",
@@ -1019,6 +1041,7 @@ def main(argv: list[str] | None = None) -> int:
             db_path=args.db,
             staging_dir=staging_dir,
             ingested_at=ingested_at,
+            no_wiring=args.no_wiring,
         )
     elif args.cmd == "ingest":
         ingested_at = args.ingested_at or datetime.date.today().isoformat()

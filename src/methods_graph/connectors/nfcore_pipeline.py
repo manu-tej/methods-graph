@@ -74,6 +74,7 @@ def parse_pipeline(
     pipeline_dir: Path,
     *,
     ingested_at: str,
+    emit_wiring: bool = True,
 ) -> tuple[list[NodeRecord], list[EdgeRecord]]:
     pipeline_dir = Path(pipeline_dir)
     name = pipeline_dir.name
@@ -99,6 +100,12 @@ def parse_pipeline(
         path_to_modid[rel] = f"mod:{name_field}"
         io[rel] = (_io_module_targets(meta, "input"), _io_module_targets(meta, "output"))
 
+    # A pipeline whose modules all failed to resolve (nameless meta.yml, odd layout)
+    # would be an orphan Pipeline node with no HAS_MODULE — useless, and it trips the
+    # "Pipeline has >=1 HAS_MODULE" invariant.  Skip it entirely.
+    if not path_to_modid:
+        return [], []
+
     nodes: list[NodeRecord] = [NodeRecord(
         pipe_id, name, NodeKind.PIPELINE,
         {"url": prov.source_url, "n_modules": len(path_to_modid)}, prov,
@@ -112,8 +119,12 @@ def parse_pipeline(
     # dag.mmd) when present: real channel wiring, derivation="nextflow_dsl2".
     # Otherwise fall back to Option-2 I/O-overlap inference (derivation=
     # "io_inferred", a permissive candidate graph).  Same DOWNSTREAM_OF contract.
+    # `emit_wiring=False` skips DOWNSTREAM_OF entirely — used for bulk catalog
+    # imports where no DAG was generated and io_inferred would be O(modules^2) noise.
     dag_path = pipeline_dir / "dag.mmd"
     seen_pairs: set[tuple[str, str]] = set()
+    if not emit_wiring:
+        return nodes, edges
     if dag_path.exists():
         proc2mod = _process_to_modid(pipeline_dir, path_to_modid)
         # Collapse process-label edges onto module ids, keeping each module pair's

@@ -33,6 +33,24 @@ def test_parse_pipeline_drops_module_with_missing_meta():
     assert has_mod == {"mod:fastqc_qc", "mod:salmon_pe", "mod:tximport_agg"}
 
 
+def test_parse_pipeline_skips_when_no_modules_resolve(tmp_path):
+    """A pipeline whose modules all fail to resolve emits NO Pipeline node (no orphan)."""
+    (tmp_path / "modules" / "nf-core").mkdir(parents=True)
+    (tmp_path / "modules.json").write_text(
+        '{"repos": {"r": {"modules": {"nf-core": {"ghost": {"git_sha": "x"}}}}}}')
+    nodes, edges = parse_pipeline(tmp_path, ingested_at="2026-06-18")
+    assert nodes == [] and edges == []
+
+
+def test_parse_pipeline_emit_wiring_false_skips_downstream_of():
+    """Bulk catalog import (emit_wiring=False): Pipeline + HAS_MODULE still emitted,
+    but NO DOWNSTREAM_OF (no DAG, and io_inferred would be O(modules^2) noise)."""
+    nodes, edges = parse_pipeline(PIPE, ingested_at="2026-06-13", emit_wiring=False)
+    assert any(n.kind == NodeKind.PIPELINE for n in nodes)
+    assert {e.to_id for e in edges if e.kind == EdgeKind.HAS_MODULE}  # membership kept
+    assert [e for e in edges if e.kind == EdgeKind.DOWNSTREAM_OF] == []
+
+
 def test_parse_pipeline_infers_downstream_of_by_io_overlap():
     """salmon_pe OUTPUT *.sf feeds tximport_agg INPUT *.sf → one DOWNSTREAM_OF.
     fastqc_qc OUTPUT *.html does NOT match salmon INPUT → no edge (honest Option-2)."""

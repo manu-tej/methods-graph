@@ -125,6 +125,20 @@ def test_secondary_tool_without_dep_gets_no_pkg():
 # Single-tool module where tool key differs from bioconda package name
 # ---------------------------------------------------------------------------
 
+def test_parse_module_tolerates_null_tool_body(tmp_path):
+    """A `tools:` entry with an empty body (`- toolx:`) yields a None value in the
+    parsed YAML; parse_module must coerce it and not crash (seen across the nf-core
+    catalog). Regression for AttributeError: 'NoneType' has no attribute 'get'."""
+    d = tmp_path / "toolx"
+    d.mkdir()
+    (d / "meta.yml").write_text("name: toolx\ntools:\n  - toolx:\n")
+    (d / "environment.yml").write_text("dependencies:\n  - bioconda::toolx=1.0\n")
+    (d / "main.nf").write_text("process TOOLX { script: 'toolx' }\n")
+    nodes, _edges = parse_module(d, ingested_at="2026-06-18")
+    method = next(n for n in nodes if n.kind == NodeKind.METHOD)
+    assert method.id == "m:toolx"
+
+
 def test_single_tool_dep_assigned_even_when_names_differ():
     """A single-tool module with a single bioconda dep must get pkg/version
     even when the tools: key (fastqc_check) differs from the package name (fastqc).

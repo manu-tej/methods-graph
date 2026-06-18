@@ -406,6 +406,9 @@ def parse_module(
 
     for tool_entry in valid_tools:
         tool_name, tool_meta = next(iter(tool_entry.items()))
+        # A `tools:` entry with an empty body (`- toolname:`) yields a None value;
+        # coerce to an empty mapping so identifier/description lookups are safe.
+        tool_meta = tool_meta if isinstance(tool_meta, dict) else {}
 
         if apply_tool_id_override:
             # Single-tool module with an authoritative directory-derived tool_id:
