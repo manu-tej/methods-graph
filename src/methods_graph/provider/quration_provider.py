@@ -152,6 +152,28 @@ class KuzuMethodsGraphProvider:
             return ""
         return to_rag_text(seed(self._conn, seeds, k_hops=k_hops))
 
+    # --- quration methods-graph lane (build_real_loop auto-activates on these) ---
+
+    def resolve_method_ids(self, keywords: list[str]) -> list[str]:
+        """Method ids matching a relation's keywords, best match first.
+
+        quration's MethodsGraphEvaluationRunner calls this to pick a method id for an
+        edge when the broker has no structural pick (``ids[0]`` is taken).  Returns an
+        empty list when nothing matches — quration reads that as an honest coverage gap.
+        """
+        return self._method_ids_matching(keywords)
+
+    def neighborhood(self, method_id: str) -> dict[str, Any]:
+        """The method's grounded statistical context for quration's edge evaluation.
+
+        Returns the dict from :func:`method_neighborhood` — notably ``statistical_methods``
+        (each ``{name, evidence, ...}``) and ``assumptions`` (each ``{name, via, ...}``,
+        ``via`` carrying the statistical method + grounding citation it is inherited
+        through).  Raises ``KeyError`` if *method_id* is unknown, which quration maps to
+        a COVERAGE_GAP verdict.
+        """
+        return method_neighborhood(self._conn, method_id)
+
     def _method_ids_matching(self, keywords: list[str]) -> list[str]:
         # Behavior-preserving delegation to the shared pure helper (see extract/seed.py).
         return method_ids_matching(self._conn, keywords)

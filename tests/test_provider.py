@@ -295,3 +295,50 @@ def test_retrieve_surfaces_inherited_assumption_and_path(assum_db_path):
     assert "Wald test" in ctx, f"StatisticalMethod on the path missing:\n{ctx}"
     assert "REQUIRES_ASSUMPTION" in ctx, f"StatMethod->Assumption edge missing:\n{ctx}"
     assert "USES_STATISTICAL_METHOD" in ctx, f"Method->StatMethod edge missing:\n{ctx}"
+
+
+# ---------------------------------------------------------------------------
+# quration methods-graph lane: resolve_method_ids + neighborhood
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def db_grounded(tmp_path):
+    """A method grounded with a statistical method + transitive assumption."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P,
+                     bioconda_pkg="deseq2", biotools_id="deseq2"),
+        NodeRecord("sm:wald", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("assum:normality", "asymptotic normality", NodeKind.ASSUMPTION, {}, P),
+    ]
+    edges = [
+        EdgeRecord("m:deseq2", "sm:wald", EdgeKind.USES_STATISTICAL_METHOD,
+                   {"evidence": "doi:10.1/x"}, P),
+        EdgeRecord("sm:wald", "assum:normality", EdgeKind.REQUIRES_ASSUMPTION,
+                   {"evidence": "doi:10.1/y"}, P),
+    ]
+    path = tmp_path / "g.kuzu"
+    build_graph(nodes, edges, path, staging_dir=tmp_path / "stg")
+    return path
+
+
+def test_resolve_method_ids_returns_matching_ids(db_path):
+    with KuzuMethodsGraphProvider(db_path) as p:
+        assert p.resolve_method_ids(["salmon"]) == ["m:salmon"]
+        assert p.resolve_method_ids(["no_such_tool_xyz"]) == []
+
+
+def test_neighborhood_returns_stats_and_assumptions(db_grounded):
+    with KuzuMethodsGraphProvider(db_grounded) as p:
+        nb = p.neighborhood("m:deseq2")
+        # shape the quration methods-eval lane reads: name + evidence / name + via
+        sm = nb["statistical_methods"]
+        assert any(s["name"] == "Wald test" and s["evidence"] == "doi:10.1/x" for s in sm)
+        a = nb["assumptions"]
+        match = next(x for x in a if x["name"] == "asymptotic normality")
+        assert match["via"] and match["via"][0]["statistical_method"] == "Wald test"
+
+
+def test_neighborhood_unknown_method_raises_keyerror(db_path):
+    with KuzuMethodsGraphProvider(db_path) as p:
+        with pytest.raises(KeyError):
+            p.neighborhood("m:does_not_exist")
