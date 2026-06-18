@@ -44,6 +44,8 @@ class IngestSpec:
     snapshot_dir: str               # shared-source snapshot dir (rel to base_dir, or absolute)
     sources: dict[str, str | None]  # declared shared sources: key -> path override (None = default)
     pipelines: tuple[PipelineSpec, ...]
+    wiring: bool = True             # False = skip per-pipeline DAG + io_inferred wiring
+                                    # (catalog imports: pure registry, no O(modules^2) noise)
 
 
 def load_manifest(path: Path | str) -> IngestSpec:
@@ -91,6 +93,7 @@ def load_manifest(path: Path | str) -> IngestSpec:
         snapshot_dir=snapshot_dir,
         sources=sources,
         pipelines=tuple(pipelines),
+        wiring=bool(raw.get("wiring", True)),
     )
 
 

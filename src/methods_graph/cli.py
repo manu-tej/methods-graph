@@ -547,12 +547,21 @@ def cmd_ingest(
     # 2. Fetch each declared pipeline (clone@revision + ground-truth DAG, NXF pinned).
     dest.mkdir(parents=True, exist_ok=True)
     pipeline_manifests: list[dict] = []
+    fetch_failures: list[str] = []
     for p in spec.pipelines:
-        pm = fetch_nfcore_pipeline(p.name, dest, revision=p.revision, nxf_ver=p.nxf_ver,
-                                   fetched_at=ingested_at, runner=runner)
+        try:
+            pm = fetch_nfcore_pipeline(p.name, dest, revision=p.revision, nxf_ver=p.nxf_ver,
+                                       with_dag=spec.wiring, fetched_at=ingested_at, runner=runner)
+        except Exception as exc:  # noqa: BLE001 — a bad/transient clone must not abort a catalog ingest
+            fetch_failures.append(f"{p.name}@{p.revision}")
+            _log.warning("ingest: skipping %s@%s (fetch failed: %s)", p.name, p.revision, exc)
+            continue
         pipeline_manifests.append(pm)
         _log.info("ingest: fetched %s@%s commit=%s dag=%s",
                   p.name, p.revision, (pm["commit"] or "")[:12], pm["dag"])
+    if fetch_failures:
+        _log.warning("ingest: %d pipeline(s) failed to fetch and were skipped: %s",
+                     len(fetch_failures), fetch_failures)
 
     pipelines_root = dest / "pipelines"
     have_pipelines = bool(spec.pipelines)
@@ -569,6 +578,7 @@ def cmd_ingest(
         db_path=db_path,
         staging_dir=staging_dir,
         ingested_at=ingested_at,
+        no_wiring=not spec.wiring,
     )
 
     # 4. Audit gate.
@@ -594,7 +604,9 @@ def cmd_ingest(
         "ingested_at": ingested_at,
         "manifest": str(Path(manifest_path)),
         "db": str(db_path),
+        "wiring": spec.wiring,
         "pipelines": pipeline_manifests,
+        "fetch_failures": fetch_failures,
         "sources": {k: {"path": str(v), "digest": _digest(v)} for k, v in sources.items()},
         "audit": {
             "ok": audit.ok,
@@ -610,8 +622,10 @@ def cmd_ingest(
         failing = [i.name for i in audit.invariants if not i.ok]
         raise RuntimeError(f"ingest: audit FAILED {failing}; lock written to {lock_path}")
 
+    skipped_note = f" ({len(fetch_failures)} fetch-skipped)" if fetch_failures else ""
     print(
-        f"Ingested {len(spec.pipelines)} pipeline(s): {audit.node_count} nodes, "
+        f"Ingested {len(pipeline_manifests)}/{len(spec.pipelines)} pipeline(s){skipped_note}: "
+        f"{audit.node_count} nodes, "
         f"audit OK ({lock['audit']['invariants_passed']}/{lock['audit']['invariants_total']}) "
         f"-> {db_path}  (lock: {lock_path})"
     )

@@ -457,6 +457,7 @@ def fetch_nfcore_pipeline(
     revision: str,
     fetched_at: str,
     nxf_ver: str | None = None,
+    with_dag: bool = True,
     runner: Callable[..., Any] = subprocess.run,
 ) -> dict[str, Any]:
     """Shallow-clone nf-core/<name> at *revision* into <dest>/pipelines/<name>.
@@ -479,8 +480,12 @@ def fetch_nfcore_pipeline(
     # build to parse (derivation="nextflow_dsl2").  Best-effort: stubs missing
     # includes + falls back to the legacy parser; if Nextflow is absent or every
     # attempt fails, the build falls back to Option-2 I/O-overlap.
-    dag_ok = _generate_pipeline_dag(clone_dir, dest_dir / "_preview" / name, name,
-                                    runner, nxf_ver=nxf_ver)
+    # `with_dag=False` (bulk catalog import): skip the Nextflow preview entirely —
+    # running it across the whole nf-core catalog is infeasible, and the registry +
+    # execution-spec layers don't need the DAG.
+    dag_ok = (with_dag and
+              _generate_pipeline_dag(clone_dir, dest_dir / "_preview" / name, name,
+                                     runner, nxf_ver=nxf_ver))
     return {
         "repo": repo,
         "commit": result.stdout.strip(),

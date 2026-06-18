@@ -35,6 +35,31 @@ def test_load_manifest_parses_sources_and_pipelines(tmp_path):
     )
 
 
+def test_load_manifest_wiring_default_true_and_explicit_false(tmp_path):
+    m = _write(tmp_path / "i.yaml", "snapshot_dir: s\nsources: {}\npipelines: []\n")
+    assert load_manifest(m).wiring is True
+    m2 = _write(tmp_path / "i2.yaml",
+                "snapshot_dir: s\nwiring: false\nsources: {}\npipelines: []\n")
+    assert load_manifest(m2).wiring is False
+
+
+def test_fetch_pipeline_with_dag_false_skips_nextflow(tmp_path):
+    """Catalog import (with_dag=False): clone + rev-parse only, NO nextflow, dag=None."""
+    from methods_graph.fetch import fetch_nfcore_pipeline
+    calls = []
+
+    def runner(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:2] == ["git", "clone"]:
+            Path(cmd[-1]).mkdir(parents=True, exist_ok=True)
+        return _R("abc123\n" if "rev-parse" in cmd else "")
+
+    pm = fetch_nfcore_pipeline("x", tmp_path, revision="1.0.0", fetched_at="2026-06-18",
+                               with_dag=False, runner=runner)
+    assert pm["dag"] is None
+    assert not any(c and c[0] == "nextflow" for c in calls)
+
+
 def test_load_manifest_rejects_unknown_source_key(tmp_path):
     m = _write(tmp_path / "i.yaml",
                "snapshot_dir: s\nsources:\n  bogus: x\npipelines: []\n")
