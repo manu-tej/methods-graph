@@ -419,6 +419,25 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
         bad = _bad_evidence_count(edge_kind, prefixes)
         invariants.append(Invariant(name=label, violations=bad, ok=(bad == 0)))
 
+    # ExecutionSpec content — the runnable recipe MUST carry a (docker) container; a
+    # spec with no image is not runnable.  Container lives in the node's JSON
+    # properties, so this is computed in Python like the grounding checks above.
+    def _execspec_without_container() -> int:
+        rows = _qall("MATCH (n:Entity {kind:'ExecutionSpec'}) RETURN n.properties")
+        n = 0
+        for row in rows:
+            try:
+                props = json.loads(row[0] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                props = {}
+            if not str(props.get("container", "") or "").strip():
+                n += 1
+        return n
+
+    _no_ctr = _execspec_without_container()
+    invariants.append(Invariant(name="ExecutionSpec: has a container",
+                                violations=_no_ctr, ok=(_no_ctr == 0)))
+
     # DOWNSTREAM_OF attestation consistency — JSON properties, so computed in
     # Python (Cypher can't introspect the blob).  attestations must equal the
     # length of a non-empty, sorted, deduped pipelines list.

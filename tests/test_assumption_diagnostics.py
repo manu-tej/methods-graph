@@ -42,6 +42,13 @@ def test_missing_ref_raises():
         load_assumption_diagnostics(spec=spec)
 
 
+def test_scalar_checks_raises_clear_list_error():
+    spec = {"diagnostics": {"x": {"name": "X", "kind": "test",
+            "checks": "normality", "ref": "doi:1"}}}
+    with pytest.raises(ValueError, match="must be a list"):
+        load_assumption_diagnostics(spec=spec)
+
+
 # --- grounded builder ---
 
 _DEF = DiagnosticDef(diag_id="diag:shapiro_wilk", name="Shapiro–Wilk", kind="test",

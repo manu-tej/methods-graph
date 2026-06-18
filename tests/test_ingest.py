@@ -1,6 +1,7 @@
 """Tests for the declarative, reproducible ingestion manifest + resolver."""
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -194,3 +195,78 @@ def test_cmd_ingest_fails_fast_on_missing_source(tmp_path):
                    ingested_at="2026-06-16", runner=runner)
     assert calls == []                       # nothing fetched
     assert not (tmp_path / "m.kuzu").exists()  # nothing built
+
+
+def _query_one(db_path, cypher):
+    import kuzu
+    c = kuzu.Connection(kuzu.Database(str(db_path), read_only=True))
+    r = c.execute(cypher)
+    return r.get_next()[0] if r.has_next() else 0
+
+
+def test_cmd_ingest_wiring_false_skips_dag_and_downstream(tmp_path):
+    # the PRODUCTION catalog path: wiring:false -> no Nextflow DAG, no DOWNSTREAM_OF,
+    # but HAS_MODULE still present and the audit still gates.
+    snap = tmp_path / "snap"; snap.mkdir()
+    shutil.copy(_FX / "edam_sample.tsv", snap / "EDAM.tsv")
+    manifest = tmp_path / "ingest.yaml"
+    manifest.write_text("snapshot_dir: snap\nwiring: false\n"
+                        "sources:\n  edam: EDAM.tsv\n"
+                        "pipelines:\n  - {name: mini, revision: '1.0.0'}\n")
+    dest = tmp_path / "work"
+    calls = []
+    base = _ingest_runner()
+
+    def runner(cmd, **kw):
+        calls.append(cmd)
+        return base(cmd, **kw)
+
+    lock = cmd_ingest(manifest_path=manifest, dest=dest, db_path=tmp_path / "m.kuzu",
+                      staging_dir=tmp_path / "stg", ingested_at="2026-06-18", runner=runner)
+    assert lock["wiring"] is False
+    assert lock["audit"]["ok"] is True
+    assert lock["pipelines"][0]["dag"] is None              # no DAG generated
+    assert not any(c and c[0] == "nextflow" for c in calls)  # nextflow never invoked
+    assert _query_one(tmp_path / "m.kuzu", "MATCH ()-[r:Rel{kind:'HAS_MODULE'}]->() RETURN count(*)") > 0
+    assert _query_one(tmp_path / "m.kuzu", "MATCH ()-[r:Rel{kind:'DOWNSTREAM_OF'}]->() RETURN count(*)") == 0
+
+
+def _tolerant_runner(bad: str):
+    """Like _ingest_runner but raises a clone failure for pipeline named *bad*."""
+    base = _ingest_runner()
+
+    def runner(cmd, **kw):
+        if cmd[:2] == ["git", "clone"] and any(f"/{bad}.git" in str(x) for x in cmd):
+            raise subprocess.CalledProcessError(128, cmd)
+        return base(cmd, **kw)
+    return runner
+
+
+def test_cmd_ingest_fetch_tolerance_skips_bad_keeps_good(tmp_path):
+    snap = tmp_path / "snap"; snap.mkdir()
+    shutil.copy(_FX / "edam_sample.tsv", snap / "EDAM.tsv")
+    manifest = tmp_path / "ingest.yaml"
+    manifest.write_text("snapshot_dir: snap\nwiring: false\n"
+                        "sources:\n  edam: EDAM.tsv\n"
+                        "pipelines:\n  - {name: mini, revision: '1.0.0'}\n"
+                        "  - {name: bad, revision: '9.9.9'}\n")
+    lock = cmd_ingest(manifest_path=manifest, dest=tmp_path / "work",
+                      db_path=tmp_path / "m.kuzu", staging_dir=tmp_path / "stg",
+                      ingested_at="2026-06-18", runner=_tolerant_runner("bad"))
+    assert lock["fetch_failures"] == ["bad@9.9.9"]          # bad skipped + recorded
+    assert [p["repo"].split("/")[-1] for p in lock["pipelines"]] == ["mini.git"]  # good survived
+    assert lock["audit"]["ok"] is True
+    assert lock["audit"]["pipeline_nodes"] >= 1
+
+
+def test_cmd_ingest_raises_when_all_pipelines_fail_to_fetch(tmp_path):
+    snap = tmp_path / "snap"; snap.mkdir()
+    shutil.copy(_FX / "edam_sample.tsv", snap / "EDAM.tsv")
+    manifest = tmp_path / "ingest.yaml"
+    manifest.write_text("snapshot_dir: snap\nwiring: false\n"
+                        "sources:\n  edam: EDAM.tsv\n"
+                        "pipelines:\n  - {name: bad, revision: '9.9.9'}\n")
+    with pytest.raises(RuntimeError, match="failed to fetch"):
+        cmd_ingest(manifest_path=manifest, dest=tmp_path / "work",
+                   db_path=tmp_path / "m.kuzu", staging_dir=tmp_path / "stg",
+                   ingested_at="2026-06-18", runner=_tolerant_runner("bad"))

@@ -88,7 +88,10 @@ def load_assumption_diagnostics(
         entry = entry or {}
         if not isinstance(entry, dict):
             raise ValueError(f"assumption_diagnostics: entry {slug!r} must be a mapping")
-        checks = tuple(_assum_id(c) for c in (entry.get("checks") or []))
+        raw_checks = entry.get("checks")
+        if raw_checks is not None and not isinstance(raw_checks, list):
+            raise ValueError(f"assumption_diagnostics: {slug!r} 'checks' must be a list")
+        checks = tuple(_assum_id(c) for c in (raw_checks or []))
         if not checks:
             raise ValueError(f"assumption_diagnostics: {slug!r} declares no 'checks'")
         ref = str(entry.get("ref", "") or "").strip()

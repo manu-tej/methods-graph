@@ -552,7 +552,9 @@ def cmd_ingest(
         try:
             pm = fetch_nfcore_pipeline(p.name, dest, revision=p.revision, nxf_ver=p.nxf_ver,
                                        with_dag=spec.wiring, fetched_at=ingested_at, runner=runner)
-        except Exception as exc:  # noqa: BLE001 — a bad/transient clone must not abort a catalog ingest
+        except (subprocess.CalledProcessError, OSError) as exc:
+            # A bad/transient clone must not abort a catalog ingest — but only swallow
+            # clone-shaped failures; a genuine bug (KeyError, etc.) propagates.
             fetch_failures.append(f"{p.name}@{p.revision}")
             _log.warning("ingest: skipping %s@%s (fetch failed: %s)", p.name, p.revision, exc)
             continue
@@ -562,6 +564,12 @@ def cmd_ingest(
     if fetch_failures:
         _log.warning("ingest: %d pipeline(s) failed to fetch and were skipped: %s",
                      len(fetch_failures), fetch_failures)
+    # A total fetch outage must NOT silently build an (ontology-only) graph that then
+    # passes the audit gate and writes a lock claiming success.
+    if spec.pipelines and not pipeline_manifests:
+        raise RuntimeError(
+            f"ingest: all {len(spec.pipelines)} declared pipeline(s) failed to fetch "
+            f"({fetch_failures}); refusing to build a pipeline-empty graph")
 
     pipelines_root = dest / "pipelines"
     have_pipelines = bool(spec.pipelines)
@@ -583,10 +591,13 @@ def cmd_ingest(
 
     # 4. Audit gate.
     db = conn = None
+    n_pipeline_nodes = 0
     try:
         db = kuzu.Database(str(db_path), read_only=True)
         conn = kuzu.Connection(db)
         audit = audit_graph(conn)
+        _pn = conn.execute("MATCH (p:Entity {kind:'Pipeline'}) RETURN count(*)")
+        n_pipeline_nodes = _pn.get_next()[0] if _pn.has_next() else 0
     finally:
         if conn is not None:
             conn.close()
@@ -611,6 +622,7 @@ def cmd_ingest(
         "audit": {
             "ok": audit.ok,
             "node_count": audit.node_count,
+            "pipeline_nodes": n_pipeline_nodes,
             "invariants_total": len(audit.invariants),
             "invariants_passed": sum(1 for i in audit.invariants if i.ok),
         },
@@ -621,6 +633,13 @@ def cmd_ingest(
     if not audit.ok:
         failing = [i.name for i in audit.invariants if not i.ok]
         raise RuntimeError(f"ingest: audit FAILED {failing}; lock written to {lock_path}")
+    # Floor: we fetched pipelines but the build produced zero Pipeline nodes -> the build
+    # silently dropped them (e.g. a connector regression). The audit's count==0 invariants
+    # are vacuously satisfied, so guard it explicitly.
+    if pipeline_manifests and n_pipeline_nodes == 0:
+        raise RuntimeError(
+            f"ingest: fetched {len(pipeline_manifests)} pipeline(s) but built graph has 0 "
+            f"Pipeline nodes — the build dropped them; lock written to {lock_path}")
 
     skipped_note = f" ({len(fetch_failures)} fetch-skipped)" if fetch_failures else ""
     print(

@@ -29,6 +29,9 @@ _QUOTED = re.compile(r"'([^']+)'")
 _TEMPLATE = re.compile(r"\btemplate\s+'([^']+)'")
 _SCRIPT = re.compile(r"\bscript\s*:")
 _HEREDOC = re.compile(r'"""')
+# inline script body: the first heredoc (""" or ''') after `script:`
+_SCRIPT_BODY = re.compile(r'\bscript\s*:.*?"""(.*?)"""', re.DOTALL)
+_SCRIPT_BODY_SQ = re.compile(r"\bscript\s*:.*?'''(.*?)'''", re.DOTALL)
 _INPUT_BLOCK = re.compile(
     r"\binput\s*:(.*?)(?:\boutput\s*:|\bwhen\s*:|\bscript\s*:|\bexec\s*:|\bshell\s*:|$)", re.DOTALL)
 _OUTPUT_BLOCK = re.compile(
@@ -37,31 +40,36 @@ _IO_NAME = re.compile(r"(?:path|val)\(\s*(\w+)")
 _EMIT = re.compile(r"emit:\s*(\w+)")
 
 
-def _is_singularity(img: str) -> bool:
-    return "singularity" in img or "depot.galaxyproject" in img
+def _image_like(s: str) -> bool:
+    """A real container ref has a registry path or URL (contains '/').  This excludes
+    the ternary CONDITION tokens ('singularity', 'apptainer', 'true', …) that share the
+    quotes but are not images."""
+    return "/" in s
 
 
 def parse_container(text: str) -> dict | None:
     """Return {'docker': str|None, 'singularity': str|None} or None if no directive.
 
-    Handles the nf-core singularity/docker ternary inside a double-quoted ``${...}``
-    block, and the plain single-image (single- or double-quoted) form.
+    Handles the nf-core singularity/docker ternary (``container "${ <cond> ? '<sing>' :
+    '<docker>' }"``) and the plain single-image form.  Classification is by the image
+    string itself, NOT by the ternary condition: the singularity image is the one served
+    over ``http(s)`` (a download URL — galaxyproject ``depot`` *or* the Seqera-community
+    ``...seqera.io/.../data`` blob), the docker image is the bare registry path.  The
+    old code matched the substring "singularity", which captured the literal condition
+    token and dropped the real Seqera blob URL.
     """
     m = _CONTAINER_DQ.search(text)
     if m:
-        imgs = _QUOTED.findall(m.group(1))
+        body = m.group(1)
+        imgs = [q for q in _QUOTED.findall(body) if _image_like(q)]
         if imgs:
-            docker = singularity = None
-            for img in imgs:
-                if _is_singularity(img):
-                    singularity = img
-                else:
-                    docker = img
+            singularity = next((q for q in imgs if q.startswith("http")), None)
+            docker = next((q for q in imgs if not q.startswith("http")), None)
             if docker is None and singularity is None:
                 docker = imgs[-1]
             return {"docker": docker, "singularity": singularity}
-        val = m.group(1).strip()
-        if val and "$" not in val:                 # double-quoted plain image
+        val = body.strip()
+        if val and "$" not in val:                 # double-quoted plain image, no ${}
             return {"docker": val, "singularity": None}
     m = _CONTAINER_SQ.search(text)
     if m and m.group(1).strip():
@@ -70,10 +78,18 @@ def parse_container(text: str) -> dict | None:
 
 
 def parse_command(text: str) -> dict:
-    """Return {'kind': 'template'|'script'|'unknown', 'ref': <template file>|None}."""
+    """Return {'kind': 'template'|'script'|'unknown', 'ref': <template file or script body>|None}.
+
+    For ``template '<file>'`` modules, ref is the template filename.  For inline
+    ``script:`` modules, ref is the heredoc command body (the actual recipe), so the
+    spec is runnable rather than a bare {kind:script, ref:null} stub.
+    """
     t = _TEMPLATE.search(text)
     if t:
         return {"kind": "template", "ref": t.group(1)}
+    body = _SCRIPT_BODY.search(text) or _SCRIPT_BODY_SQ.search(text)
+    if body:
+        return {"kind": "script", "ref": body.group(1).strip() or None}
     if _SCRIPT.search(text) or _HEREDOC.search(text):
         return {"kind": "script", "ref": None}
     return {"kind": "unknown", "ref": None}
@@ -161,13 +177,15 @@ def build_execution_records(
 
     Grounded: a recipe is emitted only when its ``mod:<name>`` node already exists
     in *existing_node_ids* (skips are recorded).  Deterministic: modules visited in
-    sorted path order; the first occurrence of a shared module wins.
+    sorted path order; the first occurrence of a shared module supplies the primary
+    recipe.  A module vendored at DIFFERENT containers across pipelines (e.g. multiqc
+    pinned per-pipeline) records every distinct image in ``container_variants`` so a
+    version is never silently dropped.
     """
     prov = Provenance("nfcore_execution", "", ingested_at)
     report = ExecutionReport()
     nodes: list[NodeRecord] = []
     edges: list[EdgeRecord] = []
-    seen: set[str] = set()
 
     mod_dirs: list[Path] = []
     for root in pipeline_roots:
@@ -175,19 +193,30 @@ def build_execution_records(
             if "modules/nf-core" in main_nf.as_posix():
                 mod_dirs.append(main_nf.parent)
 
+    # Pass 1: collect the primary (first path-sorted) spec per module + every distinct
+    # container it is vendored with across pipelines.
+    primary: dict[str, dict] = {}
+    variants: dict[str, list[str]] = {}
     for mod_dir in sorted(set(mod_dirs), key=lambda p: p.as_posix()):
         spec = extract_module_execution(mod_dir)
         if spec is None:
             continue
         mod_id = f"mod:{spec['module']}"
-        if mod_id in seen:
-            continue
-        seen.add(mod_id)
+        primary.setdefault(mod_id, spec)
+        c = spec.get("container")
+        if c and c not in variants.setdefault(mod_id, []):
+            variants[mod_id].append(c)
+
+    # Pass 2: emit grounded ExecutionSpec + RUNS_AS.
+    for mod_id in sorted(primary):
         if mod_id not in existing_node_ids:
             report.skipped.append((mod_id, "module_missing"))
             continue
+        spec = primary[mod_id]
         exec_id = f"exec:{spec['module']}"
         props = {k: v for k, v in spec.items() if k != "module"}
+        if len(variants.get(mod_id, [])) > 1:
+            props["container_variants"] = variants[mod_id]
         nodes.append(NodeRecord(exec_id, spec["module"], NodeKind.EXECUTION_SPEC, props, prov))
         edges.append(EdgeRecord(mod_id, exec_id, EdgeKind.RUNS_AS, {"basis": "nfcore_main_nf"}, prov))
         report.specs += 1

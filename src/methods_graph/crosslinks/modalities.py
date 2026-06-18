@@ -76,6 +76,8 @@ def load_modalities(
         raise ValueError("modalities: 'pipelines' must be a mapping")
     pipe_map: dict[str, tuple[str, ...]] = {}
     for name, mods in raw_pipes.items():
+        if mods is not None and not isinstance(mods, list):
+            raise ValueError(f"modalities: pipeline {name!r} modalities must be a list")
         keys = []
         for k in (mods or []):
             if k not in catalog:

@@ -40,6 +40,13 @@ def test_unknown_data_type_key_raises():
         load_data_types(spec=spec)
 
 
+def test_scalar_io_value_raises_clear_list_error():
+    spec = {"data_types": {"count_matrix": {"edam": "data_3917"}},
+            "tool_io": {"m:deseq2": {"produces": "count_matrix"}}}
+    with pytest.raises(ValueError, match="must be a list"):
+        load_data_types(spec=spec)
+
+
 # --- builder: produces -> OUTPUT, consumes -> INPUT ---
 
 

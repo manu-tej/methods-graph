@@ -89,6 +89,8 @@ def load_data_types(
         catalog[str(key)] = _dataid(entry["edam"])
 
     def _resolve(keys, method, direction):
+        if keys is not None and not isinstance(keys, list):
+            raise ValueError(f"data_types: {method} {direction} must be a list")
         out = []
         for k in keys or []:
             if k not in catalog:

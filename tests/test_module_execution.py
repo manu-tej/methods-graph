@@ -45,6 +45,20 @@ _INLINE_MAIN = '''process FASTQC {
 }
 '''
 
+# Modern nf-core / Seqera-community form: the ternary CONDITION contains the literal
+# tokens 'singularity'/'apptainer', and the real singularity image is an https blob URL
+# that contains neither "singularity" nor "depot.galaxyproject".
+_SEQERA_MAIN = '''process MULTIQC {
+    container "${workflow.containerEngine in ['singularity', 'apptainer'] && !task.ext.singularity_pull_docker_container
+        ? 'https://community-cr-prod.seqera.io/docker/registry/v2/blobs/sha256/1b/1bef8af6/data'
+        : 'community.wave.seqera.io/library/multiqc:1.34--db7c73dae76bc9e6'}"
+    script:
+    """
+    multiqc .
+    """
+}
+'''
+
 
 # --- pure parsers ---
 
@@ -60,6 +74,15 @@ def test_parse_container_single_image():
     assert c["docker"] == "biocontainers/fastqc:0.12.1--hdfd78af_0"
 
 
+def test_parse_container_seqera_form_classifies_by_url_not_condition_token():
+    # regression: the literal 'singularity'/'apptainer' condition tokens must NOT
+    # be taken as images, and the real https blob must be the singularity image.
+    c = parse_container(_SEQERA_MAIN)
+    assert c["docker"] == "community.wave.seqera.io/library/multiqc:1.34--db7c73dae76bc9e6"
+    assert c["singularity"].startswith("https://community-cr-prod.seqera.io")
+    assert c["singularity"] not in ("singularity", "apptainer")
+
+
 def test_parse_container_none_when_absent():
     assert parse_container("process X { script: 'echo hi' }") is None
 
@@ -68,8 +91,10 @@ def test_parse_command_template():
     assert parse_command(_DESEQ2_MAIN) == {"kind": "template", "ref": "deseq_de.R"}
 
 
-def test_parse_command_inline_script():
-    assert parse_command(_INLINE_MAIN) == {"kind": "script", "ref": None}
+def test_parse_command_inline_script_captures_body():
+    cmd = parse_command(_INLINE_MAIN)
+    assert cmd["kind"] == "script"
+    assert "fastqc $reads" in cmd["ref"]
 
 
 def test_parse_io_inputs_and_output_emits():
@@ -134,3 +159,25 @@ def test_build_skips_when_module_node_absent(tmp_path):
     nodes, edges, rep = build_execution_records([root], set(), ingested_at="2026-06-17")
     assert nodes == [] and edges == []
     assert ("mod:deseq2_differential", "module_missing") in rep.skipped
+
+
+def _write_multiqc(root: Path, container: str) -> Path:
+    d = root / "modules" / "nf-core" / "multiqc"
+    d.mkdir(parents=True)
+    (d / "main.nf").write_text(
+        f"process MULTIQC {{\n    container '{container}'\n    script:\n    \"\"\"\n    multiqc .\n    \"\"\"\n}}\n")
+    (d / "meta.yml").write_text("name: multiqc\n")
+    return root
+
+
+def test_build_captures_container_variants_across_pipelines(tmp_path):
+    # a module vendored at DIFFERENT versions across pipelines must not silently
+    # drop the other versions — they are recorded as container_variants.
+    r1 = _write_multiqc(tmp_path / "pa", "biocontainers/multiqc:1.34--db7c73d")
+    r2 = _write_multiqc(tmp_path / "pb", "biocontainers/multiqc:1.23--abc1234")
+    nodes, edges, rep = build_execution_records(
+        [r1, r2], {"mod:multiqc"}, ingested_at="2026-06-18")
+    assert len(nodes) == 1 and len(edges) == 1          # one exec node for the shared module
+    variants = nodes[0].properties.get("container_variants")
+    assert set(variants) == {
+        "biocontainers/multiqc:1.34--db7c73d", "biocontainers/multiqc:1.23--abc1234"}

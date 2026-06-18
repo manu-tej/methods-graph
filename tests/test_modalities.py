@@ -32,6 +32,14 @@ def test_unknown_modality_key_raises():
         load_modalities(spec=spec)
 
 
+def test_scalar_modality_value_raises_clear_list_error():
+    # hand-edit footgun: `rnaseq: bulk_rnaseq` (scalar) instead of `[bulk_rnaseq]`
+    spec = {"modalities": {"bulk_rnaseq": {"name": "Bulk RNA-seq"}},
+            "pipelines": {"rnaseq": "bulk_rnaseq"}}
+    with pytest.raises(ValueError, match="must be a list"):
+        load_modalities(spec=spec)
+
+
 # --- grounded builder ---
 
 _SPEC = {

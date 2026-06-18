@@ -909,3 +909,63 @@ def test_audit_catches_pipeline_without_modules(tmp_path):
     inv = next(i for i in result.invariants if "has >=1 HAS_MODULE" in i.name)
     assert inv.ok is False
     assert result.ok is False
+
+
+# ---------------------------------------------------------------------------
+# New-layer invariants (session: RUNS_AS, HAS_MODALITY, CHECKED_BY, ExecutionSpec)
+# ---------------------------------------------------------------------------
+
+def _inv(result, substr):
+    return next(i for i in result.invariants if substr in i.name)
+
+
+def test_audit_runs_as_wrong_endpoint_is_violation(tmp_path):
+    nodes = [NodeRecord("mod:x", "x", NodeKind.MODULE, {}, P),
+             NodeRecord("op:operation_1", "o", NodeKind.OPERATION, {}, P)]  # not ExecutionSpec
+    edges = [EdgeRecord("mod:x", "op:operation_1", EdgeKind.RUNS_AS, {"basis": "x"}, P)]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close(); db.close()
+    inv = _inv(result, "RUNS_AS:")
+    assert not inv.ok and inv.violations >= 1
+
+
+def test_audit_has_modality_wrong_endpoint_is_violation(tmp_path):
+    nodes = [NodeRecord("pipe:x", "x", NodeKind.PIPELINE, {}, P),
+             NodeRecord("op:operation_1", "o", NodeKind.OPERATION, {}, P)]  # not Modality
+    edges = [EdgeRecord("pipe:x", "op:operation_1", EdgeKind.HAS_MODALITY, {"basis": "x"}, P)]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close(); db.close()
+    inv = _inv(result, "HAS_MODALITY:")
+    assert not inv.ok and inv.violations >= 1
+
+
+def test_audit_checked_by_wrong_endpoint_is_violation(tmp_path):
+    nodes = [NodeRecord("assum:x", "x", NodeKind.ASSUMPTION, {}, P),
+             NodeRecord("op:operation_1", "o", NodeKind.OPERATION, {}, P)]  # not Diagnostic
+    edges = [EdgeRecord("assum:x", "op:operation_1", EdgeKind.CHECKED_BY,
+                        {"evidence": "doi:10.1/x"}, P)]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close(); db.close()
+    inv = _inv(result, "CHECKED_BY: Assumption")
+    assert not inv.ok and inv.violations >= 1
+
+
+def test_audit_execution_spec_without_container_is_violation(tmp_path):
+    nodes = [NodeRecord("exec:x", "x", NodeKind.EXECUTION_SPEC,
+                        {"command": {"kind": "script"}}, P)]  # no container
+    db, conn = _open_conn(_make_db(tmp_path, nodes, []))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close(); db.close()
+    inv = _inv(result, "ExecutionSpec: has a container")
+    assert not inv.ok and inv.violations >= 1
