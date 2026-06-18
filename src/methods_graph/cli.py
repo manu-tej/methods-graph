@@ -294,6 +294,29 @@ def cmd_build(
         _log.info("data-handoffs: added %d Method->Data I/O edges (semantic composition)",
                   dio_edges_added)
 
+    # --- execution specs (post-resolve, pre-load) ---
+    # Extract each vendored module's runnable recipe (pinned container + command +
+    # typed I/O) from its own main.nf / environment.yml, and attach it as an
+    # ExecutionSpec node via RUNS_AS.  Also the authoritative container source
+    # (the module's `container:` directive), which the BioContainers snapshot misses.
+    exec_nodes_added = 0
+    if nfcore_pipelines is not None:
+        from methods_graph.connectors.module_execution import build_execution_records
+
+        node_ids = {n.id for n in resolved_nodes}
+        ex_nodes, ex_edges, ex_report = build_execution_records(
+            [Path(nfcore_pipelines)], node_ids, ingested_at=ingested_at)
+        resolved_nodes = list(resolved_nodes) + ex_nodes
+        ex_existing = {(e.from_id, e.to_id, e.kind.value) for e in resolved_edges}
+        new_ex = [e for e in ex_edges if (e.from_id, e.to_id, e.kind.value) not in ex_existing]
+        resolved_edges = list(resolved_edges) + new_ex
+        exec_nodes_added = len(ex_nodes)
+        if ex_report.skipped:
+            _log.info("execution: skipped %d module(s) with no resolved node: %s",
+                      len(ex_report.skipped), ex_report.skipped[:10])
+        if exec_nodes_added:
+            _log.info("execution: added %d ExecutionSpec nodes + RUNS_AS edges", exec_nodes_added)
+
     # --- curated Method→StatisticalMethod cross-links (post-resolve, pre-load) ---
     # Only runs when StatisticalMethod nodes are present (i.e. STATO/OBI loaded);
     # otherwise the targets cannot exist and the step is a no-op.  The builder
@@ -413,11 +436,12 @@ def cmd_build(
         if (mo_edges_added or mo_removed) else ""
     )
     dio_suffix = f", {dio_edges_added} data-typed I/O edges" if dio_edges_added else ""
+    exec_suffix = f", {exec_nodes_added} execution specs" if exec_nodes_added else ""
 
     print(
         f"Built graph: {n_methods} methods, {summary['nodes']} nodes, "
         f"{summary['edges_loaded']} edges loaded "
-        f"({summary['edges_dropped']} dangling dropped){pipe_suffix}{bt_suffix}{onto_suffix}{xl_suffix}{mo_suffix}{dio_suffix} -> {db_path}"
+        f"({summary['edges_dropped']} dangling dropped){pipe_suffix}{bt_suffix}{onto_suffix}{xl_suffix}{mo_suffix}{dio_suffix}{exec_suffix} -> {db_path}"
     )
 
 

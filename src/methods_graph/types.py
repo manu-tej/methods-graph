@@ -27,6 +27,9 @@ class NodeKind(str, Enum):
     STUDY_DESIGN = "StudyDesign"
     MATERIAL = "Material"
     INSTRUMENT = "Instrument"
+    # Executable recipe for a module — pinned container + command + typed I/O,
+    # extracted from the module's main.nf / environment.yml (connectors/module_execution.py).
+    EXECUTION_SPEC = "ExecutionSpec"
 
 
 class EdgeKind(str, Enum):
@@ -60,6 +63,9 @@ class EdgeKind(str, Enum):
     # USES_STATISTICAL_METHOD (what a tool uses *internally*).  Same grounding +
     # typed-endpoint invariants apply.
     AMENABLE_TO = "AMENABLE_TO"
+    # Module→ExecutionSpec: the runnable recipe for a module (pinned container +
+    # command + typed I/O), emitted only when the Module node exists.
+    RUNS_AS = "RUNS_AS"
 
 
 @dataclass(frozen=True)
