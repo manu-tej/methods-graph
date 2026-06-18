@@ -351,6 +351,11 @@ def audit_graph(conn, *, snapshot_dir: Path | None = None) -> AuditResult:
             "WHERE NOT (a.kind='Pipeline' AND b.kind='Module') RETURN count(*)",
         ),
         (
+            "HAS_MODALITY: Pipeline→Modality",
+            "MATCH (a)-[r:Rel{kind:'HAS_MODALITY'}]->(b) "
+            "WHERE NOT (a.kind='Pipeline' AND b.kind='Modality') RETURN count(*)",
+        ),
+        (
             "DOWNSTREAM_OF: no self-loops",
             "MATCH (a)-[r:Rel{kind:'DOWNSTREAM_OF'}]->(b) "
             "WHERE a.id = b.id RETURN count(*)",

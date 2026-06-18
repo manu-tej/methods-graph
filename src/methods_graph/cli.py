@@ -432,6 +432,27 @@ def cmd_build(
         _log.info("diagnostics: minted %d Diagnostic nodes + %d CHECKED_BY edges",
                   diag_nodes_added, len(new_dg_edges))
 
+    # --- data modalities (post-resolve, pre-load) ---
+    # Curated pipeline -> modality map (bulk RNA-seq, microarray, …). Grounded — a
+    # Modality node is minted only when a present Pipeline references it.
+    modality_nodes_added = 0
+    from methods_graph.crosslinks.modalities import build_modality_records
+
+    md_nodes, md_edges, md_report = build_modality_records(resolved_nodes, ingested_at=ingested_at)
+    _md_ids = {n.id for n in resolved_nodes}
+    new_md_nodes = [n for n in md_nodes if n.id not in _md_ids]
+    resolved_nodes = list(resolved_nodes) + new_md_nodes
+    _md_existing = {(e.from_id, e.to_id, e.kind.value) for e in resolved_edges}
+    new_md_edges = [e for e in md_edges if (e.from_id, e.to_id, e.kind.value) not in _md_existing]
+    resolved_edges = list(resolved_edges) + new_md_edges
+    modality_nodes_added = len(new_md_nodes)
+    if md_report.skipped:
+        _log.info("modalities: skipped %d (pipeline not present): %s",
+                  len(md_report.skipped), md_report.skipped[:8])
+    if modality_nodes_added:
+        _log.info("modalities: minted %d Modality nodes + %d HAS_MODALITY edges",
+                  modality_nodes_added, len(new_md_edges))
+
     # --- load ---
     summary = build_graph(resolved_nodes, resolved_edges, db_path, staging_dir=staging_dir)
 
@@ -461,11 +482,12 @@ def cmd_build(
     dio_suffix = f", {dio_edges_added} data-typed I/O edges" if dio_edges_added else ""
     exec_suffix = f", {exec_nodes_added} execution specs" if exec_nodes_added else ""
     diag_suffix = f", {diag_nodes_added} diagnostics" if diag_nodes_added else ""
+    mod_suffix = f", {modality_nodes_added} modalities" if modality_nodes_added else ""
 
     print(
         f"Built graph: {n_methods} methods, {summary['nodes']} nodes, "
         f"{summary['edges_loaded']} edges loaded "
-        f"({summary['edges_dropped']} dangling dropped){pipe_suffix}{bt_suffix}{onto_suffix}{xl_suffix}{mo_suffix}{dio_suffix}{exec_suffix}{diag_suffix} -> {db_path}"
+        f"({summary['edges_dropped']} dangling dropped){pipe_suffix}{bt_suffix}{onto_suffix}{xl_suffix}{mo_suffix}{dio_suffix}{exec_suffix}{diag_suffix}{mod_suffix} -> {db_path}"
     )
 
 

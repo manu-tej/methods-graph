@@ -1,0 +1,22 @@
+# Curated data-modality vocabulary + pipeline -> modality map. Small and controlled
+# (NOT the EDAM topic firehose, which we deliberately removed). Tools/data inherit a
+# modality transitively from their pipeline. See modalities.py.
+#
+# `modalities` is the controlled vocab (extend as pipelines are added). `pipelines`
+# maps an nf-core pipeline name to the modality keys it operates on; a Modality node
+# is minted only when a present pipeline references it.
+
+modalities:
+  bulk_rnaseq:             {name: "Bulk RNA-seq", description: "Bulk short-read mRNA/total-RNA sequencing"}
+  scrnaseq:                {name: "Single-cell RNA-seq", description: "Droplet/plate single-cell transcriptomics"}
+  small_rnaseq:            {name: "Small RNA-seq", description: "miRNA / small non-coding RNA sequencing"}
+  spatial_transcriptomics: {name: "Spatial transcriptomics", description: "Spatially-resolved expression (e.g. Visium)"}
+  long_read_rnaseq:        {name: "Long-read RNA-seq", description: "Full-length isoform sequencing (PacBio/ONT)"}
+  microarray:              {name: "Microarray expression", description: "Hybridization-array expression intensities (e.g. Affymetrix)"}
+  proteomics:              {name: "Mass-spectrometry proteomics", description: "MS protein-group intensities (e.g. MaxQuant)"}
+
+pipelines:
+  rnaseq: [bulk_rnaseq]
+  # differentialabundance is modality-agnostic downstream DE: it consumes an
+  # expression matrix from bulk RNA-seq counts, microarray intensities, or proteomics.
+  differentialabundance: [bulk_rnaseq, microarray, proteomics]

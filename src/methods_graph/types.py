@@ -30,6 +30,10 @@ class NodeKind(str, Enum):
     # Executable recipe for a module — pinned container + command + typed I/O,
     # extracted from the module's main.nf / environment.yml (connectors/module_execution.py).
     EXECUTION_SPEC = "ExecutionSpec"
+    # Data modality (bulk RNA-seq, scRNA-seq, microarray, proteomics, …) — a small
+    # curated controlled vocab mapped to pipelines (crosslinks/modalities.py), NOT the
+    # EDAM topic firehose (deliberately removed).
+    MODALITY = "Modality"
 
 
 class EdgeKind(str, Enum):
@@ -72,6 +76,9 @@ class EdgeKind(str, Enum):
     # into "edge result is trustworthy".  Carries an evidence token; emitted only when
     # the Assumption node exists.
     CHECKED_BY = "CHECKED_BY"
+    # Pipeline→Modality: the data modality a pipeline operates on (curated map),
+    # emitted only when the Pipeline node exists.  Tools/data inherit it transitively.
+    HAS_MODALITY = "HAS_MODALITY"
 
 
 @dataclass(frozen=True)
