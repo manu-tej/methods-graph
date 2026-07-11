@@ -1,0 +1,215 @@
+# Curated assumption diagnostics: for each statistical assumption a method relies on,
+# the test / plot / procedure that checks whether the AVAILABLE DATA meets it. Mints
+# Diagnostic nodes + grounded `Assumption -CHECKED_BY-> Diagnostic` edges. This is what
+# turns "edge is evaluable" into "edge result is trustworthy". See assumption_diagnostics.py.
+#
+# `checks` are assumption slugs (the assum:<slug> nodes minted by the assumptions layer).
+# `ref` must be a grounded evidence token (doi:/pmid:/url:/isbn:); the audit enforces it.
+#
+# Machine-readable structured fields (optional; stored on the Diagnostic node so a
+# consumer can act on them WITHOUT parsing the prose `how`):
+#   checkable: pre_run | post_run
+#       pre_run  — evaluable from a dataset's metadata/design BEFORE running the tool
+#                  (e.g. counting replicates, inspecting the sample sheet for batch
+#                  confounds, checking the ranking metric for ties).
+#       post_run — needs the tool's output (fitted residuals, p-values, …) to evaluate.
+#   applies_to_assumption: <assum slug>   the single assumption a numeric threshold pertains to
+#   min_replicates_per_group: <int>       the replicate floor a pre-run gate enforces
+
+diagnostics:
+  shapiro_wilk:
+    name: "Shapiro–Wilk normality test"
+    kind: test
+    checks: [normality, asymptotic_normality]
+    checkable: post_run
+    how: "Formal test of residual normality (H0 = normal). Underpowered at very small n and over-sensitive at large n — read alongside a Q–Q plot."
+    ref: "doi:10.1093/biomet/52.3-4.591"
+  qq_plot:
+    name: "Normal Q–Q plot"
+    kind: plot
+    checks: [normality, asymptotic_normality]
+    checkable: post_run
+    how: "Residual quantiles vs theoretical normal quantiles; systematic departures (esp. in the tails) flag non-normality."
+    ref: "url:https://www.itl.nist.gov/div898/handbook/eda/section3/normprpl.htm"
+  sample_size_power_check:
+    name: "Effective sample-size / replicate adequacy check"
+    kind: procedure
+    checks: [asymptotic_normality, regularity_conditions]
+    checkable: pre_run
+    applies_to_assumption: asymptotic_normality
+    min_replicates_per_group: 3
+    how: "Asymptotic (large-sample) results need adequate n; for bulk RNA-seq DE, ~3 replicates/group is a practical floor and the Wald normal approximation is unreliable below it — prefer empirical-Bayes/exact methods at low n."
+    ref: "doi:10.1261/rna.053959.115"
+  levene_test:
+    name: "Levene / Brown–Forsythe equal-variance test"
+    kind: test
+    checks: [homoscedasticity]
+    checkable: post_run
+    how: "Tests equality of variance across groups (robust to non-normality in the Brown–Forsythe form)."
+    ref: "url:https://www.itl.nist.gov/div898/handbook/eda/section3/eda35a.htm"
+  residual_vs_fitted_plot:
+    name: "Residuals-vs-fitted plot"
+    kind: plot
+    checks: [homoscedasticity, linearity]
+    checkable: post_run
+    how: "A funnel/megaphone shape flags heteroscedasticity; systematic curvature flags a nonlinear mean structure."
+    ref: "url:https://www.itl.nist.gov/div898/handbook/pri/section2/pri24.htm"
+  dispersion_mean_plot:
+    name: "Dispersion–mean (plotDispEsts) plot"
+    kind: plot
+    checks: [correct_model_specification]
+    checkable: post_run
+    how: "Checks the fitted negative-binomial mean–dispersion trend + per-gene shrinkage; gene-wise estimates should scatter around a smooth decreasing trend, else the count model is mis-specified."
+    ref: "doi:10.1186/s13059-014-0550-8"
+  pvalue_histogram:
+    name: "P-value histogram (uniformity under the null)"
+    kind: plot
+    checks: [independence_or_prds, correct_model_specification]
+    checkable: post_run
+    how: "A well-behaved test gives a ~uniform histogram with a spike near 0; bumpy/non-uniform shapes flag dependence, confounding, or mis-specification that undermines FDR control."
+    ref: "doi:10.1214/aos/1013699998"
+  design_batch_review:
+    name: "Experimental-design / batch-confound review"
+    kind: procedure
+    checks: [independence, sample_exchangeability]
+    checkable: pre_run
+    applies_to_assumption: independence
+    how: "A design property, not a data test: inspect for technical (not biological) replicates, pairing, and batch confounded with the factor of interest (PCA on transformed counts); add batch to the model if present. The same review establishes sample exchangeability for a permutation null (no confound that breaks label-swapping under H0)."
+    ref: "doi:10.1038/nrg2825"
+  scatter_plot:
+    name: "Bivariate scatter plot (+ LOWESS)"
+    kind: plot
+    checks: [linearity, bivariate_normality, monotonic_relationship]
+    checkable: post_run
+    how: "Plot the two variables against each other: a straight-line cloud supports linearity/bivariate-normality (Pearson); a consistently increasing/decreasing but curved cloud supports a monotonic relationship (use Spearman); funnels or outliers warn against Pearson's r."
+    ref: "url:https://online.stat.psu.edu/stat500/lesson/9/9.1"
+  ranking_metric_continuity_check:
+    name: "Ranking-metric continuity / tie check"
+    kind: procedure
+    checks: [continuous_distribution]
+    checkable: pre_run
+    applies_to_assumption: continuous_distribution
+    how: "GSEA's weighted Kolmogorov–Smirnov enrichment statistic assumes a continuous ranking metric; heavy ties (e.g. many genes sharing an integer score or a floored p-value) distort the running-sum and its permutation null — inspect the gene-level metric for mass points before interpreting enrichment."
+    ref: "doi:10.1073/pnas.0506580102"
+  expected_cell_count_check:
+    name: "Expected-cell-count (Cochran's rule) check"
+    kind: procedure
+    checks: [adequate_expected_cell_counts]
+    checkable: pre_run
+    applies_to_assumption: adequate_expected_cell_counts
+    how: "Compute the contingency table's EXPECTED counts (row×col/total) before trusting a chi-square p-value: if any expected count <1, or >20% are <5 (common for low minor-allele-frequency variants), the chi-square approximation is unreliable — switch to Fisher's exact test."
+    ref: "url:https://www.itl.nist.gov/div898/handbook/prc/section4/prc45.htm"
+  regression_slopes_interaction_check:
+    name: "Parallel-slopes (covariate×group interaction) check"
+    kind: test
+    checks: [homogeneity_of_regression_slopes]
+    checkable: post_run
+    applies_to_assumption: homogeneity_of_regression_slopes
+    how: "Fit the covariate-by-group interaction term: a non-significant interaction (and, across many genes, a ~uniform interaction p-value distribution — exactly anota2seq's APV QC) supports equal slopes; a significant interaction means ANCOVA's single adjusted comparison is invalid for that gene."
+    ref: "doi:10.1093/nar/gkz223"
+  target_decoy_score_overlap:
+    name: "Target/decoy score-distribution overlap plot"
+    kind: plot
+    checks: [decoy_faithfulness, equal_chance_random_match]
+    checkable: post_run
+    how: "Overlay the target and decoy score histograms: the decoy distribution should match the
+      low-scoring (incorrect) component of the target distribution. Excess high-scoring decoys, or a
+      decoy distribution that does not resemble the incorrect-target component, flags an unfaithful
+      decoy and a mis-estimated FDR."
+    ref: "doi:10.1038/nmeth1019"
+  qvalue_pep_calibration:
+    name: "q-value / PEP calibration (entrapment) check"
+    kind: procedure
+    checks: [decoy_faithfulness]
+    checkable: post_run
+    applies_to_assumption: decoy_faithfulness
+    how: "Check that the empirical error rate matches the reported q-value threshold (e.g. via an
+      entrapment database or known-negative spike-in): if identifications accepted at 1% q-value show
+      substantially higher true error, the decoy model is miscalibrated."
+    ref: "doi:10.1021/pr700600n"
+  decoy_count_adequacy:
+    name: "Decoy database size / strategy adequacy check"
+    kind: procedure
+    checks: [equal_chance_random_match]
+    checkable: pre_run
+    applies_to_assumption: equal_chance_random_match
+    how: "Confirm the decoy strategy (reversed/shuffled, 1:1 target:decoy) yields enough decoy matches
+      to estimate FDR at the chosen threshold; too few decoys make the q-value estimate unstable."
+    ref: "doi:10.1038/nmeth1019"
+  missingness_pattern_check:
+    name: "Missing-value pattern (MNAR vs MCAR) check"
+    kind: procedure
+    checks: [missing_not_at_random]
+    checkable: post_run
+    applies_to_assumption: missing_not_at_random
+    how: "Plot per-protein missingness against mean intensity: a rise in missingness at low
+      intensity indicates abundance-dependent (MNAR/left-censored) missing values, which dictates a
+      censoring-aware imputation/model rather than mean imputation or complete-case analysis."
+    ref: "doi:10.1021/acs.jproteome.5b00981"
+  normalization_ma_plot:
+    name: "Normalization MA / intensity-distribution plot"
+    kind: plot
+    checks: [quantification_linearity]
+    checkable: post_run
+    how: "Per-sample intensity boxplots and pairwise MA plots before/after normalization: trends in
+      the MA cloud or shifted distributions reveal load/ratio-compression bias that attenuates
+      fold-changes; confirm normalization removes them."
+    ref: "doi:10.1016/j.euprot.2015.02.002"
+  peptides_per_protein_check:
+    name: "Peptides-per-protein support check"
+    kind: procedure
+    checks: [sufficient_peptides_per_protein]
+    checkable: pre_run
+    applies_to_assumption: sufficient_peptides_per_protein
+    min_peptides_per_protein: 2
+    how: "Count quantified peptides per protein: proteins supported by a single peptide give
+      high-variance abundance estimates; flag or filter them (practical floor of 2 peptides) before
+      trusting differential-abundance calls."
+    ref: "doi:10.1016/j.euprot.2015.02.002"
+  # ---- single-cell unsupervised clustering diagnostics (stat:sc_clustering_workflow) ----
+  sc_raw_counts_and_design_check:
+    name: "Single-cell input + design review (raw counts; unsupervised, no replicate floor)"
+    kind: procedure
+    checks: [raw_umi_counts_input, clustering_unsupervised_no_replicate_floor]
+    checkable: pre_run
+    how: "Confirm the clustering pipeline receives the RAW integer UMI count matrix (normalization is
+      applied inside the workflow, not upstream), and record that clustering is unsupervised: it runs
+      on a single dataset's cell-cell graph and imposes NO per-group biological-replicate requirement
+      (a replicate floor applies only to cross-condition pseudobulk DE, at the sample level)."
+    ref: "doi:10.15252/msb.20188746"
+  sc_adaptive_qc_check:
+    name: "Adaptive (MAD) QC filtering review"
+    kind: procedure
+    checks: [adaptive_qc_filtering]
+    checkable: pre_run
+    how: "Confirm low-quality cells (high mitochondrial fraction, low gene/count content, doublets)
+      were removed using adaptive thresholds (median +/- k MAD on QC metrics) rather than fixed
+      univariate cutoffs, which bias against small or low-RNA-content populations."
+    ref: "doi:10.1038/s41576-023-00586-w"
+  sc_normalization_mean_variance_plot:
+    name: "Normalization mean-variance stabilization plot"
+    kind: plot
+    checks: [normalization_appropriate_for_counts]
+    checkable: post_run
+    how: "Plot per-gene mean vs variance after normalization/variance stabilization: a count-appropriate
+      transform (shifted-log of size-factor-normalized counts, or analytic Pearson residuals) should
+      flatten the strong mean-variance dependence of raw UMI counts."
+    ref: "doi:10.1186/s13059-021-02451-7"
+  sc_hvg_dispersion_plot:
+    name: "Highly-variable-gene dispersion plot"
+    kind: plot
+    checks: [hvg_captures_biological_variation]
+    checkable: post_run
+    how: "Plot dispersion vs mean expression with selected HVGs highlighted: the chosen genes should
+      sit above the fitted technical-noise trend, indicating they capture biological rather than
+      purely technical variation."
+    ref: "doi:10.15252/msb.20188746"
+  sc_cluster_stability_check:
+    name: "Cluster resolution-stability check"
+    kind: procedure
+    checks: [cluster_resolution_stability]
+    checkable: post_run
+    how: "Assess cluster stability across a resolution sweep and/or subsampling (e.g. clustree, bootstrap
+      ARI, silhouette width): reported clusters should be stable and separable on the embedding, not an
+      artifact of an arbitrarily chosen resolution (over- or under-clustering)."
+    ref: "doi:10.15252/msb.20188746"

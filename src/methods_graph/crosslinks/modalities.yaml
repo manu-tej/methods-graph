@@ -1,0 +1,149 @@
+# Curated data-modality vocabulary + pipeline -> modality map for the nf-core catalog.
+# Small, controlled (NOT the EDAM topic firehose, which we deliberately removed).
+# Tools/data inherit a modality transitively from their pipeline. See modalities.py.
+#
+# A Modality node is minted only when a present pipeline references it, so this map can
+# list the full catalog while a given build emits only the pipelines it actually loaded.
+
+modalities:
+  # ---- Transcriptomics (RNA) ----
+  bulk_rnaseq:             {name: "Bulk RNA-seq", description: "Short-read bulk RNA sequencing for gene/isoform expression, incl. specialized bulk assays (CAGE, nascent/PRO/GRO-seq, SLAM-seq, dual RNA-seq, de novo transcriptome, fusion/splice/variant analyses on bulk RNA-seq)"}
+  scrnaseq:                {name: "Single-cell / single-nucleus RNA-seq", description: "Barcode-based single-cell or single-nucleus RNA sequencing (10x, Drop-seq, SmartSeq, MARS-seq), incl. pooled single-cell demultiplexing"}
+  small_rnaseq:            {name: "Small RNA-seq", description: "Sequencing of small/micro RNAs (miRNA, smRNA)"}
+  long_read_rnaseq:        {name: "Long-read RNA-seq / Iso-Seq", description: "Full-length transcript/isoform sequencing (PacBio Iso-Seq, ONT cDNA), incl. long-read single-cell"}
+  spatial_transcriptomics: {name: "Spatial transcriptomics", description: "Spatially-resolved transcriptomics and in-situ RNA imaging (Xenium, Molecular Cartography / FISH)"}
+  ribo_seq:                {name: "Ribosome profiling (Ribo-seq)", description: "Ribosome footprinting / translatome sequencing"}
+  microarray:              {name: "Microarray / probe-based expression", description: "Hybridization probe-based expression platforms (microarrays, NanoString nCounter)"}
+  # ---- Epigenomics / chromatin ----
+  chip_seq:                {name: "ChIP-seq", description: "Chromatin immunoprecipitation sequencing for protein-DNA binding and histone marks"}
+  atac_seq:                {name: "ATAC-seq", description: "Transposase-accessible chromatin sequencing (chromatin accessibility)"}
+  cutandrun:               {name: "CUT&RUN / CUT&Tag", description: "Antibody-targeted nuclease/transposase chromatin profiling"}
+  mnase_seq:               {name: "MNase-seq", description: "Micrococcal nuclease sequencing for nucleosome positioning"}
+  methylation:             {name: "DNA methylation", description: "Bisulfite/enzymatic methylation sequencing and long-read methylation calling (WGBS, RRBS, EM-seq, TAPS)"}
+  hic:                     {name: "Chromosome conformation / 3D genome", description: "Chromosome conformation capture and derived 3D-genome assays (Hi-C, HiCAR)"}
+  # ---- DNA sequencing & variants ----
+  dna_wgs:                 {name: "Whole-genome sequencing", description: "Short-read whole-genome DNA sequencing"}
+  dna_targeted:            {name: "Targeted / exome / panel DNA-seq", description: "Whole-exome, gene-panel, target-capture or amplicon-based DNA sequencing"}
+  variant_calling:         {name: "Variant calling / germline-somatic analysis", description: "Germline/somatic SNV, indel, CNV and structural-variant detection, annotation, prioritization, phasing/imputation and cancer reporting"}
+  long_read_dna:           {name: "Long-read DNA sequencing", description: "Long-read genomic DNA sequencing (ONT/PacBio) for alignment, variant calling and WGS"}
+  genome_assembly:         {name: "Genome assembly", description: "De novo / hybrid genome assembly and scaffolding (bacterial, eukaryotic, linked-read, pangenome graph construction)"}
+  comparative_genomics:    {name: "Comparative / population genomics & phylogenetics", description: "Whole-genome alignment, synteny, phylogeny, phylogenetic placement, and population-genomic pathogen surveillance"}
+  # ---- Microbiome / metagenomics ----
+  metagenomics:            {name: "Shotgun metagenomics", description: "Shotgun metagenomic assembly, binning, taxonomic/functional profiling, metatranscriptomics, classifier-DB building, ancient-metagenome work"}
+  amplicon_16s:            {name: "Amplicon / metabarcoding (16S/18S/ITS)", description: "Marker-gene amplicon sequencing for microbiome/metataxonomic profiling, eDNA metabarcoding"}
+  # ---- Mass spectrometry ----
+  proteomics:              {name: "Proteomics (mass spectrometry)", description: "MS-based proteomics: DDA/DIA/LFQ/TMT quantification, immunopeptidomics, proteogenomics DB generation, protein sequence annotation"}
+  metabolomics:            {name: "Metabolomics (mass spectrometry)", description: "MS-based metabolomics pre-processing, quantification and identification (incl. MS instrument QC)"}
+  # ---- Immune / specialized ----
+  immunorepertoire:        {name: "Immune receptor repertoire (AIRR)", description: "B-cell/T-cell adaptive immune receptor repertoire sequencing (Rep-seq / AIRR)"}
+  immunoinformatics:       {name: "Immunoinformatics (HLA / epitope)", description: "HLA typing and epitope/MHC-binding prediction from sequencing data or sequences"}
+  imaging:                 {name: "Biological imaging", description: "Image-based assays not driven by sequencing: imaging mass cytometry, light-sheet microscopy, remote-sensing imagery"}
+  protein_sequence:        {name: "Protein sequence & structure analysis", description: "Sequence-level protein analysis independent of an assay: structure prediction, protein families, ortholog comparison, MSA"}
+  viral_genomics:          {name: "Viral genomics", description: "Viral genome assembly, variant calling, metagenomic viral reconstruction and host viral-integration detection"}
+  single_cell_protein:     {name: "Single-cell protein / proximity", description: "Single-cell protein readouts such as Proximity Network Assay (Pixelator)"}
+  crispr:                  {name: "CRISPR screens / editing", description: "Targeted-NGS analysis of CRISPR gene-editing experiments and screens"}
+  locus_mapping:           {name: "Genomic-locus mapping assays", description: "Assays mapping engineered/transposon insertion or special DNA structures (calling cards, ecDNA / Circle-seq)"}
+  drug_response:           {name: "Drug-response / phenotypic modeling", description: "Drug-response prediction modeling from cell-line and molecular features (ML benchmarking)"}
+  # ---- Modality-agnostic ----
+  utility:                 {name: "Assay-agnostic utility", description: "Modality-agnostic infrastructure: format conversion, data fetch/repair, demultiplexing, UMI consensus, reference building, QC aggregation, read simulation, benchmarking, training/demo"}
+
+pipelines:
+  airrflow:              [immunorepertoire]
+  ampliseq:              [amplicon_16s]
+  atacseq:               [atac_seq]
+  bacass:                [genome_assembly]
+  bactmap:               [comparative_genomics]
+  bamtofastq:            [utility]
+  cageseq:               [bulk_rnaseq]
+  callingcards:          [locus_mapping]
+  chipseq:               [chip_seq]
+  circdna:               [locus_mapping, dna_wgs]
+  clipseq:               [bulk_rnaseq]
+  coproid:               [metagenomics]
+  createpanelrefs:       [utility]
+  createtaxdb:           [metagenomics]
+  crisprseq:             [crispr]
+  cutandrun:             [cutandrun]
+  deepvariant:           [variant_calling]
+  demo:                  [utility]
+  demultiplex:           [utility]
+  denovotranscript:      [bulk_rnaseq]
+  detaxizer:             [metagenomics, utility]
+  diaproteomics:         [proteomics]
+  # differentialabundance: grounded to what its modules actually consume
+  # (deseq2/limma=RNA-seq counts, affy=microarray, proteus=proteomics).
+  differentialabundance: [bulk_rnaseq, microarray, proteomics]
+  drop:                  [bulk_rnaseq, variant_calling]
+  drugresponseeval:      [drug_response]
+  dualrnaseq:            [bulk_rnaseq]
+  eager:                 [variant_calling, metagenomics, comparative_genomics]
+  epitopeprediction:     [immunoinformatics]
+  fastqrepair:           [utility]
+  fastquorum:            [utility]
+  fetchngs:              [utility]
+  funcscan:              [metagenomics]
+  genomeassembler:       [genome_assembly, long_read_dna]
+  hadge:                 [scrnaseq]
+  hgtseq:                [variant_calling, metagenomics]
+  hic:                   [hic]
+  hicar:                 [hic, atac_seq]
+  hlatyping:             [immunoinformatics]
+  imcyto:                [imaging]
+  isoseq:                [long_read_rnaseq]
+  kmermaid:              [utility]
+  longraredisease:       [long_read_dna, variant_calling]
+  lsmquant:              [imaging]
+  mag:                   [metagenomics]
+  magmap:                [metagenomics]
+  marsseq:               [scrnaseq]
+  metaboigniter:         [metabolomics]
+  metapep:               [metagenomics, immunoinformatics]
+  metatdenovo:           [metagenomics]
+  methylong:             [methylation, long_read_dna]
+  methylseq:             [methylation]
+  mhcquant:              [proteomics, immunoinformatics]
+  mnaseseq:              [mnase_seq]
+  molkart:               [spatial_transcriptomics]
+  multiplesequencealign: [protein_sequence]
+  nanoseq:               [long_read_dna, utility]
+  nanostring:            [microarray]
+  nascent:               [bulk_rnaseq]
+  neutronstar:           [genome_assembly]
+  oncoanalyser:          [variant_calling, dna_wgs, bulk_rnaseq]
+  pacvar:                [long_read_dna, variant_calling]
+  pairgenomealign:       [comparative_genomics]
+  pangenome:             [genome_assembly, comparative_genomics]
+  pathogensurveillance:  [comparative_genomics]
+  phaseimpute:           [variant_calling]
+  phyloplace:            [comparative_genomics]
+  pixelator:             [single_cell_protein]
+  proteinannotator:      [proteomics, protein_sequence]
+  proteinfamilies:       [protein_sequence]
+  proteinfold:           [protein_sequence]
+  proteogenomicsdb:      [proteomics]
+  proteomicslfq:         [proteomics]
+  quantms:               [proteomics]
+  rangeland:             [imaging]
+  raredisease:           [variant_calling, dna_wgs, dna_targeted]
+  readsimulator:         [utility]
+  references:            [utility]
+  reportho:              [protein_sequence]
+  ribomsqc:              [metabolomics, utility]
+  riboseq:               [ribo_seq]
+  rnafusion:             [bulk_rnaseq]
+  rnaseq:                [bulk_rnaseq]
+  rnasplice:             [bulk_rnaseq]
+  rnavar:                [bulk_rnaseq, variant_calling]
+  sarek:                 [variant_calling, dna_wgs, dna_targeted]
+  scnanoseq:             [scrnaseq, long_read_rnaseq]
+  scrnaseq:              [scrnaseq]
+  seqinspector:          [utility]
+  slamseq:               [bulk_rnaseq]
+  smrnaseq:              [small_rnaseq]
+  spatialaxe:            [spatial_transcriptomics]
+  taxprofiler:           [metagenomics]
+  variantbenchmarking:   [variant_calling, utility]
+  variantprioritization: [variant_calling]
+  viralintegration:      [viral_genomics]
+  viralmetagenome:       [viral_genomics, metagenomics]
+  viralrecon:            [viral_genomics]

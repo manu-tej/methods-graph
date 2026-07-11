@@ -1,0 +1,9 @@
+name: bcftools_sort
+description: Sort BCF/VCF files
+tools:
+  - sort:
+      description: Sort BCF/VCF/BED and other position-based files
+      homepage: https://samtools.github.io/bcftools
+      identifier: biotools:bcftools
+      edam_operations: []
+      edam_topics: []

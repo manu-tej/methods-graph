@@ -1,0 +1,10 @@
+name: fastqc
+description: Quality control of sequencing data
+tools:
+  - fastqc:
+      description: Quality control tool for high throughput sequence data
+      homepage: https://www.bioinformatics.babraham.ac.uk/projects/fastqc/
+      identifier: biotools:fastqc
+      edam_operations:
+        - "operation_3218"
+      edam_topics: []

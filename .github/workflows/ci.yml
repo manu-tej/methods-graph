@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"   # weekly Monday 06:00 UTC — runs the full reproducibility gate
+
+jobs:
+  # Fast PR gate: tests + lock-schema validity. DB-gated tests skip gracefully when the
+  # (gitignored) data/methods.kuzu artifact is absent, which it is on a fresh checkout.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e .[dev]
+      - name: Pytest
+        run: python -m pytest -q
+
+  # Full reproducibility gate: fetch the pinned sources and assert a rebuild reproduces the
+  # committed lock's graph hash. snapshots/ is gitignored and large, so this stays OFF the PR
+  # hot path — it runs weekly (schedule) or on demand (workflow_dispatch).
+  rebuild-verify:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e .[dev]
+      - name: Fetch pinned snapshots
+        run: python -m methods_graph.cli fetch --dest snapshots
+      - name: Rebuild and verify graph hash matches the committed lock
+        run: python -m methods_graph.cli rebuild --check

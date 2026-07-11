@@ -1,0 +1,33 @@
+# Curated, literature-grounded Assay -> Method "analyzed by" cross-links.
+#
+# OBI models wet-lab assays (RPPA, phospho-protein readouts, …) as Assay nodes, but
+# nothing connects them to the tool that analyzes the data MATRIX they produce, so an
+# assay readout cannot ground to any method.  This curated layer adds that bridge:
+# `Assay -ANALYZED_BY-> Method`, normalized onto the assay (one row per assay->tool).
+#
+# Like the other curated layers the bridge cannot be harvested (no source records it),
+# so every link is a *claim with a citation* (DOI/PMID).  The loader rejects an
+# ungrounded link, the build emits an edge only when BOTH endpoints resolve to the
+# right kinds (Assay -> Method), and the audit re-checks endpoint typing + evidence.
+# `label` is a defense-in-depth human label checked against the resolved Method name.
+links:
+  # --- Reverse phase protein array (RPPA) profiling assay ---------------------
+  # RPPA yields a continuous, log-scale protein/phospho-protein intensity matrix
+  # (samples x antibodies).  Differential abundance between groups is standardly
+  # modelled with limma's empirical-Bayes moderated linear models — the intensity-
+  # matrix design limma was built for; a dedicated RPPA pipeline is RPPanalyzer
+  # (Mannsperger et al. 2010, doi:10.1093/bioinformatics/btq347).
+  - assay: "obo:OBI_0002957"
+    method: "m:limma"
+    label: "limma"
+    evidence: {doi: "10.1093/nar/gkv007", pmid: "25605792"}   # limma, Ritchie et al. 2015
+    note: "RPPA produces a continuous protein-intensity matrix; differential protein abundance is modelled with limma's moderated linear models."
+  # --- Fluorescence imaging-based protein phosphorylation-state assay ---------
+  # A phospho-protein readout is likewise a continuous site-intensity matrix;
+  # differential phosphorylation between conditions is modelled per site with
+  # limma's moderated linear models.
+  - assay: "obo:OBI_0002954"
+    method: "m:limma"
+    label: "limma"
+    evidence: {doi: "10.1093/nar/gkv007", pmid: "25605792"}   # limma, Ritchie et al. 2015
+    note: "Phospho-protein state readouts give a continuous per-site intensity matrix; differential phosphorylation is modelled with limma's moderated linear models."

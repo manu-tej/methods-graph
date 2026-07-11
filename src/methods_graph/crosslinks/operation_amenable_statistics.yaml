@@ -1,0 +1,136 @@
+# Curated, literature-grounded "applicable statistics" links: which downstream
+# statistical methods can be run ON the results of an EDAM operation.
+#
+# Normalized onto the OPERATION, not the tool: one row covers every tool that
+# performs the operation (salmon, kallisto, rsem, ... all PERFORM RNA-Seq
+# quantification, so all become AMENABLE_TO these statistics via that operation).
+# Distinct from USES_STATISTICAL_METHOD (what a tool uses internally).
+#
+# Scope: RNA-seq only for now. Each link cites a DOI; the loader rejects an
+# ungrounded link and the audit re-checks endpoint typing + evidence.
+# `operation`/`statistical_method` are graph node ids; `label` is a defense-in-
+# depth human label checked against the resolved node name.
+links:
+  # --- RNA-Seq quantification (op:operation_3800) — salmon, kallisto, rsem, ... ---
+  - operation: "op:operation_3800"
+    statistical_method: "obo:STATO_0000559"
+    label: "Wald test"
+    evidence: {doi: "10.1186/s13059-014-0550-8"}   # DESeq2, Love et al. 2014
+    note: "Per-gene differential-expression significance (negative-binomial GLM Wald test)."
+  - operation: "op:operation_3800"
+    statistical_method: "obo:OBI_0200036"
+    label: "Benjamini and Hochberg false discovery rate correction method"
+    evidence: {doi: "10.1111/j.2517-6161.1995.tb02031.x"}   # Benjamini & Hochberg 1995
+    note: "Multiple-testing correction across thousands of genes."
+  - operation: "op:operation_3800"
+    statistical_method: "obo:OBI_0200169"
+    label: "normalization data transformation"
+    evidence: {doi: "10.1186/gb-2010-11-3-r25"}   # Robinson & Oshlack 2010 (TMM)
+    note: "Between-sample library-size normalization before differential testing."
+  - operation: "op:operation_3800"
+    statistical_method: "obo:OBI_0200051"
+    label: "principal components analysis dimensionality reduction"
+    evidence: {doi: "10.1186/s13059-014-0550-8"}   # DESeq2 (PCA on transformed counts)
+    note: "Sample-level QC / exploratory structure on the expression matrix."
+  # --- Expression analysis (op:operation_2495) — salmon, ... ---
+  - operation: "op:operation_2495"
+    statistical_method: "obo:STATO_0000108"
+    label: "linear regression for analysis of continuous dependent variable"
+    evidence: {doi: "10.1093/nar/gkv007"}   # limma, Ritchie et al. 2015
+    note: "Linear models for expression (e.g. limma) on continuous expression values."
+  # --- Expression correlation analysis (op:operation_3463) — gsea, idr, ... ---
+  # Co-expression / correlation networks run a correlation coefficient over the
+  # gene-expression matrix; Pearson (linear) and Spearman (rank/monotonic) are the
+  # two standard choices (WGCNA, Langfelder & Horvath 2008).
+  - operation: "op:operation_3463"
+    statistical_method: "obo:STATO_0000280"
+    label: "Pearson's correlation coefficient"
+    evidence: {doi: "10.1186/1471-2105-9-559"}   # WGCNA, Langfelder & Horvath 2008
+    note: "Linear pairwise co-expression on the expression matrix (default correlation in many co-expression tools)."
+  - operation: "op:operation_3463"
+    statistical_method: "obo:STATO_0000201"
+    label: "Spearman's rank correlation coefficient"
+    evidence: {doi: "10.1186/1471-2105-9-559"}   # WGCNA, Langfelder & Horvath 2008
+    note: "Rank-based (monotonic, outlier-robust) co-expression — recommended when the relationship is nonlinear."
+
+  # ===================================================================
+  # Variant / GWAS family — variant calls + genotypes are amenable to the
+  # standard association toolkit (PLINK, Purcell et al. 2007): case/control
+  # logistic, quantitative-trait linear, allelic Fisher/chi-square, and the
+  # Hardy-Weinberg genotype-QC test.  Normalized onto each variant-producing
+  # operation so every tool that performs it inherits the chain.
+  # Ops: 3227 variant calling, 3196 genotyping, 3197 genetic variation analysis,
+  #      0484 SNP detection, 3675 variant filtering.
+  # ===================================================================
+  - {operation: "op:operation_3227", statistical_method: "obo:STATO_0000149", label: "binomial logistic regression for analysis of dichotomous dependent variable", evidence: {doi: "10.1086/519795"}, note: "Case/control association on called variants (PLINK --logistic)."}
+  - {operation: "op:operation_3227", statistical_method: "obo:STATO_0000108", label: "linear regression for analysis of continuous dependent variable", evidence: {doi: "10.1086/519795"}, note: "Quantitative-trait association on called variants (PLINK --linear)."}
+  - {operation: "op:operation_3227", statistical_method: "obo:STATO_0000073", label: "Fisher's exact test", evidence: {doi: "10.1086/519795"}, note: "Exact allelic association for rare/low-count variants (PLINK --fisher)."}
+  - {operation: "op:operation_3227", statistical_method: "obo:STATO_0000081", label: "Pearson's Chi square test of independence between categorical variables", evidence: {doi: "10.1086/519795"}, note: "Allelic/genotypic association chi-square on the 2xK table (PLINK --assoc)."}
+  - {operation: "op:operation_3227", statistical_method: "obo:STATO_0000181", label: "Hardy-Weinberg equilibrium testing", evidence: {doi: "10.1086/519795"}, note: "Per-variant Hardy-Weinberg QC on genotype calls (PLINK --hardy)."}
+
+  - {operation: "op:operation_3196", statistical_method: "obo:STATO_0000149", label: "binomial logistic regression for analysis of dichotomous dependent variable", evidence: {doi: "10.1086/519795"}, note: "Case/control association on genotypes (PLINK --logistic)."}
+  - {operation: "op:operation_3196", statistical_method: "obo:STATO_0000108", label: "linear regression for analysis of continuous dependent variable", evidence: {doi: "10.1086/519795"}, note: "Quantitative-trait association on genotypes (PLINK --linear)."}
+  - {operation: "op:operation_3196", statistical_method: "obo:STATO_0000073", label: "Fisher's exact test", evidence: {doi: "10.1086/519795"}, note: "Exact allelic association for low-count genotypes (PLINK --fisher)."}
+  - {operation: "op:operation_3196", statistical_method: "obo:STATO_0000081", label: "Pearson's Chi square test of independence between categorical variables", evidence: {doi: "10.1086/519795"}, note: "Allelic/genotypic association chi-square (PLINK --assoc)."}
+  - {operation: "op:operation_3196", statistical_method: "obo:STATO_0000181", label: "Hardy-Weinberg equilibrium testing", evidence: {doi: "10.1086/519795"}, note: "Per-variant Hardy-Weinberg QC (PLINK --hardy)."}
+
+  - {operation: "op:operation_3197", statistical_method: "obo:STATO_0000149", label: "binomial logistic regression for analysis of dichotomous dependent variable", evidence: {doi: "10.1086/519795"}, note: "Case/control association (PLINK --logistic)."}
+  - {operation: "op:operation_3197", statistical_method: "obo:STATO_0000108", label: "linear regression for analysis of continuous dependent variable", evidence: {doi: "10.1086/519795"}, note: "Quantitative-trait association (PLINK --linear)."}
+  - {operation: "op:operation_3197", statistical_method: "obo:STATO_0000073", label: "Fisher's exact test", evidence: {doi: "10.1086/519795"}, note: "Exact allelic association (PLINK --fisher)."}
+  - {operation: "op:operation_3197", statistical_method: "obo:STATO_0000081", label: "Pearson's Chi square test of independence between categorical variables", evidence: {doi: "10.1086/519795"}, note: "Allelic/genotypic association chi-square (PLINK --assoc)."}
+  - {operation: "op:operation_3197", statistical_method: "obo:STATO_0000181", label: "Hardy-Weinberg equilibrium testing", evidence: {doi: "10.1086/519795"}, note: "Per-variant Hardy-Weinberg QC (PLINK --hardy)."}
+
+  - {operation: "op:operation_0484", statistical_method: "obo:STATO_0000149", label: "binomial logistic regression for analysis of dichotomous dependent variable", evidence: {doi: "10.1086/519795"}, note: "Case/control association on detected SNPs (PLINK --logistic)."}
+  - {operation: "op:operation_0484", statistical_method: "obo:STATO_0000108", label: "linear regression for analysis of continuous dependent variable", evidence: {doi: "10.1086/519795"}, note: "Quantitative-trait association on detected SNPs (PLINK --linear)."}
+  - {operation: "op:operation_0484", statistical_method: "obo:STATO_0000073", label: "Fisher's exact test", evidence: {doi: "10.1086/519795"}, note: "Exact allelic association for rare SNPs (PLINK --fisher)."}
+  - {operation: "op:operation_0484", statistical_method: "obo:STATO_0000081", label: "Pearson's Chi square test of independence between categorical variables", evidence: {doi: "10.1086/519795"}, note: "Allelic/genotypic association chi-square (PLINK --assoc)."}
+  - {operation: "op:operation_0484", statistical_method: "obo:STATO_0000181", label: "Hardy-Weinberg equilibrium testing", evidence: {doi: "10.1086/519795"}, note: "Per-SNP Hardy-Weinberg QC (PLINK --hardy)."}
+
+  - {operation: "op:operation_3675", statistical_method: "obo:STATO_0000149", label: "binomial logistic regression for analysis of dichotomous dependent variable", evidence: {doi: "10.1086/519795"}, note: "Case/control association on the filtered variant set (PLINK --logistic)."}
+  - {operation: "op:operation_3675", statistical_method: "obo:STATO_0000108", label: "linear regression for analysis of continuous dependent variable", evidence: {doi: "10.1086/519795"}, note: "Quantitative-trait association on the filtered variant set (PLINK --linear)."}
+  - {operation: "op:operation_3675", statistical_method: "obo:STATO_0000073", label: "Fisher's exact test", evidence: {doi: "10.1086/519795"}, note: "Exact allelic association on the filtered variant set (PLINK --fisher)."}
+  - {operation: "op:operation_3675", statistical_method: "obo:STATO_0000081", label: "Pearson's Chi square test of independence between categorical variables", evidence: {doi: "10.1086/519795"}, note: "Allelic/genotypic association chi-square (PLINK --assoc)."}
+  - {operation: "op:operation_3675", statistical_method: "obo:STATO_0000181", label: "Hardy-Weinberg equilibrium testing", evidence: {doi: "10.1086/519795"}, note: "Per-variant Hardy-Weinberg QC (PLINK --hardy)."}
+
+  # ===================================================================
+  # Expression / differential-expression family — DE result matrices are
+  # amenable to the standard count-model + multiple-testing toolkit.
+  # Ops: 3223 DE profiling, 3680 RNA-Seq analysis, 2436 GSEA, 2495 expression analysis.
+  # ===================================================================
+  - {operation: "op:operation_3223", statistical_method: "obo:STATO_0000559", label: "Wald test", evidence: {doi: "10.1186/s13059-014-0550-8"}, note: "Per-gene DE significance via the negative-binomial GLM Wald test (DESeq2)."}
+  - {operation: "op:operation_3223", statistical_method: "obo:STATO_0000108", label: "linear regression for analysis of continuous dependent variable", evidence: {doi: "10.1093/nar/gkv007"}, note: "Linear-model DE on log-expression (limma)."}
+  - {operation: "op:operation_3223", statistical_method: "obo:STATO_0000086", label: "F-test", evidence: {doi: "10.1093/bioinformatics/btp616"}, note: "Quasi-likelihood F-test for DE on counts (edgeR)."}
+  - {operation: "op:operation_3223", statistical_method: "obo:OBI_0200036", label: "Benjamini and Hochberg false discovery rate correction method", evidence: {doi: "10.1111/j.2517-6161.1995.tb02031.x"}, note: "Genome-wide multiple-testing correction over thousands of genes."}
+
+  - {operation: "op:operation_3680", statistical_method: "obo:STATO_0000559", label: "Wald test", evidence: {doi: "10.1186/s13059-014-0550-8"}, note: "Per-gene DE significance (negative-binomial GLM Wald test, DESeq2)."}
+  - {operation: "op:operation_3680", statistical_method: "obo:OBI_0200036", label: "Benjamini and Hochberg false discovery rate correction method", evidence: {doi: "10.1111/j.2517-6161.1995.tb02031.x"}, note: "Multiple-testing correction across genes."}
+  - {operation: "op:operation_3680", statistical_method: "obo:OBI_0200051", label: "principal components analysis dimensionality reduction", evidence: {doi: "10.1186/s13059-014-0550-8"}, note: "Sample-level QC / structure on the transformed expression matrix."}
+
+  - {operation: "op:operation_2436", statistical_method: "stat:gsea_enrichment", label: "GSEA weighted running-sum enrichment score", evidence: {doi: "10.1073/pnas.0506580102"}, note: "Weighted KS-like running-sum enrichment statistic with a phenotype-permutation null (GSEA) — curated node, not the standard KS test."}
+  # GSEA's FDR q-value comes from a PERMUTATION empirical-null over the pooled NES
+  # distribution, not the Benjamini-Hochberg sequential-p-value procedure — so it maps
+  # to the GENERIC FDR node, not the BH node (cf. DESeq2/edgeR/limma which do use BH).
+  - {operation: "op:operation_2436", statistical_method: "obo:OBI_0200163", label: "false discovery rate correction method", evidence: {doi: "10.1073/pnas.0506580102"}, note: "Permutation-based empirical-null FDR q-value across gene sets (GSEA)."}
+
+  - {operation: "op:operation_2495", statistical_method: "obo:STATO_0000559", label: "Wald test", evidence: {doi: "10.1186/s13059-014-0550-8"}, note: "Per-gene DE significance on the expression matrix (DESeq2)."}
+  - {operation: "op:operation_2495", statistical_method: "obo:OBI_0200036", label: "Benjamini and Hochberg false discovery rate correction method", evidence: {doi: "10.1111/j.2517-6161.1995.tb02031.x"}, note: "Multiple-testing correction across genes."}
+
+  # ===================================================================
+  # Proteomics-MS identification confidence — peptide/protein identification
+  # and the target-decoy step are amenable to target-decoy FDR/q-value estimation.
+  # Normalized onto each operation so percolator/openms (which PERFORM them) inherit it.
+  # ===================================================================
+  - {operation: "op:operation_3631", statistical_method: "stat:target_decoy_fdr", label: "Target-decoy false-discovery-rate / q-value estimation", evidence: {doi: "10.1021/pr700600n"}, note: "Peptide-identification confidence via target-decoy FDR / q-value (Percolator)."}
+  - {operation: "op:operation_3767", statistical_method: "stat:target_decoy_fdr", label: "Target-decoy false-discovery-rate / q-value estimation", evidence: {doi: "10.1038/nmeth1019"}, note: "Protein-identification confidence via target-decoy FDR / q-value."}
+  - {operation: "op:operation_3649", statistical_method: "stat:target_decoy_fdr", label: "Target-decoy false-discovery-rate / q-value estimation", evidence: {doi: "10.1038/nmeth1019"}, note: "The target-decoy step itself estimates identification FDR."}
+
+  # Proteomics-MS differential protein abundance — protein-DE results are amenable to
+  # the label-free protein DE test + BH multiple-testing across proteins.
+  - {operation: "op:operation_3741", statistical_method: "stat:protein_lfq_de", label: "Label-free / quantitative protein differential-abundance test", evidence: {doi: "10.1016/j.euprot.2015.02.002"}, note: "Per-protein moderated linear-model DE on log-intensities (limma-trend)."}
+  - {operation: "op:operation_3741", statistical_method: "obo:OBI_0200036", label: "Benjamini and Hochberg false discovery rate correction method", evidence: {doi: "10.1111/j.2517-6161.1995.tb02031.x"}, note: "Multiple-testing correction across proteins."}
+
+  # Single-cell unsupervised clustering — expression-profile clustering (op:operation_0313,
+  # performed by scanpy) is amenable to the single-cell preprocessing->clustering workflow's
+  # methodological preconditions (raw counts, adaptive QC, count-appropriate normalization,
+  # cluster stability) — and explicitly NOT to a bulk per-group replicate floor.
+  - {operation: "op:operation_0313", statistical_method: "stat:sc_clustering_workflow", label: "Single-cell unsupervised clustering workflow", evidence: {doi: "10.15252/msb.20188746"}, note: "Single-cell preprocessing->clustering evaluability (Luecken & Theis tutorial); unsupervised, no replicate floor."}

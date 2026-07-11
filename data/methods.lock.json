@@ -1,0 +1,92 @@
+{
+  "build": {
+    "command": "mg rebuild",
+    "flags": {
+      "db": "data/methods.kuzu",
+      "snapshots": "snapshots"
+    }
+  },
+  "counts": {
+    "edges": 32757,
+    "nodes": 19425
+  },
+  "coverage": {
+    "methods_total": 905,
+    "ontology_nodes": {
+      "Assay": 1795,
+      "Assumption": 29,
+      "Data": 949,
+      "Diagnostic": 23,
+      "Format": 2100,
+      "Instrument": 607,
+      "Material": 157,
+      "Operation": 537,
+      "Protocol": 6,
+      "StatisticalMethod": 207,
+      "StudyDesign": 101
+    },
+    "used_method_set": {
+      "count": 99,
+      "pct": 100.0,
+      "with_complete_chain": 99
+    },
+    "with_bioconda_pkg": {
+      "count": 745,
+      "pct": 82.3
+    },
+    "with_biotools_id": {
+      "count": 450,
+      "pct": 49.7
+    },
+    "with_checked_assumption": {
+      "count": 99,
+      "pct": 10.9
+    },
+    "with_checked_via_operation": {
+      "count": 94,
+      "pct": 10.4
+    },
+    "with_container": {
+      "count": 646,
+      "pct": 71.4
+    },
+    "with_edam_operation": {
+      "count": 415,
+      "pct": 45.9
+    },
+    "with_inherited_assumption": {
+      "count": 12,
+      "pct": 1.3
+    },
+    "with_io_contract": {
+      "count": 901,
+      "pct": 99.6
+    },
+    "with_statistical_method": {
+      "count": 12,
+      "pct": 1.3
+    }
+  },
+  "graph_hash": "sha256:c6940e39883fb7aa1ff3c657add414a0c7d28a2c2cf40715f2ca857add9d13ad",
+  "ingested_at": "2026-06-18",
+  "schema": 1,
+  "sources": {
+    "biocontainers": {},
+    "biotools": {},
+    "edam": {
+      "last_modified": "Mon, 08 May 2023 09:03:37 GMT",
+      "sha256": "279a8d48c9e54f0216ec50b4ebc2582e6e545e8ae77e01477efee16261b003e9"
+    },
+    "nfcore_modules": {
+      "commit": "d13eeb9f5e220cfb875a512b9c546350246a7be0"
+    },
+    "obi": {
+      "sha256": "c503bb614c319d2a333e9fd377a47eb1000015d3d2a7e988090dc010ceda97a0",
+      "version": "http://purl.obolibrary.org/obo/obi/2026-05-08/obi.owl"
+    },
+    "stato": {
+      "sha256": "7e8f945ee30c6b24139f0064d57c2edbcfc988f3f74811cad6b5c84819ce1494",
+      "version": "http://purl.obolibrary.org/obo/stato/releases/2026-04-20/stato.owl"
+    }
+  }
+}

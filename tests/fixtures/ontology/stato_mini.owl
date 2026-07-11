@@ -1,0 +1,51 @@
+<?xml version="1.0"?>
+<rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xmlns:xsd="http://www.w3.org/2001/XMLSchema#">
+
+    <owl:Ontology rdf:about="http://purl.obolibrary.org/obo/stato.owl"/>
+
+    <!-- Root: OBI_0200000 data transformation -->
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/OBI_0200000">
+        <rdfs:label>data transformation</rdfs:label>
+    </owl:Class>
+
+    <!-- Mid-level: OBI_0000673 statistical hypothesis test, child of root -->
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/OBI_0000673">
+        <rdfs:label>statistical hypothesis test</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://purl.obolibrary.org/obo/OBI_0200000"/>
+    </owl:Class>
+
+    <!-- Leaf: STATO_0000304 Student's t-test, child of OBI_0000673 -->
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/STATO_0000304">
+        <rdfs:label>Student's t-test</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://purl.obolibrary.org/obo/OBI_0000673"/>
+    </owl:Class>
+
+    <!-- Deprecated class under the root — must be skipped by ingestion -->
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/STATO_0000001">
+        <rdfs:label>deprecated statistical test</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://purl.obolibrary.org/obo/OBI_0200000"/>
+        <owl:deprecated rdf:datatype="http://www.w3.org/2001/XMLSchema#boolean">true</owl:deprecated>
+    </owl:Class>
+
+    <!-- Second root: STATO_0000142 correlation coefficient (filed under
+         'measure of correlation', NOT under the data-transformation root) -->
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/STATO_0000142">
+        <rdfs:label>correlation coefficient</rdfs:label>
+    </owl:Class>
+
+    <!-- Leaf under the correlation root: Spearman's rank correlation coefficient -->
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/STATO_0000201">
+        <rdfs:label>Spearman's rank correlation coefficient</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://purl.obolibrary.org/obo/STATO_0000142"/>
+    </owl:Class>
+
+    <!-- Unrelated class NOT under either root — must NOT be ingested -->
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/STATO_9999999">
+        <rdfs:label>unrelated concept</rdfs:label>
+    </owl:Class>
+
+</rdf:RDF>

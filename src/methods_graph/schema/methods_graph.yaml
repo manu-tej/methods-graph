@@ -1,0 +1,444 @@
+---
+id: https://w3id.org/methods-graph/schema
+name: methods_graph
+description: >-
+  Backend-neutral LinkML schema for the methods-graph bioinformatics knowledge
+  graph.  Describes graph node classes (NodeKind values), workflow IR classes,
+  and extension-point stubs for a future STATO/OBI semantic layer.
+
+prefixes:
+  linkml:   https://w3id.org/linkml/
+  edam:     http://edamontology.org/
+  biotools: https://bio.tools/
+  mg:       https://w3id.org/methods-graph/
+
+default_prefix: mg
+default_range: string
+
+imports:
+  - linkml:types
+
+# ---------------------------------------------------------------------------
+# Mixins / base classes
+# ---------------------------------------------------------------------------
+
+classes:
+
+  # -------------------------------------------------------------------------
+  # Provenance mixin — every graph node carries these slots
+  # -------------------------------------------------------------------------
+  ProvenanceMixin:
+    mixin: true
+    description: >-
+      Shared provenance slots carried by every graph node (mirrors the Kùzu
+      Entity table columns source / source_url / ingested_at).
+    slots:
+      - source
+      - source_url
+      - ingested_at
+
+  # -------------------------------------------------------------------------
+  # Abstract base for all graph nodes
+  # -------------------------------------------------------------------------
+  GraphNode:
+    abstract: true
+    description: Abstract base class for all graph nodes.
+    mixins:
+      - ProvenanceMixin
+    slots:
+      - id
+      - name
+
+  # -------------------------------------------------------------------------
+  # Concrete node classes  (matches NodeKind enum)
+  # -------------------------------------------------------------------------
+
+  Method:
+    is_a: GraphNode
+    description: >-
+      A bioinformatics method or tool (e.g. salmon, DESeq2). May carry
+      bioconda / bio.tools identifiers and version metadata.
+    slots:
+      - bioconda_pkg
+      - biotools_id
+      - version
+      - description
+      - implementation_type
+      - performs
+      - packaged_as
+      - inputs
+      - outputs
+      - cites
+      - uses_statistical_method
+
+  Module:
+    is_a: GraphNode
+    description: A workflow module that wraps a single Method.
+    slots:
+      - wraps
+      - downstream_of
+
+  Pipeline:
+    is_a: GraphNode
+    description: A named pipeline composed of one or more Modules.
+    slots:
+      - has_module
+
+  Container:
+    is_a: GraphNode
+    description: A container image (Docker/Singularity) shipping one or more packages.
+    slots:
+      - from_package
+
+  Package:
+    is_a: GraphNode
+    description: A software package (e.g. a conda recipe or PyPI distribution).
+
+  Operation:
+    is_a: GraphNode
+    description: >-
+      An EDAM operation term (e.g. edam:operation_3258 Transcriptome assembly).
+      The operation_is_a slot models the EDAM subClassOf hierarchy; cross-branch
+      is_a links are permitted (range is Operation).
+    slots:
+      - operation_is_a
+
+  Data:
+    is_a: GraphNode
+    description: An EDAM data concept (e.g. edam:data_1249 Sequence length).
+
+  Format:
+    is_a: GraphNode
+    description: >-
+      An EDAM format term (e.g. edam:format_1929 FASTA) or a canonical file
+      format node in the graph.
+
+  Paper:
+    is_a: GraphNode
+    description: A bibliographic reference (journal article, preprint, etc.).
+
+  # -------------------------------------------------------------------------
+  # Workflow IR classes  (mirror dataclasses in workflow/ir.py exactly)
+  # Field names MUST match the dataclass field names for dataclasses.asdict()
+  # round-trip validation.
+  # -------------------------------------------------------------------------
+
+  Workflow:
+    tree_root: true
+    description: Top-level container for steps, artifacts, and decisions.
+    attributes:
+      id:
+        identifier: true
+        required: true
+        range: string
+        description: Unique workflow identifier.
+      steps:
+        range: Step
+        multivalued: true
+        inlined_as_list: true
+        description: Processing steps in this workflow.
+      artifacts:
+        range: Artifact
+        multivalued: true
+        inlined_as_list: true
+        description: Data artifacts in this workflow.
+      decisions:
+        range: Decision
+        multivalued: true
+        inlined_as_list: true
+        description: Analytical decisions in this workflow.
+
+  Step:
+    description: One processing step in the workflow, linked to a graph method node.
+    attributes:
+      id:
+        identifier: true
+        required: true
+        range: string
+        description: Unique step identifier.
+      method_id:
+        required: true
+        range: string
+        description: Graph id of the Method node this step invokes.
+      container_id:
+        range: string
+        description: Graph id of the Container node selected for this step.
+      inputs:
+        range: string
+        multivalued: true
+        description: Artifact ids consumed by this step.
+      outputs:
+        range: string
+        multivalued: true
+        description: Artifact ids produced by this step.
+      parameters:
+        range: string
+        description: >-
+          Permissive slot for step parameters (serialised as a JSON string or
+          left empty; any string value is accepted here).
+      evidence:
+        range: string
+        multivalued: true
+        description: Graph node ids that ground/justify this step.
+
+  Artifact:
+    description: An input/output data artifact in a workflow.
+    attributes:
+      id:
+        identifier: true
+        required: true
+        range: string
+        description: Unique artifact identifier.
+      name:
+        required: true
+        range: string
+        description: Human-readable artifact name.
+      kind:
+        required: true
+        range: string
+        description: Artifact kind (e.g. "plot", "table", "matrix", "file").
+      produced_by:
+        range: string
+        description: Step id that produced this artifact; None for initial inputs.
+      edam_format:
+        range: string
+        description: EDAM format id for this artifact (e.g. "fmt:1929").
+      properties:
+        range: string
+        description: >-
+          Permissive slot for arbitrary key/value properties (serialised as a
+          JSON string or left empty).
+
+  Decision:
+    description: >-
+      A user-level analytical decision that connects observations to actions.
+    attributes:
+      id:
+        identifier: true
+        required: true
+        range: string
+        description: Unique decision identifier.
+      rationale:
+        required: true
+        range: string
+        description: Free-text user interpretation behind this decision.
+      inputs:
+        range: string
+        multivalued: true
+        description: Artifact ids this decision is based on.
+      leads_to:
+        range: string
+        description: Step id that this decision triggers.
+      made_by:
+        range: string
+        description: Agent that made this decision (default "user").
+
+  # -------------------------------------------------------------------------
+  # Extension-point stubs for the future STATO / OBI semantic layer
+  # These classes are DECLARED but not yet populated.
+  # -------------------------------------------------------------------------
+
+  StatisticalMethod:
+    is_a: GraphNode
+    description: >-
+      An ontology-term node for a statistical method ingested from STATO
+      (root OBI_0200000 "data transformation", ~193 descendants including
+      t-test, ANOVA, regression, differential-expression methods).
+      Auto-populated by parse_stato() from stato.owl.
+    slots:
+      - requires_assumption
+
+  Assumption:
+    is_a: GraphNode
+    description: >-
+      An ontology-term node for a stated assumption underlying a statistical
+      or analytical decision (STATO source).
+      NOTE: Assumption is declared as a concrete class but is NOT auto-populated
+      by ingestion — STATO scatters assumption terms as leaf concepts with no
+      single clean ontology root, so no ingestion root mapping exists for this
+      class.
+
+  Diagnostic:
+    is_a: GraphNode
+    description: >-
+      An ontology-term node for a diagnostic check or quality-control step
+      in a workflow (STATO source).
+      NOTE: Diagnostic is declared as a concrete class but is NOT auto-populated
+      by ingestion — STATO scatters diagnostic terms as leaf concepts with no
+      single clean ontology root, so no ingestion root mapping exists for this
+      class.
+
+  Assay:
+    is_a: GraphNode
+    description: >-
+      An ontology-term node for a planned process with specified inputs and
+      outputs, ingested from OBI (root OBI_0000070 "assay").
+      Auto-populated by parse_obi() from obi.owl.
+
+  Protocol:
+    is_a: GraphNode
+    description: >-
+      An ontology-term node for a protocol specifying how an assay or process
+      is carried out, ingested from OBI (root OBI_0000272 "protocol").
+      Auto-populated by parse_obi() from obi.owl.
+
+  StudyDesign:
+    is_a: GraphNode
+    description: >-
+      An ontology-term node for the design of an experimental study, ingested
+      from OBI (root OBI_0500000 "study design").
+      Auto-populated by parse_obi() from obi.owl.
+
+  Material:
+    is_a: GraphNode
+    description: >-
+      An ontology-term node for a biological or chemical material used in or
+      produced by an assay, ingested from OBI (root OBI_0100051 "specimen").
+      Auto-populated by parse_obi() from obi.owl.
+
+  Instrument:
+    is_a: GraphNode
+    description: >-
+      An ontology-term node for a device or instrument used to carry out an
+      assay, ingested from OBI (root COB_0001300 "device").
+      Auto-populated by parse_obi() from obi.owl.
+
+# ---------------------------------------------------------------------------
+# Slots  (shared / graph-layer only — workflow classes use local attributes)
+# ---------------------------------------------------------------------------
+
+slots:
+
+  # --- Shared provenance / identity ---
+
+  id:
+    identifier: true
+    required: true
+    range: string
+    description: Unique identifier for the node.
+
+  name:
+    required: true
+    range: string
+    description: Human-readable name.
+
+  source:
+    range: string
+    description: Origin datasource (e.g. "edam", "nfcore", "biocontainers").
+
+  source_url:
+    range: string
+    description: Canonical URL of the source record.
+
+  ingested_at:
+    range: string
+    description: ISO-8601 date when this record was ingested.
+
+  # --- Method-specific slots ---
+
+  bioconda_pkg:
+    range: string
+    description: Bioconda package name, if known.
+
+  biotools_id:
+    range: string
+    description: bio.tools identifier, if registered.
+
+  version:
+    range: string
+    description: Software version string.
+
+  description:
+    range: string
+    description: Free-text description of the method or node.
+
+  implementation_type:
+    range: string
+    description: >-
+      Implementation technology (e.g. "R", "Python", "nextflow_module").
+
+  # --- Graph relationship slots (Method) ---
+
+  performs:
+    range: Operation
+    multivalued: true
+    inlined: false
+    description: Operations this method performs (EDAM).
+
+  packaged_as:
+    range: Container
+    multivalued: true
+    inlined: false
+    description: Containers that ship this method.
+
+  inputs:
+    range: GraphNode
+    multivalued: true
+    inlined: false
+    description: Data or Format nodes consumed by this method.
+
+  outputs:
+    range: GraphNode
+    multivalued: true
+    inlined: false
+    description: Data or Format nodes produced by this method.
+
+  cites:
+    range: Paper
+    multivalued: true
+    inlined: false
+    description: Papers cited by / describing this method.
+
+  # --- Grounded cross-link slots (curated, literature-grounded) ---
+
+  uses_statistical_method:
+    range: StatisticalMethod
+    multivalued: true
+    inlined: false
+    description: >-
+      Statistical method(s) this method uses (USES_STATISTICAL_METHOD edges).
+      Curated and literature-grounded; each edge carries a doi:/pmid: evidence
+      token in the graph.
+
+  requires_assumption:
+    range: Assumption
+    multivalued: true
+    inlined: false
+    description: >-
+      Assumption(s) a statistical method classically requires
+      (REQUIRES_ASSUMPTION edges).  Attached to StatisticalMethod; a Method
+      inherits these transitively via uses_statistical_method.  Each edge carries
+      a doi:/pmid:/url:/isbn:/stato: evidence token in the graph.
+
+  # --- Graph relationship slots (Module / Pipeline / Container) ---
+
+  wraps:
+    range: Method
+    inlined: false
+    description: The Method this module wraps.
+
+  downstream_of:
+    range: Module
+    multivalued: true
+    inlined: false
+    description: Upstream module(s) this module depends on.
+
+  has_module:
+    range: Module
+    multivalued: true
+    inlined: false
+    description: Modules that are part of this pipeline.
+
+  from_package:
+    range: Package
+    inlined: false
+    description: The Package this container was built from.
+
+  # --- Operation EDAM hierarchy ---
+
+  operation_is_a:
+    range: Operation
+    inlined: false
+    description: >-
+      Parent Operation in the EDAM subClassOf hierarchy.  Cross-branch
+      is_a links are permitted; no single-parent constraint is enforced.
