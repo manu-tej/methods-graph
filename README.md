@@ -1,8 +1,15 @@
 # methods-graph
 
-A local knowledge graph over bioinformatics **methods**, pipeline modules, containers,
-ontology terms, statistical assumptions, diagnostics, and executable workflow context —
-built on [Kùzu](https://kuzudb.com/).
+`methods-graph` is the separately versioned method-validity and guardrail substrate for
+[Dogma](https://github.com/manu-tej/dogma), the in-progress AI scientist platform. It is a local
+knowledge graph over bioinformatics **methods**, pipeline modules, containers, ontology
+terms, statistical assumptions, diagnostics, and executable workflow context — built on
+[Kùzu](https://kuzudb.com/).
+
+Within Dogma, it acts as a **methodological leash**: not a substitute for scientific
+judgment, but a guardrail that asks an agent's proposed analysis to resolve to documented
+methods, expose its prerequisites and diagnostics, and retain provenance so gaps remain
+visible before execution or interpretation.
 
 It answers a practical question: given a biological analysis goal, *what methods are
 available, what do they depend on, and what assumptions or diagnostics make their use
@@ -26,6 +33,17 @@ See [`examples/causal_evaluability_demo.py`](examples/causal_evaluability_demo.p
 self-contained walkthrough that turns a biological hypothesis into an *evaluable* causal
 DAG (identify → estimate → refute), grounding each estimator against the graph and
 flagging coverage gaps instead of inventing tools.
+
+## Role in Dogma
+
+Dogma is the product; `methods-graph` is a focused component kept in its own repository so
+its sources, curation, tests, and rebuild process can be inspected independently of the
+application. The boundary is deliberate: the graph can surface method candidates,
+assumptions, diagnostics, provenance, and honest coverage gaps. It does not decide whether
+a biological claim is true or replace expert review.
+
+The original Dogma implementation used `quration` as its package and API namespace. That
+name survives only at the compatibility boundary; it does not refer to a second product.
 
 ## Data sources
 
@@ -68,8 +86,8 @@ from them. CI runs two gates ([`.github/workflows/ci.yml`](.github/workflows/ci.
 
 ## Contribution model
 
-The graph design direction, curation choices, and public interpretation are mine. Coding
-agents helped implement connectors, tests, and review-driven fixes — implementation
+The graph design direction, curation choices, and public interpretation are mine. Claude
+Code and Codex helped implement connectors, tests, and review-driven fixes — implementation
 acceleration, not ownership of the curation or scientific framing.
 
 ## Limitations
@@ -80,9 +98,12 @@ claims should wait until source coverage and attribution are fully reviewed.
 
 ## Setup notes
 
-The `quration` provider emits plain dictionaries without a `quration` install. Install
-`quration` in the same environment only when validating those dictionaries against
-`quration`'s `AnalysisMethod` model.
+The compatibility adapter remains at
+[`src/methods_graph/provider/quration_provider.py`](src/methods_graph/provider/quration_provider.py)
+because the original Dogma package/API namespace was `quration`. The provider emits plain
+dictionaries without that legacy package installed. Install `quration` in the same
+environment only when validating those dictionaries against the legacy `AnalysisMethod`
+model.
 
 ## License
 
