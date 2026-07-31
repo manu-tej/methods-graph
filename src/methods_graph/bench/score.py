@@ -13,8 +13,28 @@ from __future__ import annotations
 from typing import Any
 
 from methods_graph.bench.oracle import Oracle
-from methods_graph.guardrail import (
-    HANDOFF_BROKEN, HANDOFF_UNKNOWN, HANDOFF_VALID, classify_handoff)
+from methods_graph.guardrail import HANDOFF_BROKEN, HANDOFF_UNKNOWN, HANDOFF_VALID
+
+# EDAM operations too coarse to establish interchangeability. Each one is broad enough
+# to join tools that do fundamentally different jobs, which is the same failure shape
+# `same_class`'s input-Data requirement exists to prevent (crediting `bwa` for spliced
+# alignment) — it just surfaces on the operation side instead. A shared operation from
+# this set is not evidence of equivalence; a pair needs at least one shared operation
+# OUTSIDE it.
+#
+# Enumerated against the real 905-method graph: exactly 9 non-identity pairs satisfy
+# "shared operation AND shared input Data", and these two entries are the only wrong
+# ones. `tests/test_bench_score.py::test_equivalence_relation_over_the_real_graph`
+# pins the surviving seven.
+_BRIDGING_OPERATIONS = frozenset({
+    # "Sequence composition calculation" — bridges m:fastqc (read QC) and m:salmon
+    # (transcript quantification). Both appear in nearly every RNA-seq gold sequence,
+    # so this pair alone inflated selection on the project's target domain.
+    "op:operation_0236",
+    # "Expression analysis" — bridges m:affy (microarray preprocessing) and m:gsea
+    # (gene-set enrichment). Neither can stand in for the other.
+    "op:operation_2495",
+})
 
 
 def _unique(items: list[str]) -> list[str]:
@@ -27,20 +47,41 @@ def _unique(items: list[str]) -> list[str]:
 def same_class(a: str, b: str, oracle: Oracle) -> bool:
     """Are these two methods interchangeable for the benchmark's purposes?
 
-    Class = shared EDAM operation AND shared input data type. Operation alone is too
-    coarse: ``bwa`` and ``STAR`` both perform *Sequence alignment*, but ``bwa`` accepts
-    ``Sequence``/``Genome index`` while ``STAR`` accepts ``Sequence set (nucleic acid)``,
-    so operation-only equivalence would credit an unspliced aligner for spliced RNA
-    alignment.
+    Class = shared *non-bridging* EDAM operation AND shared input data type. Operation
+    alone is too coarse: ``bwa`` and ``STAR`` both perform *Sequence alignment*, but
+    ``bwa`` accepts ``Sequence``/``Genome index`` while ``STAR`` accepts ``Sequence set
+    (nucleic acid)``, so operation-only equivalence would credit an unspliced aligner
+    for spliced RNA alignment.
+
+    Some operations are coarse enough to bridge unrelated tools even *with* the input
+    requirement — see :data:`_BRIDGING_OPERATIONS`, which those cannot satisfy alone.
 
     Identity is a separate disjunct because input Data is curated for only 49 of 905
     methods — without it a method with no curated inputs would fail to match itself.
     """
     if a == b:
         return True
-    if not (oracle.operations(a) & oracle.operations(b)):
+    shared_ops = (oracle.operations(a) & oracle.operations(b)) - _BRIDGING_OPERATIONS
+    if not shared_ops:
         return False
     return bool(oracle.inputs(a) & oracle.inputs(b))
+
+
+def equivalence_pairs(oracle: Oracle) -> list[list[str]]:
+    """Every non-identity ``same_class`` pair the oracle admits, sorted.
+
+    Published next to the coverage numbers so what the benchmark credits as an
+    equivalent substitution is auditable, rather than living only in a test. A pair
+    needs a shared input Data node, so only methods carrying one can appear — 49 of
+    905 on the real graph, which keeps this quadratic scan trivial.
+    """
+    candidates = [m for m in oracle.method_ids() if oracle.inputs(m)]
+    return [
+        [a, b]
+        for index, a in enumerate(candidates)
+        for b in candidates[index + 1:]
+        if same_class(a, b, oracle)
+    ]
 
 
 def match_steps(
@@ -54,8 +95,8 @@ def match_steps(
     path, with both sides iterated in their given order, is deterministic.
 
     Candidate order matters even though it never changes the matching's cardinality:
-    when two distinct steps are mutually `same_class` (e.g. fastqc and salmon share
-    EDAM operation_0236 and an input data type), several matchings of the same maximum
+    when two distinct steps are mutually `same_class` (e.g. star and hisat2 share EDAM
+    operation_0292 and an input data type), several matchings of the same maximum
     size exist, and Kuhn's returns whichever augmenting search finds first — which can
     swap the pair rather than pair each with itself. That swap is invisible to
     score_selection (cardinality is unchanged) but corrupts score_sequencing, which
@@ -146,33 +187,70 @@ def score_sequencing(
 
 
 def score_validity(pred: list[str], oracle: Oracle) -> dict[str, Any]:
-    """Does it run — the share of consecutive handoffs whose data types meet.
+    """Does it run — per STEP, is each step's input supplied by something before it?
 
-    ``UNKNOWN`` (a step with no curated Data I/O) is excluded from the score's
-    denominator and reported as its own count. Folding it into "valid" would inflate the
-    number with ignorance, and folding it into "invalid" would punish a correct answer
-    for a curation gap. ``coverage`` says how much of the answer was checkable at all —
-    with output Data curated for 39 of 905 methods, that caveat is the headline, not a
-    footnote.
+    Reachability, not adjacency. ``pred`` is one linearization of a DAG with fan-out,
+    not a pipe: in nf-core/rnaseq ``fastqc`` is a side branch off the reads channel and
+    ``salmon`` consumes reads rather than STAR's BAM, so type-checking consecutive pairs
+    marks a verbatim-correct answer BROKEN twice and caps every model at 0.5. The axis
+    then measures curation topology instead of the answer.
+
+    For the step at index *i*, with curated input Data ``in_i``:
+
+    * ``in_i`` meets something produced by an EARLIER step -> ``VALID``
+    * else ``in_i`` meets something produced only by a LATER step -> ``BROKEN``
+      (consumed before produced: a genuine ordering error)
+    * else -> ``UNKNOWN`` (a pipeline input, or uncurated I/O — unverifiable either way)
+
+    "Produced by a later step" counts NET production only: a data type a later step both
+    consumes and produces (``trimgalore`` takes reads and emits reads) is a
+    transformation of something that already existed, so its appearance downstream is no
+    evidence the type was unavailable upstream. Without that qualifier every first step
+    of every RNA-seq pipeline is BROKEN, because ``trimgalore`` re-emits the very
+    ``data:data_1234`` that ``fastqc`` consumed straight off the pipeline's input
+    channel.
+
+    ``UNKNOWN`` is excluded from the score's denominator and reported as its own count.
+    Folding it into "valid" would inflate the number with ignorance, and folding it into
+    "invalid" would punish a correct answer for a curation gap. ``coverage`` says how
+    much of the answer was checkable at all — with output Data curated for 39 of 905
+    methods, that caveat is the headline, not a footnote.
     """
-    pairs: list[dict[str, Any]] = []
+    net_output = {step: oracle.outputs(step) - oracle.inputs(step) for step in pred}
+
+    steps: list[dict[str, Any]] = []
     counts = {HANDOFF_VALID: 0, HANDOFF_BROKEN: 0, HANDOFF_UNKNOWN: 0}
-    for producer, consumer in zip(pred, pred[1:]):
-        result, shared = classify_handoff(
-            set(oracle.outputs(producer)), set(oracle.inputs(consumer)))
+    for index, step in enumerate(pred):
+        required = oracle.inputs(step)
+        produced_before: set[str] = set()
+        for earlier in pred[:index]:
+            produced_before |= oracle.outputs(earlier)
+        produced_after: set[str] = set()
+        for later in pred[index + 1:]:
+            produced_after |= net_output[later]
+
+        if not required:
+            result, shared = HANDOFF_UNKNOWN, []
+        elif required & produced_before:
+            result, shared = HANDOFF_VALID, sorted(required & produced_before)
+        elif required & produced_after:
+            result, shared = HANDOFF_BROKEN, sorted(required & produced_after)
+        else:
+            result, shared = HANDOFF_UNKNOWN, []
         counts[result] += 1
-        pairs.append({"from": producer, "to": consumer,
-                      "result": result, "shared": shared})
+        steps.append({"step": step, "result": result, "shared": shared})
 
     classified = counts[HANDOFF_VALID] + counts[HANDOFF_BROKEN]
     return {
         "score": counts[HANDOFF_VALID] / classified if classified else None,
-        "n_pairs": len(pairs),
+        "n_steps": len(steps),
         "n_valid": counts[HANDOFF_VALID],
         "n_broken": counts[HANDOFF_BROKEN],
         "n_unknown": counts[HANDOFF_UNKNOWN],
-        "coverage": classified / len(pairs) if pairs else None,
-        "pairs": pairs,
+        "coverage": classified / len(steps) if steps else None,
+        # Named "pairs" for wire compatibility with the previous shape; each entry now
+        # describes one STEP, not one adjacent pair.
+        "pairs": steps,
     }
 
 

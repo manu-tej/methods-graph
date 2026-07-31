@@ -1,5 +1,8 @@
+import pytest
+
 from methods_graph.bench.oracle import StaticOracle
-from methods_graph.bench.score import match_steps, same_class, score_selection, score_sequencing
+from methods_graph.bench.score import (
+    equivalence_pairs, match_steps, same_class, score_selection, score_sequencing)
 
 
 def _oracle():
@@ -212,40 +215,95 @@ def _io_oracle():
     )
 
 
-def test_typechecking_handoffs_score_one():
+def test_every_input_supplied_by_an_earlier_step_scores_one():
     result = score_validity(["m:star", "m:salmon", "m:deseq2"], _io_oracle())
     assert result["score"] == 1.0
-    assert result["n_valid"] == 2
+    assert result["n_valid"] == 2      # salmon and deseq2; star's reads are a pipeline input
     assert result["n_broken"] == 0
 
 
-def test_disjoint_handoff_is_broken():
-    result = score_validity(["m:star", "m:deseq2"], _io_oracle())
+def test_consuming_before_producing_is_broken():
+    # deseq2 needs the count matrix salmon emits, and salmon runs AFTER it. salmon does
+    # not itself consume a count matrix, so this is net production — a real ordering error.
+    result = score_validity(["m:deseq2", "m:salmon"], _io_oracle())
     assert result["n_broken"] == 1
     assert result["score"] == 0.0
+    assert result["pairs"][0] == {"step": "m:deseq2", "result": "BROKEN",
+                                  "shared": ["data:data_3917"]}
+
+
+def test_an_input_no_step_supplies_is_unknown_not_broken():
+    # Nothing in this answer produces deseq2's count matrix. That is indistinguishable
+    # from a pipeline input, so it is unverifiable — not evidence of a wrong order.
+    result = score_validity(["m:star", "m:deseq2"], _io_oracle())
+    assert result["n_broken"] == 0
+    assert result["n_unknown"] == 2
+    assert result["score"] is None
 
 
 def test_unknown_is_never_counted_as_valid():
-    # bowtie2 has no curated I/O at all — both its pairs are unverifiable.
+    # bowtie2 has no curated I/O at all — it can never be scored either way.
     result = score_validity(["m:star", "m:bowtie2", "m:deseq2"], _io_oracle())
-    assert result["n_unknown"] == 2
+    assert result["n_unknown"] == 3
     assert result["n_valid"] == 0
     assert result["score"] is None
 
 
-def test_coverage_reports_how_much_of_the_answer_was_checkable():
+def test_a_step_with_no_curated_io_is_excluded_from_the_denominator():
     result = score_validity(["m:star", "m:salmon", "m:bowtie2"], _io_oracle())
-    assert result["n_pairs"] == 2
-    assert result["n_unknown"] == 1
-    assert result["coverage"] == 0.5
-    assert result["score"] == 1.0     # the one checkable pair was valid
+    assert result["n_steps"] == 3
+    assert result["n_valid"] == 1                      # salmon consumes star's alignment
+    assert result["n_unknown"] == 2                    # star's reads, and bowtie2 entirely
+    assert result["coverage"] == 1 / 3
+    assert result["score"] == 1.0                      # the one checkable step was valid
+    assert [p["result"] for p in result["pairs"]] == ["UNKNOWN", "VALID", "UNKNOWN"]
 
 
-def test_single_step_answer_has_no_pairs():
-    result = score_validity(["m:star"], _io_oracle())
-    assert result["n_pairs"] == 0
+def test_empty_answer_has_no_steps_to_classify():
+    result = score_validity([], _io_oracle())
+    assert result["n_steps"] == 0
     assert result["score"] is None
     assert result["coverage"] is None
+
+
+def _real_chain():
+    """nf-core/rnaseq's default path, projected into method space."""
+    return ["m:fastqc", "m:trimgalore", "m:star", "m:salmon", "m:deseq2"]
+
+
+def test_a_correct_real_chain_has_no_broken_steps():
+    """The regression this metric was rewritten for.
+
+    Against the real values in fixtures/bench/oracle.json, the pairwise formulation
+    scored this verbatim-correct chain 0.5 while claiming coverage 1.0: fastqc is a side
+    branch off the reads channel and salmon consumes reads rather than STAR's BAM, so
+    two of its four adjacent pairs came out BROKEN. No model could exceed 0.5.
+    """
+    result = score_validity(_real_chain(), _fixture_oracle())
+    assert result["n_broken"] == 0
+    assert result["score"] == 1.0
+
+
+def test_the_reversed_real_chain_emits_a_broken_step():
+    """Discrimination check: a formulation that can never emit BROKEN is vacuous.
+
+    Reversed, deseq2 runs first and consumes the count matrix salmon produces four
+    steps later — consumed before produced.
+    """
+    result = score_validity(list(reversed(_real_chain())), _fixture_oracle())
+    assert result["n_broken"] >= 1
+    assert result["score"] < 1.0
+    assert result["pairs"][0]["step"] == "m:deseq2"
+    assert result["pairs"][0]["result"] == "BROKEN"
+
+
+def test_a_type_preserving_step_downstream_does_not_break_an_upstream_consumer():
+    """trimgalore takes reads (data_1234) and emits reads. That re-emission is not
+    evidence that fastqc — which consumes reads straight off the pipeline's input
+    channel — ran too early."""
+    result = score_validity(["m:fastqc", "m:trimgalore"], _fixture_oracle())
+    assert [p["result"] for p in result["pairs"]] == ["UNKNOWN", "UNKNOWN"]
+    assert result["score"] is None
 
 
 from methods_graph.bench.score import (
@@ -291,24 +349,30 @@ def test_position_buckets():
 
 
 def test_headline_excludes_the_first_step_bucket():
-    # Asymmetric bucket sizes: bucket "1-2" has 2 items (rates differ from "3-5"),
-    # so macro-mean over buckets diverges from per-item mean over non-bucket-0 rows.
-    # Macro-mean: (0.5 + 1.0) / 2 = 0.75. Per-item mean: 2/3 ≈ 0.667.
-    # The assertion pins the macro-mean, not the per-item alternative.
+    # Two properties are pinned here and the fixture must separate BOTH:
+    #   1. macro-mean over buckets, not per-item mean (asymmetric bucket sizes: "1-2"
+    #      holds 2 items and its rate differs from "3-5");
+    #   2. the headline drops bucket "0" while pooled keeps it.
+    # Bucket "0" therefore holds two rows at a rate (0.5) unlike the others, so
+    # headline (0.75) and pooled (0.6) come out different numbers. With a single
+    # bucket-0 row both land on 0.75 and property 2 stops being tested at all.
     rows = [
         {"n_given": 0, "top1": True, "topk": True},    # trivially easy, excluded
+        {"n_given": 0, "top1": False, "topk": True},   # trivially easy, excluded
         {"n_given": 1, "top1": False, "topk": True},   # bucket "1-2"
         {"n_given": 2, "top1": True, "topk": True},    # bucket "1-2"
         {"n_given": 4, "top1": True, "topk": True},    # bucket "3-5"
     ]
     result = aggregate_next_step(rows)
-    assert result["by_bucket"]["0"]["top1"] == 1.0
+    assert result["by_bucket"]["0"]["top1"] == 0.5    # (1 + 0) / 2
     assert result["by_bucket"]["1-2"]["top1"] == 0.5  # (0 + 1) / 2
     assert result["by_bucket"]["3-5"]["top1"] == 1.0
     # Macro-mean over non-trivial buckets: (0.5 + 1.0) / 2 = 0.75, NOT the per-item
     # mean of 2/3 ≈ 0.667 that would result if weighting by individual items.
     assert result["headline_top1"] == 0.75
-    assert result["pooled_top1"] == 0.75  # (1 + 0 + 1 + 1) / 4
+    # Pooled keeps bucket 0 and weights per item: (1 + 0 + 0 + 1 + 1) / 5 = 0.6.
+    assert result["pooled_top1"] == 0.6
+    assert result["headline_top1"] != result["pooled_top1"]
 
 
 def test_headline_is_none_when_only_first_step_items_exist():
@@ -345,22 +409,18 @@ def _fixture_oracle():
 
 
 def test_ceiling_gold_fed_back_scores_one_on_every_metric():
-    # The fixture's one whole_pipeline item runs nf-core/rnaseq's default
-    # star_genomegenerate + star_align + salmon_quant path, which puts fastqc and
-    # salmon in the same gold sequence. Per the fixture oracle they are same_class
-    # (both carry op:operation_0236 and input data:data_1234 — see the
-    # known-limitation test below), so this item is not incidental: it is the case
-    # that used to corrupt this exact gate. Before match_steps preferred identity
-    # pairs (see its docstring), Kuhn's could return a same-cardinality matching that
-    # swapped fastqc's and salmon's positions, dropping sequencing to 0.5 on this
-    # verbatim-gold answer even though selection_f1 stayed 1.0. The gate now genuinely
-    # exercises the collision instead of avoiding it.
+    # EVERY axis, not just selection and sequencing. Leaving validity out of this gate
+    # is what let the pairwise handoff formulation cap a verbatim-correct answer at 0.5
+    # for a whole branch: the fixture's gold chain is nf-core/rnaseq's real default
+    # path, and a correct answer to it must score 1.0 on the axis that asks whether the
+    # pipeline runs.
     items = [i for i in _fixture_items() if i["task"] == "whole_pipeline"]
     oracle = _fixture_oracle()
     rows = run_items(items, gold_adapter(items, oracle), oracle, model="gold")
     summary = summarize(rows)
     assert summary["whole_pipeline"]["selection_f1"] == 1.0
     assert summary["whole_pipeline"]["sequencing"] == 1.0
+    assert summary["whole_pipeline"]["validity"] == 1.0
     assert summary["n_errors"] == 0
 
 
@@ -384,35 +444,83 @@ def test_modal_baseline_ignores_the_goal():
 
 
 def test_match_steps_returns_identity_pairing_when_gold_contains_a_mutual_equivalence():
-    """`m:fastqc` and `m:salmon` are mutually `same_class` in the fixture oracle (see
-    the known-limitation test below): they share EDAM operation_0236 and input
-    data:data_1234. Feeding gold back as its own pred must match every step to
-    itself, not merely reach maximum cardinality — Kuhn's algorithm can return any
-    maximum matching, and a non-identity one that happens to have the same size
-    silently swaps fastqc's and salmon's positions. That swap is exactly what
-    corrupted the ceiling test's sequencing score (0.5 instead of 1.0) on a
-    verbatim-correct answer before match_steps preferred identity pairs.
+    """`m:star` and `m:hisat2` are mutually `same_class` in the fixture oracle: they
+    share EDAM operation_0292 and input data:data_1234. Feeding gold back as its own
+    pred must match every step to itself, not merely reach maximum cardinality —
+    Kuhn's algorithm can return any maximum matching, and a non-identity one that
+    happens to have the same size silently swaps the pair's positions. That swap is
+    exactly what corrupted the ceiling test's sequencing score (0.5 instead of 1.0) on
+    a verbatim-correct answer before match_steps preferred identity pairs.
     """
     oracle = _fixture_oracle()
-    gold = ["m:fastqc", "m:trimgalore", "m:star", "m:salmon", "m:deseq2"]
+    assert same_class("m:star", "m:hisat2", oracle) is True
+    assert same_class("m:hisat2", "m:star", oracle) is True
+    gold = ["m:fastqc", "m:star", "m:hisat2", "m:deseq2"]
     assert match_steps(gold, list(gold), oracle) == {g: g for g in gold}
 
 
-def test_known_limitation_coarse_edam_operation_bridges_fastqc_and_salmon():
-    """KNOWN LIMITATION, recorded so it stays visible rather than latent.
-
-    Against the fixture oracle's real values, fastqc and salmon share EDAM
-    operation_0236 (Sequence composition calculation) AND input data:data_1234, so
-    same_class's operation+input-overlap rule treats a QC tool and a quantifier as
-    interchangeable — the same failure shape test_bwa_is_not_credited_for_spliced_
-    alignment guards against above, surfacing on a different pair because
-    operation_0236 is coarse enough to bridge them.
-
-    This assertion describes CURRENT behaviour; it is not a desired property, and
-    same_class must not be changed to make this test pass. If same_class is ever
-    tightened (e.g. requiring ALL shared operations, or blacklisting bridging
-    operations like operation_0236), this assertion should flip to False as part of
-    that change — the point of pinning it here is that the flip happens on purpose,
-    not that the current value is correct.
+def test_bridging_operations_do_not_make_a_qc_tool_a_quantifier():
+    """fastqc and salmon share EDAM operation_0236 (*Sequence composition calculation*)
+    and input data:data_1234, so the operation+input rule alone treats a read-QC tool
+    and a transcript quantifier as interchangeable — the same failure shape
+    test_bwa_is_not_credited_for_spliced_alignment guards against, surfacing on the
+    operation side. Both appear in essentially every RNA-seq gold sequence, so this
+    single pair inflated the selection headline on the project's target domain.
     """
-    assert same_class("m:fastqc", "m:salmon", _fixture_oracle()) is True
+    oracle = _fixture_oracle()
+    # The bridge really is there — this is what an un-denylisted rule would credit.
+    assert oracle.operations("m:fastqc") & oracle.operations("m:salmon")
+    assert oracle.inputs("m:fastqc") & oracle.inputs("m:salmon")
+    assert same_class("m:fastqc", "m:salmon", oracle) is False
+
+
+_DB_PATH = Path("data/methods.kuzu")
+
+# Every non-identity `same_class` pair the real 905-method graph admits, after the
+# bridging-operation denylist. Pinned rather than described: the relation is small
+# enough to hand-audit, and a re-curation that introduces an eighth pair must fail CI
+# and get looked at instead of silently changing what the benchmark credits.
+#
+# The two pairs the denylist removes, both wrong:
+#   m:affy   <-> m:gsea    via op:operation_2495 (Expression analysis)
+#   m:fastqc <-> m:salmon  via op:operation_0236 (Sequence composition calculation)
+_EXPECTED_EQUIVALENCE_PAIRS = [
+    ["m:bwa", "m:bwamem2"],        # op:operation_0292 — short-read aligners
+    ["m:bwa", "m:strobealign"],    # op:operation_3198, op:operation_3211
+    ["m:deseq2", "m:limma"],       # op:operation_3223, op:operation_3680 — DE testing
+    ["m:fastp", "m:fastqc"],       # op:operation_3218 — sequencing quality control
+    ["m:hisat2", "m:star"],        # op:operation_0292 — spliced aligners
+    ["m:kraken2", "m:metabuli"],   # op:operation_3460 — taxonomic classification
+    ["m:rsem", "m:salmon"],        # op:operation_3800 — RNA-seq quantification
+]
+
+
+@pytest.mark.skipif(not _DB_PATH.exists(), reason="no built graph at data/methods.kuzu")
+def test_equivalence_relation_over_the_real_graph_is_exactly_the_expected_set():
+    """Enumerate the whole relation and pin it.
+
+    A pair needs a shared non-bridging operation AND a shared input Data node, so only
+    the 49 methods carrying curated input Data can appear — the scan below is the
+    complete enumeration, not a sample.
+    """
+    from methods_graph.bench.oracle import KuzuOracle
+
+    oracle = KuzuOracle(_DB_PATH)
+    candidates = [m for m in oracle.method_ids() if oracle.inputs(m)]
+    pairs = [
+        [a, b]
+        for index, a in enumerate(candidates)
+        for b in candidates[index + 1:]
+        if same_class(a, b, oracle)
+    ]
+    assert pairs == _EXPECTED_EQUIVALENCE_PAIRS
+    # The published report must show the same list the test pins.
+    assert equivalence_pairs(oracle) == _EXPECTED_EQUIVALENCE_PAIRS
+
+
+def test_equivalence_pairs_excludes_identity_and_is_sorted():
+    pairs = equivalence_pairs(_fixture_oracle())
+    assert all(a < b for a, b in pairs)
+    assert pairs == sorted(pairs)
+    assert ["m:hisat2", "m:star"] in pairs
+    assert ["m:fastqc", "m:salmon"] not in pairs
