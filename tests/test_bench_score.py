@@ -393,8 +393,10 @@ def test_repeated_leading_entry_does_not_evict_from_topk():
 import json
 from pathlib import Path
 
-from methods_graph.bench.baselines import gold_adapter, modal_adapter, random_adapter
+from methods_graph.bench.baselines import (
+    baseline_adapter, gold_adapter, is_baseline_spec, modal_adapter, random_adapter)
 from methods_graph.bench.oracle import load_oracle
+from methods_graph.bench.render import render_prompt
 from methods_graph.bench.run import run_items, summarize
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "bench"
@@ -437,10 +439,83 @@ def test_random_baseline_differs_across_seeds():
             != random_adapter(oracle, k=4, seed=8)("p"))
 
 
+def _whole(item_id: str, sequence: list[str]) -> dict:
+    return {"id": item_id, "task": "whole_pipeline", "goal": item_id, "given": [],
+            "gold": {"sequence": sequence}}
+
+
+_SEQ_A = ["mod:fastqc", "mod:trimgalore", "mod:star_align"]
+_SEQ_B = ["mod:salmon_quant", "mod:deseq2_differential"]
+_ANSWER_A = ["fastqc", "trimgalore", "star"]
+_ANSWER_B = ["salmon", "deseq2"]
+
+
+def test_modal_baseline_answers_the_most_common_gold_sequence():
+    """WHAT it answers, not merely that it answers the same thing twice.
+
+    `modal_adapter` returns `lambda _prompt: answer` — a closure over a constant — so
+    an equality assertion between two prompts is guaranteed by the closure's shape and
+    passes just as well if the body is replaced by `return lambda _p: "[]"`. Two items
+    on sequence A against one on B is what makes the count load-bearing.
+    """
+    items = [_whole("a/whole/001", _SEQ_A), _whole("b/whole/001", _SEQ_A),
+             _whole("c/whole/001", _SEQ_B)]
+    adapter = modal_adapter(items, _fixture_oracle())
+    assert json.loads(adapter("Goal: anything at all")) == _ANSWER_A
+
+
+def test_modal_baseline_breaks_a_tie_lexicographically():
+    """One item each: the pick must be stable across item-set revisions rather than
+    following dict order. ("m:fastqc", …) sorts below ("m:salmon", …), so A wins —
+    and `max` in place of `min` would answer B."""
+    items = [_whole("a/whole/001", _SEQ_A), _whole("c/whole/001", _SEQ_B)]
+    adapter = modal_adapter(items, _fixture_oracle())
+    assert json.loads(adapter("Goal: anything at all")) == _ANSWER_A
+
+
 def test_modal_baseline_ignores_the_goal():
-    items = [i for i in _fixture_items() if i["task"] == "whole_pipeline"]
+    items = [_whole("a/whole/001", _SEQ_A), _whole("b/whole/001", _SEQ_A),
+             _whole("c/whole/001", _SEQ_B)]
     adapter = modal_adapter(items, _fixture_oracle())
     assert adapter("Goal: A") == adapter("Goal: something completely different")
+
+
+def test_modal_baseline_with_no_whole_pipeline_items_answers_nothing():
+    adapter = modal_adapter([], _fixture_oracle())
+    assert json.loads(adapter("Goal: anything")) == []
+
+
+def test_baseline_specs_are_resolvable_from_a_model_string():
+    """The gold/modal/random baselines could not be run over an item set without
+    writing Python, because get_adapter knew only claude:/openai:/static:."""
+    items = [i for i in _fixture_items() if i["task"] == "whole_pipeline"]
+    oracle = _fixture_oracle()
+    assert is_baseline_spec("gold:") and is_baseline_spec("modal:")
+    assert is_baseline_spec("random:7") and not is_baseline_spec("openai:gpt-4o")
+
+    prompt = render_prompt(items[0], oracle)
+    assert json.loads(baseline_adapter("gold:", items, oracle)(prompt)) == [
+        "fastqc", "trimgalore", "star", "salmon", "deseq2"]
+    assert (baseline_adapter("random:7", items, oracle)(prompt)
+            == baseline_adapter("random:7", items, oracle)(prompt))
+    assert (baseline_adapter("random:7", items, oracle)(prompt)
+            != baseline_adapter("random:8", items, oracle)(prompt))
+
+
+def test_random_baseline_names_as_many_tools_as_the_gold_answer_does():
+    """A fixed k would flatter the floor's precision and understate its recall."""
+    items = [i for i in _fixture_items() if i["task"] == "whole_pipeline"]
+    oracle = _fixture_oracle()
+    answer = json.loads(baseline_adapter("random:7", items, oracle)("any prompt"))
+    assert len(answer) == 5     # the fixture's gold projects to five distinct methods
+    assert len(json.loads(baseline_adapter("random:7:2", items, oracle)("p"))) == 2
+
+
+def test_a_malformed_random_seed_is_an_adapter_error_not_a_value_error():
+    from methods_graph.bench.adapters import AdapterError
+
+    with pytest.raises(AdapterError, match="integer seed"):
+        baseline_adapter("random:abc", [], _fixture_oracle())
 
 
 def test_match_steps_returns_identity_pairing_when_gold_contains_a_mutual_equivalence():

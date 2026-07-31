@@ -1296,6 +1296,7 @@ def cmd_bench(args) -> int:
 
     if args.bench_cmd == "run":
         from methods_graph.bench.adapters import get_adapter
+        from methods_graph.bench.baselines import baseline_adapter, is_baseline_spec
 
         items = load_items(args.items)
         if args.task:
@@ -1303,7 +1304,9 @@ def cmd_bench(args) -> int:
         # `is not None`, so `--limit 0` means zero items rather than "no limit".
         if args.limit is not None:
             items = items[:args.limit]
-        adapter = get_adapter(args.model)
+        # Baselines need the item set and the oracle; contestants need neither.
+        adapter = (baseline_adapter(args.model, items, oracle)
+                   if is_baseline_spec(args.model) else get_adapter(args.model))
         args.out.parent.mkdir(parents=True, exist_ok=True)
         # Streamed and flushed per row, not buffered until the loop ends: a
         # KeyboardInterrupt or an OOM partway through a paid run must leave every
@@ -1555,7 +1558,8 @@ def main(argv: list[str] | None = None) -> int:
     b_run.add_argument("--db", type=Path, default=Path("data/methods.kuzu"))
     b_run.add_argument("--oracle-json", type=Path, default=None)
     b_run.add_argument("--model", required=True,
-                       help="claude:<model> | openai:<model> | static:<path>")
+                       help="claude:<model> | openai:<model> | static:<path> | "
+                            "gold: | modal: | random:<seed>[:<k>]")
     b_run.add_argument("--out", type=Path, required=True)
     b_run.add_argument("--limit", type=int, default=None)
     b_run.add_argument("--task", choices=["whole_pipeline", "next_step"], default=None)

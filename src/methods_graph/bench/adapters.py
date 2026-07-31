@@ -116,12 +116,27 @@ def openai(
 
 
 def get_adapter(spec: str) -> Callable[[str], str]:
-    """``claude:<model>`` / ``openai:<model>`` / ``static:<path-to-json>``."""
+    """``claude:<model>`` / ``openai:<model>`` / ``static:<path-to-json>``.
+
+    The ``gold:``/``modal:``/``random:<seed>`` baselines are resolved by
+    :func:`methods_graph.bench.baselines.baseline_adapter` instead — they need the item
+    set and the oracle, which a spec string cannot carry.
+    """
     provider, _, argument = spec.partition(":")
     if provider == "claude":
         return claude_cli(model=argument or "claude-opus-5")
     if provider == "openai":
         return openai(model=argument or "gpt-4o")
     if provider == "static":
-        return static(json.loads(Path(argument).read_text()))
-    raise AdapterError(f"unknown adapter {spec!r} (expected claude:, openai: or static:)")
+        try:
+            blob = Path(argument).read_text()
+        except OSError as exc:
+            # A typo'd --model must not print a stack trace.
+            raise AdapterError(f"static adapter file not readable: {exc}") from exc
+        try:
+            return static(json.loads(blob))
+        except json.JSONDecodeError as exc:
+            raise AdapterError(f"static adapter file is not valid JSON: {exc}") from exc
+    raise AdapterError(
+        f"unknown adapter {spec!r} (expected claude:, openai:, static:, "
+        f"gold:, modal: or random:<seed>)")

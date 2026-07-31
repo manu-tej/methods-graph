@@ -112,3 +112,22 @@ def test_get_adapter_loads_a_static_file(tmp_path):
     path = tmp_path / "canned.json"
     path.write_text(json.dumps({"Goal: A": '["fastqc"]'}))
     assert get_adapter(f"static:{path}")("Goal: A") == '["fastqc"]'
+
+
+def test_a_missing_static_file_is_an_adapter_error_not_a_stack_trace(tmp_path):
+    with pytest.raises(AdapterError, match="not readable"):
+        get_adapter(f"static:{tmp_path / 'typo.json'}")
+
+
+def test_a_malformed_static_file_is_an_adapter_error(tmp_path):
+    path = tmp_path / "canned.json"
+    path.write_text("{not json")
+    with pytest.raises(AdapterError, match="not valid JSON"):
+        get_adapter(f"static:{path}")
+
+
+def test_the_unknown_adapter_message_names_the_baseline_specs():
+    """`--model gold:` is resolved elsewhere; the error a user actually sees has to
+    tell them the spec exists."""
+    with pytest.raises(AdapterError, match="random:<seed>"):
+        get_adapter("mystery:model-x")
