@@ -62,3 +62,38 @@ def test_coverage_of_empty_input_is_zero_not_a_crash():
 def test_method_ids_returns_methods_sorted():
     oracle = _oracle()
     assert oracle.method_ids() == ["m:bowtie2", "m:bwa", "m:hisat2", "m:star"]
+
+
+def _ambiguous_oracle():
+    """``mod:custom_orfnormalise`` wraps six methods on the real graph; the projection
+    keeps the lexicographically first and discards five."""
+    return StaticOracle(
+        methods=["m:bwa", "m:star", "m:hisat2"],
+        modules={"mod:custom_orfnormalise": "m:bwa", "mod:star_align": "m:star"},
+        multi_wrapped={"mod:custom_orfnormalise": ["m:bwa", "m:hisat2", "m:star"]},
+    )
+
+
+def test_coverage_reports_the_arbitrary_pick_it_made_for_multi_wrapped_modules():
+    """The plan requires the deterministic pick to be REPORTED, not merely made. Without
+    this, five discarded candidates are invisible in every report."""
+    report = coverage(_ambiguous_oracle(),
+                      ["mod:custom_orfnormalise", "mod:star_align"])
+    assert report["n_multi_wrapped"] == 1
+    assert report["multi_wrapped"] == {
+        "mod:custom_orfnormalise": ["m:bwa", "m:hisat2", "m:star"]}
+
+
+def test_coverage_multi_wrapped_is_scoped_to_the_modules_under_test():
+    report = coverage(_ambiguous_oracle(), ["mod:star_align"])
+    assert report["n_multi_wrapped"] == 0
+    assert report["multi_wrapped"] == {}
+
+
+def test_multi_wrapped_is_part_of_the_oracle_contract():
+    """On the protocol, not just on StaticOracle — a coverage report that calls it must
+    be able to rely on any Oracle providing it."""
+    from methods_graph.bench.oracle import Oracle
+
+    assert "multi_wrapped" in Oracle.__protocol_attrs__
+    assert _oracle().multi_wrapped() == {}

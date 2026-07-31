@@ -320,6 +320,11 @@ def test_cli_bench_coverage_runs_against_a_fixture_item_set(tmp_path, capsys):
     assert report["n_modules"] == 6
     assert report["resolved_fraction"] == 1.0
     assert report["unresolved"] == []
+    # The equivalence relation is published with the numbers it affects: these are the
+    # substitutions the selection and next-step metrics credit as correct.
+    assert report["equivalence_pairs"] == [["m:hisat2", "m:star"]]
+    assert report["n_equivalence_pairs"] == 1
+    assert report["n_multi_wrapped"] == 0
 
 
 def test_cli_bench_score_rewrites_scores_into_the_out_file(tmp_path, capsys):

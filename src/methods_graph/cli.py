@@ -1256,12 +1256,22 @@ def cmd_bench(args) -> int:
     oracle = load_oracle(db_path=args.db, json_path=args.oracle_json)
 
     if args.bench_cmd == "coverage":
+        from methods_graph.bench.score import equivalence_pairs
+
         module_ids = [
             module_id
             for item in load_items(args.items) if item["task"] == "whole_pipeline"
             for module_id in item["gold"]["sequence"]
         ]
-        print(json.dumps(coverage(oracle, module_ids), indent=2, sort_keys=True))
+        report = coverage(oracle, module_ids)
+        # Published next to the numbers, not left in a test: these are the substitutions
+        # the selection and next-step metrics silently credit as correct. Computed here
+        # rather than inside coverage() so oracle.py stays the one file that knows about
+        # the graph and score.py stays the one file that knows what a metric is.
+        pairs = equivalence_pairs(oracle)
+        report["n_equivalence_pairs"] = len(pairs)
+        report["equivalence_pairs"] = pairs
+        print(json.dumps(report, indent=2, sort_keys=True))
         return 0
 
     if args.bench_cmd == "run":

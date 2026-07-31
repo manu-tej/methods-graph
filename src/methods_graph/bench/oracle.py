@@ -24,6 +24,7 @@ class Oracle(Protocol):
     def inputs(self, method_id: str) -> frozenset[str]: ...
     def outputs(self, method_id: str) -> frozenset[str]: ...
     def method_ids(self) -> list[str]: ...
+    def multi_wrapped(self) -> dict[str, list[str]]: ...
 
 
 class StaticOracle:
@@ -87,9 +88,13 @@ class KuzuOracle(StaticOracle):
     def __init__(self, db_path: Path) -> None:
         import kuzu
 
-        db = kuzu.Database(str(db_path), read_only=True)
-        conn = kuzu.Connection(db)
+        # Pre-initialized so the `finally` can close whatever was opened: constructing
+        # the Connection inside the try is what keeps a failed Connection() from
+        # leaking the Database handle.
+        db = conn = None
         try:
+            db = kuzu.Database(str(db_path), read_only=True)
+            conn = kuzu.Connection(db)
             methods = [r[0] for r in conn.execute(
                 "MATCH (m:Entity {kind:'Method'}) RETURN m.id ORDER BY m.id")]
 
@@ -117,8 +122,10 @@ class KuzuOracle(StaticOracle):
                         {"k": edge_kind}):
                     io[edge_kind].setdefault(method_id, []).append(data_id)
         finally:
-            conn.close()
-            db.close()
+            if conn is not None:
+                conn.close()
+            if db is not None:
+                db.close()
 
         super().__init__(
             methods=methods,
@@ -141,6 +148,16 @@ def coverage(oracle: Oracle, module_ids: list[str]) -> dict[str, Any]:
     unresolved = sorted(m for m, method in resolved.items() if method is None)
     methods = sorted({method for method in resolved.values() if method})
 
+    # Which of the item set's own modules wrap more than one method. The projection
+    # takes the lexicographically first candidate so the answer key is deterministic;
+    # reporting the discarded candidates is what makes that pick auditable instead of
+    # merely stable. Scoped to *module_ids* because that is what this report is about.
+    ambiguous = oracle.multi_wrapped()
+    multi_wrapped = {
+        module_id: sorted(ambiguous[module_id])
+        for module_id in unique_modules if module_id in ambiguous
+    }
+
     return {
         "n_modules": len(unique_modules),
         "n_resolved": len(unique_modules) - len(unresolved),
@@ -152,6 +169,8 @@ def coverage(oracle: Oracle, module_ids: list[str]) -> dict[str, Any]:
         "n_with_operations": sum(1 for m in methods if oracle.operations(m)),
         "n_with_input_data": sum(1 for m in methods if oracle.inputs(m)),
         "n_with_output_data": sum(1 for m in methods if oracle.outputs(m)),
+        "n_multi_wrapped": len(multi_wrapped),
+        "multi_wrapped": multi_wrapped,
         "methods": methods,
     }
 
@@ -170,6 +189,7 @@ def load_oracle(*, db_path: Path | None = None, json_path: Path | None = None) -
             operations=blob.get("operations", {}),
             inputs=blob.get("inputs", {}),
             outputs=blob.get("outputs", {}),
+            multi_wrapped=blob.get("multi_wrapped", {}),
         )
     if db_path is None:
         raise ValueError("one of db_path or json_path is required")
