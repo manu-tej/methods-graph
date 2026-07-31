@@ -1,0 +1,93 @@
+from methods_graph.bench.oracle import StaticOracle
+from methods_graph.bench.score import match_steps, same_class, score_selection
+
+
+def _oracle():
+    """Mirrors the real graph: star/hisat2 share op AND input Data; bwa shares only op."""
+    return StaticOracle(
+        methods=["m:star", "m:hisat2", "m:bwa", "m:bowtie2", "m:salmon", "m:deseq2",
+                 "m:fastqc"],
+        operations={
+            "m:star": ["op:operation_0292"],
+            "m:hisat2": ["op:operation_0292"],
+            "m:bwa": ["op:operation_0292", "op:operation_3198"],
+            "m:bowtie2": ["op:operation_3198"],
+            "m:salmon": ["op:operation_3800"],
+            "m:deseq2": ["op:operation_3223"],
+            "m:fastqc": ["op:operation_3218"],
+        },
+        inputs={
+            "m:star": ["data:data_1234", "data:data_2977"],
+            "m:hisat2": ["data:data_1234", "data:data_2977"],
+            "m:bwa": ["data:data_2044", "data:data_3210"],
+            "m:salmon": ["data:data_1234"],
+            "m:deseq2": ["data:data_3917"],
+            "m:fastqc": ["data:data_1234"],
+        },
+    )
+
+
+def test_hisat2_is_credited_for_star():
+    assert same_class("m:star", "m:hisat2", _oracle()) is True
+
+
+def test_bwa_is_not_credited_for_spliced_alignment():
+    oracle = _oracle()
+    # The two DO share an operation — this is what an operation-only class would credit.
+    assert oracle.operations("m:star") & oracle.operations("m:bwa")
+    # Adding the input-data requirement is what rejects it.
+    assert same_class("m:star", "m:bwa", oracle) is False
+
+
+def test_a_method_with_no_curated_input_data_still_matches_itself():
+    assert same_class("m:bowtie2", "m:bowtie2", _oracle()) is True
+
+
+def test_a_method_with_no_curated_input_data_matches_nothing_else():
+    assert same_class("m:bowtie2", "m:bwa", _oracle()) is False
+
+
+def test_unrelated_tools_do_not_match():
+    assert same_class("m:deseq2", "m:fastqc", _oracle()) is False
+
+
+def test_perfect_answer_scores_one():
+    gold = ["m:fastqc", "m:star", "m:salmon", "m:deseq2"]
+    result = score_selection(gold, list(gold), _oracle())
+    assert result["precision"] == 1.0
+    assert result["recall"] == 1.0
+    assert result["f1"] == 1.0
+
+
+def test_equivalent_substitution_scores_one():
+    result = score_selection(["m:star"], ["m:hisat2"], _oracle())
+    assert result["f1"] == 1.0
+    assert result["matched"] == {"m:star": "m:hisat2"}
+
+
+def test_one_predicted_tool_cannot_satisfy_two_gold_steps():
+    # Matching is one-to-one: hisat2 covers star, but nothing covers salmon.
+    result = score_selection(["m:star", "m:salmon"], ["m:hisat2"], _oracle())
+    assert result["recall"] == 0.5
+    assert result["precision"] == 1.0
+
+
+def test_matching_is_maximum_not_greedy():
+    # Greedy left-to-right would bind hisat2 to star, leaving nothing for hisat2's own
+    # gold slot. A maximum matching finds both.
+    gold = ["m:star", "m:hisat2"]
+    pred = ["m:hisat2", "m:star"]
+    assert len(match_steps(gold, pred, _oracle())) == 2
+
+
+def test_extra_predictions_cost_precision_not_recall():
+    result = score_selection(["m:star"], ["m:star", "m:deseq2", "m:fastqc"], _oracle())
+    assert result["recall"] == 1.0
+    assert result["precision"] == 1.0 / 3
+
+
+def test_empty_prediction_scores_zero_without_dividing_by_zero():
+    result = score_selection(["m:star"], [], _oracle())
+    assert result["precision"] == 0.0
+    assert result["recall"] == 0.0
+    assert result["f1"] == 0.0
