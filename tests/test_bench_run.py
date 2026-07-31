@@ -313,9 +313,11 @@ def test_cli_bench_coverage_runs_against_a_fixture_item_set(tmp_path, capsys):
     assert code == 0
 
     report = json.loads(capsys.readouterr().out)
-    # The fixture's whole_pipeline item names 4 modules, all of which resolve in the
-    # fixture oracle — a real assertion on the printed report, not just an exit code.
-    assert report["n_modules"] == 4
+    # The fixture's whole_pipeline item names 6 modules (fastqc, trimgalore,
+    # star_genomegenerate, star_align, salmon_quant, deseq2_differential), all of
+    # which resolve in the fixture oracle — a real assertion on the printed report,
+    # not just an exit code.
+    assert report["n_modules"] == 6
     assert report["resolved_fraction"] == 1.0
     assert report["unresolved"] == []
 
@@ -330,7 +332,7 @@ def test_cli_bench_score_rewrites_scores_into_the_out_file(tmp_path, capsys):
     canned.write_text(json.dumps([
         '["fastqc"]',
         '["star"]',
-        '["fastqc","trimgalore","hisat2","deseq2"]',
+        '["fastqc","trimgalore","star","salmon","deseq2"]',
     ]))
     results = tmp_path / "results.jsonl"
     run_code = main(["bench", "run", "--items", str(items_dir), "--oracle-json", oracle_json,

@@ -52,10 +52,26 @@ def match_steps(
     left-to-right pass can bind a predicted tool to the first gold step it fits and
     strand a later gold step that only that tool could have covered. Kuhn's augmenting
     path, with both sides iterated in their given order, is deterministic.
+
+    Candidate order matters even though it never changes the matching's cardinality:
+    when two distinct steps are mutually `same_class` (e.g. fastqc and salmon share
+    EDAM operation_0236 and an input data type), several matchings of the same maximum
+    size exist, and Kuhn's returns whichever augmenting search finds first — which can
+    swap the pair rather than pair each with itself. That swap is invisible to
+    score_selection (cardinality is unchanged) but corrupts score_sequencing, which
+    reads positions off the matching: a verbatim-correct answer can score below 1.0 on
+    ordering. Trying each gold step's own identity match first (when available) makes
+    identity pairs the ones Kuhn's greedily claims before any augmenting is needed, so
+    `pred == gold` always yields the identity matching.
     """
     gold = _unique(gold)
     pred = _unique(pred)
-    adjacency = {g: [p for p in pred if same_class(g, p, oracle)] for g in gold}
+
+    def _candidates(g: str) -> list[str]:
+        matches = [p for p in pred if same_class(g, p, oracle)]
+        return ([g] if g in matches else []) + [p for p in matches if p != g]
+
+    adjacency = {g: _candidates(g) for g in gold}
     owner: dict[str, str] = {}  # predicted id -> gold id currently holding it
 
     def _augment(g: str, seen: set[str]) -> bool:

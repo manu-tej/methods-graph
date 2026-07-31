@@ -345,20 +345,16 @@ def _fixture_oracle():
 
 
 def test_ceiling_gold_fed_back_scores_one_on_every_metric():
-    # The fixture's one whole_pipeline item deliberately runs fastqc -> trimgalore ->
-    # hisat2_align -> deseq2_differential rather than nf-core/rnaseq's default
-    # star_align + salmon_quant path. star and salmon are still in the fixture oracle
-    # (exercised by the next_step items below and by the known-limitation test), but
-    # putting BOTH fastqc and salmon in one gold sequence would poison this exact
-    # test: they are same_class per the fixture oracle (both carry op:operation_0236
-    # and input data:data_1234, see the known-limitation test), and match_steps's
-    # maximum-cardinality matching does not prefer identity pairs when a mutual
-    # same_class collision is present in gold==pred — it provably swaps them instead
-    # (verified directly against match_steps/score_sequencing: swapping the fastqc/
-    # salmon assignment drops sequencing from 1.0 to 0.5 even though the answer is
-    # gold verbatim). That is a real, separate gap in match_steps's tie-breaking
-    # this task is not scoped to fix; the HISAT2 path sidesteps it so this CI gate
-    # measures the baselines under test, not that unrelated gap.
+    # The fixture's one whole_pipeline item runs nf-core/rnaseq's default
+    # star_genomegenerate + star_align + salmon_quant path, which puts fastqc and
+    # salmon in the same gold sequence. Per the fixture oracle they are same_class
+    # (both carry op:operation_0236 and input data:data_1234 — see the
+    # known-limitation test below), so this item is not incidental: it is the case
+    # that used to corrupt this exact gate. Before match_steps preferred identity
+    # pairs (see its docstring), Kuhn's could return a same-cardinality matching that
+    # swapped fastqc's and salmon's positions, dropping sequencing to 0.5 on this
+    # verbatim-gold answer even though selection_f1 stayed 1.0. The gate now genuinely
+    # exercises the collision instead of avoiding it.
     items = [i for i in _fixture_items() if i["task"] == "whole_pipeline"]
     oracle = _fixture_oracle()
     rows = run_items(items, gold_adapter(items, oracle), oracle, model="gold")
@@ -385,6 +381,21 @@ def test_modal_baseline_ignores_the_goal():
     items = [i for i in _fixture_items() if i["task"] == "whole_pipeline"]
     adapter = modal_adapter(items, _fixture_oracle())
     assert adapter("Goal: A") == adapter("Goal: something completely different")
+
+
+def test_match_steps_returns_identity_pairing_when_gold_contains_a_mutual_equivalence():
+    """`m:fastqc` and `m:salmon` are mutually `same_class` in the fixture oracle (see
+    the known-limitation test below): they share EDAM operation_0236 and input
+    data:data_1234. Feeding gold back as its own pred must match every step to
+    itself, not merely reach maximum cardinality — Kuhn's algorithm can return any
+    maximum matching, and a non-identity one that happens to have the same size
+    silently swaps fastqc's and salmon's positions. That swap is exactly what
+    corrupted the ceiling test's sequencing score (0.5 instead of 1.0) on a
+    verbatim-correct answer before match_steps preferred identity pairs.
+    """
+    oracle = _fixture_oracle()
+    gold = ["m:fastqc", "m:trimgalore", "m:star", "m:salmon", "m:deseq2"]
+    assert match_steps(gold, list(gold), oracle) == {g: g for g in gold}
 
 
 def test_known_limitation_coarse_edam_operation_bridges_fastqc_and_salmon():
