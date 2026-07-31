@@ -15,11 +15,17 @@ def make_items(
     goal: str,
     sequence: list[str],
     derivation: str,
+    edges: list[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """One whole-pipeline item plus one next-step item per position.
 
     Rejects anything not derived from a real Nextflow DAG: accepting inferred
     wiring would make the answer key an artifact of the method under test.
+
+    *edges* is the DAG the sequence linearizes. When supplied it is frozen onto the
+    whole-pipeline item as ``gold["edges"]``, so the sequencing metric can score the
+    ordering the pipeline actually requires instead of penalizing a different — equally
+    correct — interleaving of parallel branches.
     """
     if derivation != _REQUIRED_DERIVATION:
         raise ValueError(
@@ -33,12 +39,16 @@ def make_items(
         "dag_sha256": dag_sha256,
         "derivation": derivation,
     }
+    # Lists, not tuples: the item set is round-tripped through JSON, and an "edges" key
+    # that compares unequal after a reload would make the frozen artifact untrustworthy.
+    constraint = {} if edges is None else {
+        "edges": [[source, target] for source, target in edges]}
     items: list[dict[str, Any]] = [{
         "id": f"{pipeline}/whole/001",
         "task": "whole_pipeline",
         "goal": goal,
         "given": [],
-        "gold": {"sequence": list(sequence), **provenance},
+        "gold": {"sequence": list(sequence), **constraint, **provenance},
     }]
     for index in range(len(sequence)):
         items.append({

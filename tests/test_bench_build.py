@@ -55,6 +55,25 @@ def test_single_step_pipeline_is_rejected():
         make_items(**{**COMMON, "sequence": ["mod:fastqc"]})
 
 
+EDGES = [("mod:trimgalore", "mod:star"), ("mod:star", "mod:salmon"),
+         ("mod:star", "mod:deseq2")]
+
+
+def test_gold_edges_are_frozen_with_the_whole_pipeline_item():
+    """The sequencing metric needs the DAG, not one of its linearizations — and after the
+    items are frozen the DAG is unrecoverable, so it has to be stored now."""
+    whole = [i for i in make_items(**COMMON, edges=EDGES)
+             if i["task"] == "whole_pipeline"][0]
+    assert whole["gold"]["edges"] == [["mod:trimgalore", "mod:star"],
+                                      ["mod:star", "mod:salmon"],
+                                      ["mod:star", "mod:deseq2"]]
+
+
+def test_items_are_unchanged_when_no_edges_are_supplied():
+    assert make_items(**COMMON) == make_items(**COMMON, edges=None)
+    assert all("edges" not in item["gold"] for item in make_items(**COMMON))
+
+
 def test_manifest_counts_used_and_dropped():
     manifest = build_manifest([
         {"pipeline": "rnaseq", "revision": "3.14.0", "status": "used",

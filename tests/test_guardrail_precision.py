@@ -46,10 +46,17 @@ def test_differential_expression_still_blocks_at_one_replicate():
     assert _status("m:deseq2") == "BLOCKED"
 
 
+# --- regression pin ---------------------------------------------------------------
 # Which methods may refuse work is a curation decision. It must never be an emergent
 # property of third-party EDAM tags: before source/scope were honoured, bio.tools'
 # annotation of antiSMASH as "Differential gene expression analysis" was enough to make a
-# gene-cluster detector refuse an experiment. Widening this set requires editing it here.
+# gene-cluster detector refuse an experiment.
+#
+# A characterization test, not a TDD cycle: it passes by construction today, and its job is
+# to fail LATER if a curation or inheritance change silently re-widens the set. Adding an id
+# here should require justifying that the precondition is intrinsic to that method rather
+# than inherited from an operation-level tag.
+
 GATEABLE = {"m:deseq2"}
 
 
@@ -60,7 +67,7 @@ def test_the_gateable_set_is_pinned():
     db = kuzu.Database(str(_DB), read_only=True)
     conn = kuzu.Connection(db)
     try:
-        result = conn.execute("MATCH (n) WHERE n.kind='Method' RETURN n.id")
+        result = conn.execute("MATCH (n) WHERE n.kind='Method' RETURN n.id ORDER BY n.id")
         method_ids = []
         while result.has_next():
             method_ids.append(result.get_next()[0])
@@ -75,34 +82,3 @@ def test_the_gateable_set_is_pinned():
             if guardrail.evaluate(provider, method=mid, facts=_STARVED)["status"] == "BLOCKED"
         }
     assert blocked == GATEABLE
-
-
-# --- regression pin ---------------------------------------------------------------
-# Characterization test, not a TDD cycle: it passes by construction today. Its job is to
-# fail LATER, if a curation or inheritance change silently re-widens the set of methods
-# that can refuse work. Adding an id here should require justifying that the precondition
-# is intrinsic to that method, not inherited from an operation-level tag.
-
-GATEABLE = {"m:deseq2"}
-
-
-def test_the_set_of_methods_that_can_block_is_exactly_pinned():
-    with KuzuMethodsGraphProvider(_DB) as provider:
-        import kuzu
-
-        db = kuzu.Database(str(_DB), read_only=True)
-        conn = kuzu.Connection(db)
-        try:
-            res = conn.execute("MATCH (n) WHERE n.kind='Method' RETURN n.id ORDER BY n.id")
-            ids = []
-            while res.has_next():
-                ids.append(res.get_next()[0])
-        finally:
-            conn.close()
-            db.close()
-
-        actual = {
-            mid for mid in ids
-            if guardrail.evaluate(provider, method=mid, facts=_STARVED)["status"] == "BLOCKED"
-        }
-    assert actual == GATEABLE

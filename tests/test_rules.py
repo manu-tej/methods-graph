@@ -59,6 +59,56 @@ def test_the_gate_cites_the_source_of_its_threshold():
     )
 
 
+# --- assumption ids: both curated spellings must mean the same thing ---
+#
+# The curated loader (crosslinks/assumption_diagnostics.py) normalizes `checks` and
+# `applies_to_assumption` to `assum:<slug>` and accepts either spelling on input. This
+# engine reads the raw YAML, so it has to normalize too — otherwise a curator writing the
+# prefixed form silently loses the diagnostic AND its threshold here while `mg guardrail`
+# keeps blocking, i.e. the hook stops enforcing and nothing says so.
+
+def _write_curation(directory: Path, *, checks: str, applies_to: str) -> Path:
+    (directory / "method_statistical_methods.yaml").write_text(
+        "links:\n"
+        "  - method: m:demo\n"
+        "    statistical_method: stat:nb_glm\n"
+        "    label: negative binomial GLM\n", encoding="utf-8")
+    (directory / "statistical_method_assumptions.yaml").write_text(
+        "assumptions:\n"
+        "  - id: assum:asymptotic_normality\n"
+        "    name: asymptotic normality\n"
+        "requires:\n"
+        "  - statistical_method: stat:nb_glm\n"
+        "    assumption: assum:asymptotic_normality\n"
+        "    evidence: url:https://example.org/tutorial\n", encoding="utf-8")
+    (directory / "assumption_diagnostics.yaml").write_text(
+        "diagnostics:\n"
+        "  sample_size_power_check:\n"
+        "    name: sample size / power check\n"
+        "    kind: procedure\n"
+        f"    checks: [{checks}]\n"
+        f"    applies_to_assumption: {applies_to}\n"
+        "    checkable: pre_run\n"
+        "    min_replicates_per_group: 3\n"
+        f"    ref: doi:{_THRESHOLD_SOURCE}\n", encoding="utf-8")
+    return directory
+
+
+@pytest.mark.parametrize("checks,applies_to", [
+    ("asymptotic_normality", "asymptotic_normality"),              # bare
+    ("assum:asymptotic_normality", "assum:asymptotic_normality"),  # prefixed
+    ("assum:asymptotic_normality", "asymptotic_normality"),        # mixed
+    ("asymptotic_normality", "assum:asymptotic_normality"),        # prefixed scope only
+])
+def test_either_assumption_spelling_yields_the_same_threshold(tmp_path, checks, applies_to):
+    directory = _write_curation(tmp_path, checks=checks, applies_to=applies_to)
+    pre = rules.load_rules(str(directory)).method_preconditions("m:demo")
+    thresholds = [a["threshold"] for a in pre["assumptions"]]
+    assert thresholds == [{"min_replicates_per_group": 3}], (
+        f"curated as checks={checks!r} applies_to={applies_to!r}")
+    assert evaluate_preconditions(pre, {"replicates_per_group": 1})["status"] == "BLOCKED"
+
+
 def _imported_names(path: Path) -> set[str]:
     """Every module name imported by *path*, from its AST."""
     names: set[str] = set()

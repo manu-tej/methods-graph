@@ -59,8 +59,13 @@ def _evidence_token(evidence: Any) -> str:
 def _slug(assumption_id: str) -> str:
     """``assum:asymptotic_normality`` -> ``asymptotic_normality``.
 
-    Diagnostics reference assumptions by bare slug in ``checks`` and
-    ``applies_to_assumption``; link rows use the prefixed id.
+    Both spellings are curated: diagnostics conventionally reference assumptions by bare
+    slug in ``checks`` and ``applies_to_assumption`` while link rows use the prefixed id —
+    but the curated loader accepts either and normalizes to the prefixed form. So EVERY
+    comparison of two assumption ids here goes through this function on BOTH sides. Compare
+    a raw pair and a curator writing the accepted-but-unconventional spelling silently
+    loses the diagnostic and its threshold in this engine only: the hook would stop
+    blocking while ``mg guardrail`` still blocks, with nothing to signal the divergence.
     """
     return assumption_id[len(_ASSUM_PREFIX):] if assumption_id.startswith(_ASSUM_PREFIX) \
         else assumption_id
@@ -85,7 +90,7 @@ class Rules:
         return sorted(
             (f"diag:{name}", body)
             for name, body in self._diagnostics.items()
-            if slug in (body.get("checks") or [])
+            if slug in {_slug(str(check)) for check in (body.get("checks") or [])}
         )
 
     def method_preconditions(self, method_id: str) -> dict[str, Any]:
@@ -146,7 +151,7 @@ class Rules:
                     # pertains to exactly one. Honour that scope or the floor leaks onto
                     # every assumption the diagnostic touches.
                     scope = str(body.get("applies_to_assumption", "") or "")
-                    if scope and scope != _slug(assumption_id):
+                    if scope and _slug(scope) != _slug(assumption_id):
                         continue
                     for key in _THRESHOLD_KEYS:
                         value = body.get(key)

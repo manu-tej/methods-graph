@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,31 @@ def _load_meta(pipeline_dir: Path, rel_path: str) -> dict[str, Any] | None:
         return None
     meta = yaml.safe_load(meta_path.read_text()) or {}
     return meta if isinstance(meta, dict) else None
+
+
+def iter_module_metas(
+    pipeline_dir: Path, rel_paths: list[str],
+) -> Iterator[tuple[str, str, dict[str, Any]]]:
+    """Yield ``(rel_path, mod:<meta.yml name>, meta)`` for each RESOLVABLE module.
+
+    The single definition of the module join key, shared by every consumer (the graph
+    connector and the benchmark's gold builder) so they cannot drift apart. The id comes
+    from the meta.yml ``name`` — NOT the directory path: ``star/align`` is ``mod:star_align``,
+    and ``mod:align`` would be an id no node carries. Deriving it from the path's last
+    segment also collides wholesale (``index``, ``align``, ``run`` each name dozens of
+    distinct modules), which silently merges unrelated tools into one node.
+
+    A module whose meta.yml is missing or declares no usable ``name`` is skipped, never
+    guessed at.
+    """
+    for rel in rel_paths:
+        meta = _load_meta(pipeline_dir, rel)
+        if meta is None:
+            continue
+        name_field = meta.get("name")
+        if not (isinstance(name_field, str) and name_field):
+            continue  # name-less module is dropped, like a missing meta.yml
+        yield rel, f"mod:{name_field}", meta
 
 
 def process_to_modid(pipeline_dir: Path, path_to_modid: dict[str, str]) -> dict[str, str]:
@@ -90,14 +116,8 @@ def parse_pipeline(
     # (the mod:<name> join key — NOT the directory path).
     path_to_modid: dict[str, str] = {}
     io: dict[str, tuple[set[str], set[str]]] = {}
-    for rel in rel_paths:
-        meta = _load_meta(pipeline_dir, rel)
-        if meta is None:
-            continue
-        name_field = meta.get("name")
-        if not (isinstance(name_field, str) and name_field):
-            continue  # name-less module is dropped, like a missing meta.yml
-        path_to_modid[rel] = f"mod:{name_field}"
+    for rel, mod_id, meta in iter_module_metas(pipeline_dir, rel_paths):
+        path_to_modid[rel] = mod_id
         io[rel] = (_io_module_targets(meta, "input"), _io_module_targets(meta, "output"))
 
     # A pipeline whose modules all failed to resolve (nameless meta.yml, odd layout)

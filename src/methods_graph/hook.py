@@ -31,21 +31,24 @@ from methods_graph import guardrail, rules
 # Command patterns that indicate a curated method is about to run. Matched against the whole
 # command string, case-insensitively. Keep these tight: a false positive blocks real work.
 #
-# Note the hand-rolled boundary instead of ``\b``: ``_`` is a word character, so ``\bdeseq2\b``
-# does NOT match ``run_deseq2.R`` — and a script filename is the common case, which made
-# detection fail silently exactly where it mattered most.
+# A method belongs in this table ONLY when it has a ``source=used`` precondition that can
+# actually fire — i.e. curated USES links reaching a diagnostic with a numeric threshold.
+# Anything else is a pattern that can never deny, which advertises enforcement the curation
+# cannot deliver and, when the samplesheet is unreadable, escalates to an "ask" the user
+# has no way to satisfy. edgeR and limma were removed for exactly that reason: m:edger has
+# no replicate floor at all, and m:limma's floors exist only via ``source=amenable``, which
+# no longer gates. Re-adding them requires curating the USES links first — not editing here.
 _BOUNDARY = r"(?<![a-z0-9])%s(?![a-z0-9])"
 _METHOD_PATTERNS: tuple[tuple[str, str], ...] = (
     (_BOUNDARY % r"deseq2?", "m:deseq2"),
-    (_BOUNDARY % r"edger", "m:edger"),
-    (_BOUNDARY % r"limma", "m:limma"),
-    (_BOUNDARY % r"kallisto", "m:kallisto"),
 )
 
 # Samplesheet filenames and the columns that name the experimental arm, in priority order.
 _SAMPLESHEET_NAMES = ("samplesheet.csv", "samples.csv", "coldata.csv", "metadata.csv",
                       "design.csv")
 _CONDITION_COLUMNS = ("condition", "group", "treatment", "sample_group", "genotype")
+# Directory names whose samplesheets describe a test, never the run being gated.
+_TEST_DIRS = frozenset({"test", "tests", "fixtures"})
 
 
 def detect_method(command: str) -> str | None:
@@ -65,11 +68,30 @@ def replicates_per_group(workspace: Path) -> int | None:
     single sample makes the contrast underpowered regardless of the others.
     """
     for name in _SAMPLESHEET_NAMES:
-        for path in sorted(workspace.rglob(name)):
+        for path in _candidate_samplesheets(workspace, name):
             counts = _count_by_condition(path)
             if counts:
                 return min(counts.values())
     return None
+
+
+def _candidate_samplesheets(workspace: Path, name: str) -> list[Path]:
+    """Samplesheets at the workspace root or one directory below it (e.g. ``assets/``).
+
+    Deliberately NOT a recursive walk. ``rglob`` reaches ``tests/fixtures/samplesheet.csv``
+    and a two-sample fixture would then deny an unrelated real run while citing a file that
+    has nothing to do with it. A false deny is the worst failure mode this hook has — worse
+    than missing a gate, which merely returns it to the pre-hook status quo — so the search
+    stays shallow and skips test-data directories outright.
+    """
+    candidates = [workspace / name]
+    try:
+        subdirectories = sorted(p for p in workspace.iterdir() if p.is_dir())
+    except OSError:
+        subdirectories = []
+    candidates.extend(directory / name for directory in subdirectories
+                      if directory.name.lower() not in _TEST_DIRS)
+    return [path for path in candidates if path.is_file()]
 
 
 def _count_by_condition(path: Path) -> dict[str, int]:
@@ -147,7 +169,14 @@ def main() -> int:
     except (json.JSONDecodeError, ValueError):
         return 0          # malformed payload must never wedge the session
     workspace = Path(payload.get("cwd") or ".")
-    decision = decide(payload, workspace)
+    try:
+        decision = decide(payload, workspace)
+    except Exception:     # noqa: BLE001 - deliberate: see below
+        # Broad on purpose. This runs before every Bash call, so any escaping exception —
+        # a corrupt crosslinks YAML, an unreadable workspace — would traceback on every
+        # command in the session rather than once. Staying silent returns the session to
+        # the pre-hook status quo, which is the only safe direction to fail.
+        return 0
     if decision:
         json.dump(decision, sys.stdout)
     return 0
