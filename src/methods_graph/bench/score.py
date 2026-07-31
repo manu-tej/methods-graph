@@ -157,3 +157,65 @@ def score_validity(pred: list[str], oracle: Oracle) -> dict[str, Any]:
         "coverage": classified / len(pairs) if pairs else None,
         "pairs": pairs,
     }
+
+
+# Position buckets for next-step items, by how many steps were already given. "0" is
+# broken out because "name the first step" is nearly always a QC tool and is the easiest
+# item in the set; pooling it with the rest inflates the headline.
+_BUCKETS: tuple[tuple[int, int | None, str], ...] = (
+    (0, 0, "0"), (1, 2, "1-2"), (3, 5, "3-5"), (6, None, "6+"),
+)
+_FIRST_STEP_BUCKET = "0"
+
+
+def score_next_step(
+    gold_next: str, ranked: list[str], oracle: Oracle, k: int = 3,
+) -> dict[str, Any]:
+    """One next-step item: is the gold step (or its equivalent) ranked first, or in top-k?"""
+    return {
+        "top1": bool(ranked) and same_class(gold_next, ranked[0], oracle),
+        "topk": any(same_class(gold_next, candidate, oracle) for candidate in ranked[:k]),
+        "k": k,
+    }
+
+
+def position_bucket(n_given: int) -> str:
+    """Which difficulty bucket a next-step item falls in, by prefix length."""
+    for low, high, label in _BUCKETS:
+        if n_given >= low and (high is None or n_given <= high):
+            return label
+    raise ValueError(f"no bucket for n_given={n_given}")  # pragma: no cover - total
+
+
+def aggregate_next_step(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Next-step accuracy by position bucket, plus a headline that skips the free one.
+
+    The headline is a macro-mean over the non-trivial buckets: pooling weights the
+    benchmark by pipeline length, so long pipelines would quietly dominate, and the
+    first-step bucket would lift every model's number by the same free amount.
+    """
+    by_bucket: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        bucket = by_bucket.setdefault(
+            position_bucket(row["n_given"]), {"n": 0, "top1": 0, "topk": 0})
+        bucket["n"] += 1
+        bucket["top1"] += int(row["top1"])
+        bucket["topk"] += int(row["topk"])
+
+    for bucket in by_bucket.values():
+        bucket["top1"] = bucket["top1"] / bucket["n"]
+        bucket["topk"] = bucket["topk"] / bucket["n"]
+
+    scored = [v for label, v in sorted(by_bucket.items()) if label != _FIRST_STEP_BUCKET]
+    return {
+        "n": len(rows),
+        "by_bucket": by_bucket,
+        "headline_top1": (
+            None if not scored else sum(b["top1"] for b in scored) / len(scored)),
+        "headline_topk": (
+            None if not scored else sum(b["topk"] for b in scored) / len(scored)),
+        "pooled_top1": (
+            None if not rows else sum(int(r["top1"]) for r in rows) / len(rows)),
+        "pooled_topk": (
+            None if not rows else sum(int(r["topk"]) for r in rows) / len(rows)),
+    }

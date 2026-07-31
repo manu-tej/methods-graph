@@ -246,3 +246,66 @@ def test_single_step_answer_has_no_pairs():
     assert result["n_pairs"] == 0
     assert result["score"] is None
     assert result["coverage"] is None
+
+
+from methods_graph.bench.score import (
+    aggregate_next_step, position_bucket, score_next_step)
+
+
+def test_exact_next_step_is_top1():
+    result = score_next_step("m:salmon", ["m:salmon", "m:deseq2"], _oracle())
+    assert result["top1"] is True
+    assert result["topk"] is True
+
+
+def test_equivalent_next_step_is_top1():
+    result = score_next_step("m:star", ["m:hisat2"], _oracle())
+    assert result["top1"] is True
+
+
+def test_right_answer_ranked_second_is_topk_not_top1():
+    result = score_next_step("m:deseq2", ["m:salmon", "m:deseq2"], _oracle())
+    assert result["top1"] is False
+    assert result["topk"] is True
+
+
+def test_right_answer_ranked_fourth_is_outside_k():
+    ranked = ["m:fastqc", "m:star", "m:salmon", "m:deseq2"]
+    assert score_next_step("m:deseq2", ranked, _oracle(), k=3)["topk"] is False
+
+
+def test_empty_answer_scores_false_not_an_error():
+    result = score_next_step("m:star", [], _oracle())
+    assert result["top1"] is False
+    assert result["topk"] is False
+
+
+def test_position_buckets():
+    assert position_bucket(0) == "0"
+    assert position_bucket(1) == "1-2"
+    assert position_bucket(2) == "1-2"
+    assert position_bucket(3) == "3-5"
+    assert position_bucket(5) == "3-5"
+    assert position_bucket(6) == "6+"
+    assert position_bucket(40) == "6+"
+
+
+def test_headline_excludes_the_first_step_bucket():
+    rows = [
+        {"n_given": 0, "top1": True, "topk": True},    # trivially easy
+        {"n_given": 0, "top1": True, "topk": True},
+        {"n_given": 1, "top1": False, "topk": True},
+        {"n_given": 4, "top1": True, "topk": True},
+    ]
+    result = aggregate_next_step(rows)
+    assert result["by_bucket"]["0"]["top1"] == 1.0
+    assert result["by_bucket"]["1-2"]["top1"] == 0.0
+    assert result["by_bucket"]["3-5"]["top1"] == 1.0
+    # Macro-mean over non-zero buckets: (0.0 + 1.0) / 2 — NOT the pooled 0.75.
+    assert result["headline_top1"] == 0.5
+    assert result["pooled_top1"] == 0.75
+
+
+def test_headline_is_none_when_only_first_step_items_exist():
+    result = aggregate_next_step([{"n_given": 0, "top1": True, "topk": True}])
+    assert result["headline_top1"] is None
