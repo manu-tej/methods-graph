@@ -1160,7 +1160,8 @@ def cmd_skills_coverage(*, db_path: Path) -> int:
     return 0
 
 
-_GUARDRAIL_EXIT = {guardrail.EVALUABLE: 0, guardrail.BLOCKED: 3, guardrail.NOT_EVALUABLE: 4}
+_GUARDRAIL_EXIT = {guardrail.EVALUABLE: 0, guardrail.BLOCKED: 3,
+                   guardrail.NOT_EVALUABLE: 4, guardrail.FACTS_REQUIRED: 5}
 
 
 def _parse_facts(raw: list[str] | None) -> dict[str, int]:
