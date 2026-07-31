@@ -124,3 +124,11 @@ def test_all_candidates_unusable_still_returns_empty():
     # ["  "] is a list but only whitespace strings (filtered)
     # null is not a bracket pair
     assert parse_tool_list(raw) == []
+
+
+def test_empty_array_is_a_real_answer_not_a_parse_miss():
+    # A model saying "no more steps" answers with []. If there's trailing text
+    # like "[] hope this helps!", the empty array is the real answer, not a signal
+    # to keep searching for a non-empty one.
+    raw = '[] ["fastqc"]'
+    assert parse_tool_list(raw) == []

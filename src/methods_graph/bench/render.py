@@ -89,7 +89,13 @@ def parse_tool_list(raw: str) -> list[str]:
             continue
         if not isinstance(parsed, list):
             continue
+        # Filter to usable strings. Note: nested arrays (e.g., [["a"], ["b"]]) filter
+        # to nothing and fall through to the next span, where the first inner span
+        # yields its usable strings.
         result = [element for element in parsed if isinstance(element, str) and element.strip()]
-        if result:
+        # Empty list is a real answer (e.g., "no more steps needed"); non-empty list
+        # with usable strings is also an answer. Only keep searching if the list was
+        # non-empty but filtered to nothing (e.g., [1, 2, 3]).
+        if not parsed or result:
             return result
     return []
