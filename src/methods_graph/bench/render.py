@@ -7,7 +7,6 @@ a closed multiple choice would hand over the answer set.
 from __future__ import annotations
 
 import json
-import re
 
 from methods_graph.bench.oracle import Oracle
 
@@ -53,8 +52,12 @@ def render_prompt(item: dict, oracle: Oracle) -> str:
     raise ValueError(f"unknown task type: {task!r}")
 
 
-def _first_json_array(text: str) -> str | None:
-    """The first balanced ``[...]`` span, so a chatty preamble does not break parsing."""
+def _json_array_spans(text: str):
+    """Generator yielding all balanced ``[...]`` spans left to right.
+
+    Allows parsing to try each candidate in turn, so a chatty preamble with
+    stray brackets (e.g., "Step [1]: ..." before the answer) does not break parsing.
+    """
     start = text.find("[")
     while start != -1:
         depth = 0
@@ -64,28 +67,29 @@ def _first_json_array(text: str) -> str | None:
             elif text[index] == "]":
                 depth -= 1
                 if depth == 0:
-                    return text[start:index + 1]
+                    yield text[start:index + 1]
+                    break
         start = text.find("[", start + 1)
-    return None
 
 
 def parse_tool_list(raw: str) -> list[str]:
     """Tool names from a model response, or ``[]`` if none can be read.
 
-    Never falls back to splitting prose on commas. A guessed parse would be scored as
-    though the model had answered, turning a formatting failure into a knowledge result.
-    The caller counts empty parses so refusals stay visible.
+    Tries each balanced JSON array span left to right. Never falls back to splitting
+    prose on commas. A guessed parse would be scored as though the model had answered,
+    turning a formatting failure into a knowledge result. The caller counts empty
+    parses so refusals stay visible.
     """
     if not raw:
         return []
-    fenced = re.sub(r"```(?:json)?", "", raw)
-    span = _first_json_array(fenced)
-    if span is None:
-        return []
-    try:
-        parsed = json.loads(span)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(parsed, list):
-        return []
-    return [element for element in parsed if isinstance(element, str) and element.strip()]
+    for span in _json_array_spans(raw):
+        try:
+            parsed = json.loads(span)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, list):
+            continue
+        result = [element for element in parsed if isinstance(element, str) and element.strip()]
+        if result:
+            return result
+    return []

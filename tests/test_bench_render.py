@@ -33,9 +33,20 @@ def test_whole_pipeline_prompt_states_the_goal_and_asks_for_a_json_array():
 
 
 def test_prompt_never_leaks_the_answer():
-    prompt = render_prompt(_whole_item(), _oracle())
+    # Test whole_pipeline task: must not leak answer keys from gold
+    whole_prompt = render_prompt(_whole_item(), _oracle())
     for leaked in ("star", "salmon", "fastqc", "mod:"):
-        assert leaked not in prompt.lower()
+        assert leaked not in whole_prompt.lower(), \
+            f"Whole pipeline prompt leaked {leaked!r}"
+
+    # Test next_step task: must not leak the gold next step, and _display_name must hide mod: ids
+    next_prompt = render_prompt(_next_item(["mod:fastqc", "mod:star_align"]), _oracle())
+    # Should contain display names for the given steps
+    assert "fastqc" in next_prompt
+    assert "star" in next_prompt
+    # Should NOT contain module ids or gold answer
+    assert "mod:" not in next_prompt
+    assert "salmon" not in next_prompt  # salmon is the gold next step, must not leak
 
 
 def test_next_step_prompt_renders_given_as_tool_names_not_module_ids():
@@ -85,3 +96,31 @@ def test_unparseable_responses_return_empty_rather_than_guessing(raw):
 def test_non_string_elements_are_discarded_not_stringified():
     assert parse_tool_list('["fastqc", 42, null, {"tool": "star"}, "salmon"]') == [
         "fastqc", "salmon"]
+
+
+def test_stray_bracket_before_real_array_does_not_prevent_parsing():
+    # Models write "Step [1]: run QC, then [...]". First [1] is not JSON, second is.
+    raw = 'Steps [1] then the answer: ["fastqc", "star"]'
+    assert parse_tool_list(raw) == ["fastqc", "star"]
+
+
+def test_stray_bracket_after_valid_array_still_returns_first():
+    # A valid array followed by dangling brackets should still work.
+    raw = '["fastqc", "star"] (wait, also consider [other])'
+    assert parse_tool_list(raw) == ["fastqc", "star"]
+
+
+def test_unterminated_bracket_before_valid_array_still_parses_valid():
+    # [unterminated before a real array at the end.
+    raw = 'Consider this: [incomplete sentence, then the answer: ["fastqc", "star"]'
+    assert parse_tool_list(raw) == ["fastqc", "star"]
+
+
+def test_all_candidates_unusable_still_returns_empty():
+    # Every bracket pair is either invalid JSON, non-list, or contains only non-strings.
+    raw = '[not json here] and [42] and ["  "] and null'
+    # [not json here] is not valid JSON
+    # [42] is valid JSON but not a list
+    # ["  "] is a list but only whitespace strings (filtered)
+    # null is not a bracket pair
+    assert parse_tool_list(raw) == []
