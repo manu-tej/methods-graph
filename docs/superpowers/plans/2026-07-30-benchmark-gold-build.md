@@ -462,11 +462,12 @@ git commit -m "feat(bench): manifest recording every excluded pipeline with a re
 
 **Files:**
 - Create: `src/methods_graph/bench/run.py`
+- Modify: `src/methods_graph/connectors/nfcore_pipeline.py` — rename `_process_to_modid` → `process_to_modid` and `_module_paths_from_modules_json` → `module_paths_from_modules_json`, updating every in-module caller. These are reusable across the benchmark; importing them with a leading underscore would be a standing smell.
 - Modify: `src/methods_graph/cli.py` (add subparser + dispatch alongside the existing `skills` / `explain` commands)
 - Test: `tests/test_bench_run.py`
 
 **Interfaces:**
-- Consumes: `gold_sequence` (Task 1), `make_items` and `build_manifest` (Tasks 2–3)
+- Consumes: `gold_sequence` (Task 1), `make_items` and `build_manifest` (Tasks 2–3), and the newly-public `process_to_modid(pipeline_dir: Path, path_to_modid: dict[str, str]) -> dict[str, str]` and `module_paths_from_modules_json(modules_json: dict) -> list[str]` from `methods_graph.connectors.nfcore_pipeline`
 - Produces: `build_from_clones(pipelines_dir: Path, out_dir: Path, *, goals: dict[str, str]) -> dict` — walks `<pipelines_dir>/<name>/`, reads `dag.mmd` where present, writes `<out_dir>/items/<pipeline>.json` and `<out_dir>/gold/manifest.json`, returns the manifest.
 
 - [ ] **Step 1: Write the failing test**
@@ -532,7 +533,14 @@ def test_manifest_and_items_are_written(tmp_path):
 Run: `.venv/bin/python -m pytest tests/test_bench_run.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'methods_graph.bench.run'`
 
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **Step 3a: Promote the two helpers to public names**
+
+In `src/methods_graph/connectors/nfcore_pipeline.py`, rename `_process_to_modid` ->
+`process_to_modid` and `_module_paths_from_modules_json` -> `module_paths_from_modules_json`,
+updating every caller inside that file. Run `.venv/bin/python -m pytest tests/test_nfcore_pipeline.py -q`
+to confirm nothing broke, then continue.
+
+- [ ] **Step 3b: Write minimal implementation**
 
 Create `src/methods_graph/bench/run.py`:
 
@@ -547,15 +555,15 @@ from typing import Any
 
 from methods_graph.bench.build import build_manifest, make_items
 from methods_graph.bench.gold import gold_sequence
-from methods_graph.connectors.nfcore_pipeline import _process_to_modid
+from methods_graph.connectors.nfcore_pipeline import (
+    module_paths_from_modules_json, process_to_modid)
 
 
 def _module_map(pipeline_dir: Path) -> dict[str, str]:
     modules_json = json.loads((pipeline_dir / "modules.json").read_text())
-    from methods_graph.connectors.nfcore_pipeline import _module_paths_from_modules_json
-    rel_paths = _module_paths_from_modules_json(modules_json)
+    rel_paths = module_paths_from_modules_json(modules_json)
     path_to_modid = {path: f"mod:{path.split('/')[-1]}" for path in rel_paths}
-    return _process_to_modid(pipeline_dir, path_to_modid)
+    return process_to_modid(pipeline_dir, path_to_modid)
 
 
 def build_from_clones(
