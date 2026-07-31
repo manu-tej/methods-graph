@@ -338,7 +338,8 @@ def rescore(rows: list[dict[str, Any]], oracle: Oracle) -> list[dict[str, Any]]:
             continue
         item = {"id": row["item"], "task": row["task"], "goal": "",
                 "given": row.get("given") or [], "gold": row["gold_raw"]}
-        out.append({**score_item(item, row["raw"], oracle), "model": row.get("model")})
+        out.append({**score_item(item, row["raw"], oracle),
+                    "model": row.get("model"), "render_error": None})
     return out
 
 
