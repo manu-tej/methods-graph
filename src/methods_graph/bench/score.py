@@ -12,6 +12,8 @@ from __future__ import annotations
 from typing import Any
 
 from methods_graph.bench.oracle import Oracle
+from methods_graph.guardrail import (
+    HANDOFF_BROKEN, HANDOFF_UNKNOWN, HANDOFF_VALID, classify_handoff)
 
 
 def _unique(items: list[str]) -> list[str]:
@@ -123,4 +125,35 @@ def score_sequencing(
         "n_scorable": len(scorable),
         "n_respected": respected,
         "n_gold_edges": len(gold_edges),
+    }
+
+
+def score_validity(pred: list[str], oracle: Oracle) -> dict[str, Any]:
+    """Does it run — the share of consecutive handoffs whose data types meet.
+
+    ``UNKNOWN`` (a step with no curated Data I/O) is excluded from the score's
+    denominator and reported as its own count. Folding it into "valid" would inflate the
+    number with ignorance, and folding it into "invalid" would punish a correct answer
+    for a curation gap. ``coverage`` says how much of the answer was checkable at all —
+    with output Data curated for 39 of 905 methods, that caveat is the headline, not a
+    footnote.
+    """
+    pairs: list[dict[str, Any]] = []
+    counts = {HANDOFF_VALID: 0, HANDOFF_BROKEN: 0, HANDOFF_UNKNOWN: 0}
+    for producer, consumer in zip(pred, pred[1:]):
+        result, shared = classify_handoff(
+            set(oracle.outputs(producer)), set(oracle.inputs(consumer)))
+        counts[result] += 1
+        pairs.append({"from": producer, "to": consumer,
+                      "result": result, "shared": shared})
+
+    classified = counts[HANDOFF_VALID] + counts[HANDOFF_BROKEN]
+    return {
+        "score": counts[HANDOFF_VALID] / classified if classified else None,
+        "n_pairs": len(pairs),
+        "n_valid": counts[HANDOFF_VALID],
+        "n_broken": counts[HANDOFF_BROKEN],
+        "n_unknown": counts[HANDOFF_UNKNOWN],
+        "coverage": classified / len(pairs) if pairs else None,
+        "pairs": pairs,
     }

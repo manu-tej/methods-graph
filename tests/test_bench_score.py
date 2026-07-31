@@ -191,3 +191,58 @@ def test_one_prediction_covering_both_ends_of_an_edge_is_not_credited():
     matched = {"m:star": "m:star", "m:hisat2": "m:star"}
     result = score_sequencing(gold_edges, matched, ["m:star"])
     assert result["score"] == 0.0
+
+
+from methods_graph.bench.score import score_validity
+
+
+def _io_oracle():
+    return StaticOracle(
+        methods=["m:fastqc", "m:star", "m:salmon", "m:deseq2", "m:bowtie2"],
+        outputs={
+            "m:fastqc": ["data:data_2955"],
+            "m:star": ["data:data_0863"],       # Sequence alignment
+            "m:salmon": ["data:data_3917"],     # Count matrix
+        },
+        inputs={
+            "m:star": ["data:data_1234"],
+            "m:salmon": ["data:data_0863"],     # consumes an alignment
+            "m:deseq2": ["data:data_3917"],     # consumes a count matrix
+        },
+    )
+
+
+def test_typechecking_handoffs_score_one():
+    result = score_validity(["m:star", "m:salmon", "m:deseq2"], _io_oracle())
+    assert result["score"] == 1.0
+    assert result["n_valid"] == 2
+    assert result["n_broken"] == 0
+
+
+def test_disjoint_handoff_is_broken():
+    result = score_validity(["m:star", "m:deseq2"], _io_oracle())
+    assert result["n_broken"] == 1
+    assert result["score"] == 0.0
+
+
+def test_unknown_is_never_counted_as_valid():
+    # bowtie2 has no curated I/O at all — both its pairs are unverifiable.
+    result = score_validity(["m:star", "m:bowtie2", "m:deseq2"], _io_oracle())
+    assert result["n_unknown"] == 2
+    assert result["n_valid"] == 0
+    assert result["score"] is None
+
+
+def test_coverage_reports_how_much_of_the_answer_was_checkable():
+    result = score_validity(["m:star", "m:salmon", "m:bowtie2"], _io_oracle())
+    assert result["n_pairs"] == 2
+    assert result["n_unknown"] == 1
+    assert result["coverage"] == 0.5
+    assert result["score"] == 1.0     # the one checkable pair was valid
+
+
+def test_single_step_answer_has_no_pairs():
+    result = score_validity(["m:star"], _io_oracle())
+    assert result["n_pairs"] == 0
+    assert result["score"] is None
+    assert result["coverage"] is None
