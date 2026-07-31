@@ -72,16 +72,21 @@ def _json_array_spans(text: str):
         start = text.find("[", start + 1)
 
 
-def parse_tool_list(raw: str) -> list[str]:
-    """Tool names from a model response, or ``[]`` if none can be read.
+def parse_tool_list(raw: str) -> list[str] | None:
+    """Tool names from a model response, or ``None`` if no usable span was found.
+
+    ``None`` and ``[]`` are different results and the caller must be able to tell them
+    apart: ``None`` is a FORMATTING failure (a refusal, prose, a truncated array — the
+    model's knowledge was never measured), while ``[]`` is a well-formed answer of "no
+    tools". Collapsing them, as returning ``[]`` for both did, scores a parse miss as
+    though the model had declined to answer.
 
     Tries each balanced JSON array span left to right. Never falls back to splitting
-    prose on commas. A guessed parse would be scored as though the model had answered,
-    turning a formatting failure into a knowledge result. The caller counts empty
-    parses so refusals stay visible.
+    prose on commas: a guessed parse would be scored as though the model had answered,
+    turning a formatting failure into a knowledge result.
     """
     if not raw:
-        return []
+        return None
     for span in _json_array_spans(raw):
         try:
             parsed = json.loads(span)
@@ -98,4 +103,4 @@ def parse_tool_list(raw: str) -> list[str]:
         # non-empty but filtered to nothing (e.g., [1, 2, 3]).
         if not parsed or result:
             return result
-    return []
+    return None

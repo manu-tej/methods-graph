@@ -1303,10 +1303,17 @@ def cmd_bench(args) -> int:
         # `is not None`, so `--limit 0` means zero items rather than "no limit".
         if args.limit is not None:
             items = items[:args.limit]
-        rows = run_items(items, get_adapter(args.model), oracle, model=args.model)
+        adapter = get_adapter(args.model)
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(
-            "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows))
+        # Streamed and flushed per row, not buffered until the loop ends: a
+        # KeyboardInterrupt or an OOM partway through a paid run must leave every
+        # answer already obtained on disk.
+        with args.out.open("w") as handle:
+            def _write(row):
+                handle.write(json.dumps(row, sort_keys=True) + "\n")
+                handle.flush()
+
+            rows = run_items(items, adapter, oracle, model=args.model, sink=_write)
         print(json.dumps(summarize(rows), indent=2, sort_keys=True))
         return 0
 

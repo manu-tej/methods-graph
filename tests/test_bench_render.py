@@ -88,9 +88,13 @@ def test_parses_the_json_array_out_of_a_chatty_response(raw, expected):
 
 @pytest.mark.parametrize("raw", [
     "", "I cannot help with that.", "fastqc, STAR, salmon", "[unclosed",
+    "[1] [2] [3]",
 ])
-def test_unparseable_responses_return_empty_rather_than_guessing(raw):
-    assert parse_tool_list(raw) == []
+def test_unreadable_responses_return_none_rather_than_guessing(raw):
+    """``None``, not ``[]``. A formatting failure is not an answer of "no tools", and
+    the caller sets `parsed` from this distinction — collapsing them scores a parse
+    miss as though the model had deliberately declined."""
+    assert parse_tool_list(raw) is None
 
 
 def test_non_string_elements_are_discarded_not_stringified():
@@ -116,19 +120,19 @@ def test_unterminated_bracket_before_valid_array_still_parses_valid():
     assert parse_tool_list(raw) == ["fastqc", "star"]
 
 
-def test_all_candidates_unusable_still_returns_empty():
-    # Every bracket pair is either invalid JSON, non-list, or contains only non-strings.
+def test_all_candidates_unusable_is_none_not_an_empty_answer():
+    # Every bracket pair is either invalid JSON or filters to no usable strings.
     raw = '[not json here] and [42] and ["  "] and null'
     # [not json here] is not valid JSON
-    # [42] is valid JSON but not a list
+    # [42] is a list, but 42 is not a string, so it filters to nothing
     # ["  "] is a list but only whitespace strings (filtered)
     # null is not a bracket pair
-    assert parse_tool_list(raw) == []
+    assert parse_tool_list(raw) is None
 
 
 def test_empty_array_is_a_real_answer_not_a_parse_miss():
     # A model saying "no more steps" answers with []. If there's trailing text
     # like "[] hope this helps!", the empty array is the real answer, not a signal
     # to keep searching for a non-empty one.
-    raw = '[] ["fastqc"]'
-    assert parse_tool_list(raw) == []
+    assert parse_tool_list('[]') == []
+    assert parse_tool_list('[] ["fastqc"]') == []

@@ -243,6 +243,59 @@ def test_adapter_failure_is_recorded_against_the_item_and_the_run_continues():
     assert rows[1]["error"] is None
 
 
+def test_a_failure_row_carries_the_same_keys_a_scored_row_does():
+    """Ragged JSONL is awkward; the load-bearing part is gold_raw/given, without which
+    a failed item can never be rescored even if its raw output is recovered by hand."""
+    from methods_graph.bench.adapters import AdapterError
+
+    def _always_fails(_prompt):
+        raise AdapterError("rate limited")
+
+    item = _whole_item()
+    ok = run_items([item], lambda p: '["fastqc"]', _oracle(), model="t")[0]
+    bad = run_items([item], _always_fails, _oracle(), model="t")[0]
+    assert set(ok) <= set(bad)
+    assert bad["gold_raw"] == item["gold"]
+    assert bad["given"] == []
+
+
+def test_a_run_interrupted_by_a_non_adapter_exception_keeps_what_it_paid_for(tmp_path):
+    """An AdapterError was handled; a KeyboardInterrupt, an OOM, or any adapter raising
+    something else discarded every answer already obtained, because rows were buffered
+    in memory and written once after the loop."""
+    out = tmp_path / "results.jsonl"
+    items = [{**_whole_item(), "id": f"rnaseq/whole/{n:03d}"} for n in range(3)]
+    calls = {"n": 0}
+
+    def _explodes_on_the_third(_prompt):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise KeyboardInterrupt
+        return '["fastqc","star"]'
+
+    with out.open("w") as handle:
+        def _write(row):
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+            handle.flush()
+
+        with pytest.raises(KeyboardInterrupt):
+            run_items(items, _explodes_on_the_third, _oracle(), model="t", sink=_write)
+
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert [r["item"] for r in rows] == ["rnaseq/whole/000", "rnaseq/whole/001"]
+
+
+def test_a_malformed_item_fails_its_own_row_rather_than_the_whole_run():
+    """render_prompt used to sit outside the guard, so one bad item killed the run."""
+    items = [{"id": "bad/001", "task": "next_step", "given": []},   # no "goal" key
+             _whole_item()]
+    rows = run_items(items, lambda p: '["fastqc"]', _oracle(), model="t")
+    assert rows[0]["render_error"] is not None
+    assert rows[0]["error"].startswith("render failed")
+    assert rows[1]["error"] is None
+    assert summarize(rows)["n_render_errors"] == 1
+
+
 def test_rescore_reproduces_the_original_scores_from_raw_alone():
     rows = run_items([_whole_item()], lambda p: '["fastqc","star","salmon","deseq2"]',
                      _oracle(), model="test")
@@ -259,6 +312,59 @@ def test_summary_separates_the_two_task_types():
     assert summary["whole_pipeline"]["n"] == 1
     assert summary["whole_pipeline"]["selection_f1"] == 1.0
     assert summary["next_step"]["n"] == 0
+
+
+def test_summary_reconciles_every_row_against_the_per_axis_denominators():
+    """A next-step row whose gold module reaches no method used to vanish: it counted
+    in n_rows and in nothing else, so the columns did not add up. At the measured ~6%
+    unresolvable rate that is one next-step row in sixteen."""
+    from methods_graph.bench.adapters import AdapterError
+
+    def _adapter(prompt):
+        if "Rate limited" in prompt:
+            raise AdapterError("rate limited")
+        return '["salmon"]'
+
+    items = [
+        _whole_item(),
+        {"id": "x/next/001", "task": "next_step", "goal": "Bulk RNA-seq",
+         "given": ["mod:fastqc"], "gold": {"next": "mod:salmon_quant"}},
+        # mod:nowhere reaches no method: unscorable, but it must still be counted.
+        {"id": "x/next/002", "task": "next_step", "goal": "Bulk RNA-seq",
+         "given": ["mod:fastqc"], "gold": {"next": "mod:nowhere"}},
+        {**_whole_item(), "id": "x/whole/002", "goal": "Rate limited"},
+    ]
+    summary = summarize(run_items(items, _adapter, _oracle(), model="t"))
+
+    assert summary["n_rows"] == 4
+    assert summary["n_errors"] == 1
+    assert summary["n_gold_unresolved"] == 1
+    assert summary["whole_pipeline"]["n"] == 1
+    assert summary["next_step"]["n"] == 1
+    assert (summary["n_rows"] == summary["n_errors"] + summary["n_gold_unresolved"]
+            + summary["whole_pipeline"]["n"] + summary["next_step"]["n"])
+
+
+def test_summary_reports_the_validity_denominator_not_just_the_mean():
+    """Validity has the worst coverage of any axis; a mean with no n is unreadable."""
+    rows = run_items([_whole_item()], lambda p: '["fastqc","star","salmon","deseq2"]',
+                     _oracle(), model="t")
+    whole = summarize(rows)["whole_pipeline"]
+    assert whole["validity_n_scored"] == 1
+    assert whole["n_gold_unresolved_steps"] == 0
+    assert whole["n_cyclic_edges_dropped"] == 0
+
+
+def test_summary_counts_a_deliberate_empty_answer_apart_from_an_unreadable_one():
+    items = [{**_whole_item(), "id": "a/whole/001", "goal": "Empty"},
+             {**_whole_item(), "id": "b/whole/001", "goal": "Refusal"}]
+    rows = run_items(items,
+                     lambda p: "[]" if "Empty" in p else "I cannot help with that.",
+                     _oracle(), model="t")
+    summary = summarize(rows)
+    assert summary["n_empty_answer"] == 1
+    assert summary["n_unparsed"] == 1
+    assert [r["parsed"] for r in rows] == [True, False]
 
 
 def test_cli_run_writes_one_jsonl_row_per_item(tmp_path):

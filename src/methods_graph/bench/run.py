@@ -220,10 +220,14 @@ def score_item(item: dict[str, Any], raw: str, oracle: Oracle) -> dict[str, Any]
     can be redefined and the whole run re-scored without spending another API call.
     """
     names = parse_tool_list(raw)
-    pred, unresolved = normalize_answer(names, oracle)
+    pred, unresolved = normalize_answer(names or [], oracle)
     row: dict[str, Any] = {
         "item": item["id"], "task": item["task"], "raw": raw,
-        "parsed": bool(names), "pred": pred, "unresolved": unresolved, "error": None,
+        # `names is not None`, not `bool(names)`: a well-formed `[]` is an answer, and
+        # conflating it with an unreadable response is the exact failure this parse
+        # boundary exists to prevent.
+        "parsed": names is not None,
+        "pred": pred, "unresolved": unresolved, "error": None,
         # The item's own gold and prefix, verbatim. Together with `raw` these are
         # everything `rescore` needs, so a redefined metric can be applied to a finished
         # run without re-reading the item set — or paying for the API calls again.
@@ -259,35 +263,77 @@ def score_item(item: dict[str, Any], raw: str, oracle: Oracle) -> dict[str, Any]
     raise ValueError(f"unknown task type: {item['task']!r}")
 
 
+def _failure_row(
+    item: dict[str, Any], *, model: str, error: str, render_error: str | None,
+) -> dict[str, Any]:
+    """A row for an item that never produced a scorable answer.
+
+    Carries the SAME key set a scored row does, with ``None`` where a score would be.
+    A ragged JSONL is awkward to read with polars, but the load-bearing reason is
+    ``gold_raw``/``given``: without them a failed item can never be rescored even if its
+    raw output is later recovered by hand.
+    """
+    return {
+        # `.get`, because a render failure can be a malformed item: the row still has
+        # to reach disk saying which item it was, however little of it is readable.
+        "item": item.get("id"), "task": item.get("task"), "model": model,
+        "raw": None, "parsed": False, "pred": [], "unresolved": [],
+        "error": error, "render_error": render_error,
+        "gold_raw": item.get("gold"), "given": list(item.get("given") or []),
+        "gold": None, "gold_unresolved": None, "n_cyclic_edges_dropped": None,
+        "n_given": None, "bucket": None,
+        "selection": None, "sequencing": None, "validity": None, "next": None,
+    }
+
+
 def run_items(
     items: list[dict[str, Any]], adapter: Callable[[str], str], oracle: Oracle,
-    *, model: str,
+    *, model: str, sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Render, call, score — one row per item, in item order.
 
-    An adapter failure is recorded against its item and the run continues: a rate limit
-    partway through a 500-item set must not discard the 300 answers already paid for.
+    A failure is recorded against its item and the run continues: a rate limit partway
+    through a 500-item set must not discard the 300 answers already paid for. That
+    applies to rendering too — one malformed item used to kill the whole run, because
+    ``render_prompt`` sat outside the guard.
+
+    *sink* is called with each row as it is produced and is what makes the guarantee
+    real: buffering the whole run in memory and writing once at the end means a
+    KeyboardInterrupt, an OOM, or any adapter raising something other than
+    ``AdapterError`` still loses every answer already paid for. The row list is returned
+    as well, so callers that only want the summary need not supply a sink.
     """
     rows: list[dict[str, Any]] = []
     for item in items:
-        prompt = render_prompt(item, oracle)
         try:
-            raw = adapter(prompt)
-        except AdapterError as exc:
-            rows.append({"item": item["id"], "task": item["task"], "model": model,
-                         "raw": None, "parsed": False, "pred": [], "unresolved": [],
-                         "error": str(exc), "selection": None, "sequencing": None,
-                         "validity": None, "next": None})
-            continue
-        rows.append({**score_item(item, raw, oracle), "model": model})
+            prompt = render_prompt(item, oracle)
+        except (KeyError, TypeError, ValueError) as exc:
+            row = _failure_row(item, model=model, error=f"render failed: {exc}",
+                               render_error=f"{type(exc).__name__}: {exc}")
+        else:
+            try:
+                raw = adapter(prompt)
+            except AdapterError as exc:
+                row = _failure_row(item, model=model, error=str(exc), render_error=None)
+            else:
+                row = {**score_item(item, raw, oracle),
+                       "model": model, "render_error": None}
+        rows.append(row)
+        if sink is not None:
+            sink(row)
     return rows
 
 
 def rescore(rows: list[dict[str, Any]], oracle: Oracle) -> list[dict[str, Any]]:
-    """Re-derive every score from the retained raw output, leaving failures untouched."""
+    """Re-derive every score from the retained raw output, leaving failures untouched.
+
+    Keyed on ``error``, not on ``raw is None``: OpenAI returns
+    ``choices[0].message.content: null`` for some refusals and the adapter passes that
+    through verbatim, so a null ``raw`` is a genuine — and scorable — model answer.
+    """
     out: list[dict[str, Any]] = []
     for row in rows:
-        if row.get("raw") is None:
+        if row.get("error") is not None:
             out.append(dict(row))
             continue
         item = {"id": row["item"], "task": row["task"], "goal": "",
@@ -302,14 +348,35 @@ def _mean(values: list[float | None]) -> float | None:
 
 
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """The headline table: two task types, never pooled into one accuracy figure."""
+    """The headline table: two task types, never pooled into one accuracy figure.
+
+    Every row is accounted for. ``next_step.n`` filters on ``r["next"]``, which is
+    ``None`` when the item's gold module resolves to no method — at the measured ~6%
+    unresolvable rate that silently deleted about one next-step row in sixteen from
+    both the numerator and the denominator. ``n_gold_unresolved`` counts them, so::
+
+        n_rows == n_errors + whole_pipeline.n + next_step.n + n_gold_unresolved
+
+    holds exactly, and a discrepancy is a bug rather than a shrug.
+    """
+    errors = [r for r in rows if r["error"]]
     whole = [r for r in rows if r["task"] == "whole_pipeline" and not r["error"]]
-    nxt = [r for r in rows if r["task"] == "next_step" and not r["error"] and r["next"]]
+    scorable_next = [r for r in rows if r["task"] == "next_step" and not r["error"]]
+    nxt = [r for r in scorable_next if r["next"]]
 
     return {
         "n_rows": len(rows),
-        "n_errors": sum(1 for r in rows if r["error"]),
+        "n_errors": len(errors),
+        "n_render_errors": sum(1 for r in rows if r.get("render_error")),
         "n_unparsed": sum(1 for r in rows if not r["parsed"] and not r["error"]),
+        # A well-formed `[]` — the model answered "no tools". Distinct from unparsed:
+        # an empty parse resolves to no ids AND leaves nothing unresolved.
+        "n_empty_answer": sum(
+            1 for r in rows
+            if r["parsed"] and not r["pred"] and not r["unresolved"]),
+        # Next-step rows whose gold module reaches no method. Not scorable, not an
+        # error, and not silently absent.
+        "n_gold_unresolved": len(scorable_next) - len(nxt),
         "whole_pipeline": {
             "n": len(whole),
             "selection_f1": _mean([r["selection"]["f1"] for r in whole]),
@@ -319,7 +386,17 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "sequencing_n_scored": sum(
                 1 for r in whole if r["sequencing"]["score"] is not None),
             "validity": _mean([r["validity"]["score"] for r in whole]),
+            # Validity has the worst coverage of any axis, so its denominator matters
+            # most: a mean over 2 of 40 rows is not the same claim as a mean over 40.
+            "validity_n_scored": sum(
+                1 for r in whole if r["validity"]["score"] is not None),
             "validity_coverage": _mean([r["validity"]["coverage"] for r in whole]),
+            # Gold steps and gold edges the projection could not carry into method
+            # space. Reported here because they shrink the denominators above.
+            "n_gold_unresolved_steps": sum(
+                len(r.get("gold_unresolved") or []) for r in whole),
+            "n_cyclic_edges_dropped": sum(
+                r.get("n_cyclic_edges_dropped") or 0 for r in whole),
         },
         "next_step": {
             "n": len(nxt),
