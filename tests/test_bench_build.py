@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from methods_graph.bench.build import make_items
+from methods_graph.bench.build import make_items, build_manifest
 
 SEQUENCE = ["mod:trimgalore", "mod:star", "mod:salmon", "mod:deseq2"]
 COMMON = dict(
@@ -53,3 +53,43 @@ def test_single_step_pipeline_is_rejected():
     """A one-step 'sequence' tests nothing about sequencing."""
     with pytest.raises(ValueError, match="at least two"):
         make_items(**{**COMMON, "sequence": ["mod:fastqc"]})
+
+
+def test_manifest_counts_used_and_dropped():
+    manifest = build_manifest([
+        {"pipeline": "rnaseq", "revision": "3.14.0", "status": "used",
+         "reason": None, "n_items": 5},
+        {"pipeline": "sarek", "revision": "3.4.0", "status": "dropped",
+         "reason": "nextflow preview failed (NXF_VER mismatch)", "n_items": 0},
+    ])
+    assert manifest["n_pipelines"] == 2
+    assert manifest["n_used"] == 1
+    assert manifest["n_dropped"] == 1
+    assert manifest["n_items"] == 5
+
+
+def test_dropped_pipelines_keep_their_reason():
+    """A benchmark that silently omits what it could not parse misreports coverage."""
+    manifest = build_manifest([
+        {"pipeline": "sarek", "revision": "3.4.0", "status": "dropped",
+         "reason": "no dag.mmd produced", "n_items": 0},
+    ])
+    assert manifest["dropped"][0]["reason"] == "no dag.mmd produced"
+
+
+def test_dropped_without_a_reason_is_rejected():
+    with pytest.raises(ValueError, match="reason"):
+        build_manifest([
+            {"pipeline": "x", "revision": "1", "status": "dropped",
+             "reason": None, "n_items": 0},
+        ])
+
+
+def test_manifest_is_sorted_for_stable_diffs():
+    manifest = build_manifest([
+        {"pipeline": "sarek", "revision": "1", "status": "used",
+         "reason": None, "n_items": 2},
+        {"pipeline": "atacseq", "revision": "1", "status": "used",
+         "reason": None, "n_items": 2},
+    ])
+    assert [p["pipeline"] for p in manifest["used"]] == ["atacseq", "sarek"]

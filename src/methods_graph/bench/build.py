@@ -49,3 +49,31 @@ def make_items(
             "gold": {"next": sequence[index], **provenance},
         })
     return items
+
+
+def build_manifest(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate per-pipeline outcomes, recording every exclusion with its reason.
+
+    A dropped pipeline without a reason is an error, not a permitted shortcut:
+    unexplained exclusions make the benchmark's coverage unauditable.
+    """
+    used, dropped = [], []
+    for outcome in outcomes:
+        if outcome["status"] == "dropped":
+            if not outcome.get("reason"):
+                raise ValueError(
+                    f"dropped pipeline {outcome['pipeline']!r} needs a reason")
+            dropped.append(outcome)
+        else:
+            used.append(outcome)
+
+    by_name = lambda entry: entry["pipeline"]
+    return {
+        "schema": 1,
+        "n_pipelines": len(outcomes),
+        "n_used": len(used),
+        "n_dropped": len(dropped),
+        "n_items": sum(entry["n_items"] for entry in used),
+        "used": sorted(used, key=by_name),
+        "dropped": sorted(dropped, key=by_name),
+    }
