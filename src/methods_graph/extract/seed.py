@@ -328,8 +328,18 @@ def method_preconditions(conn: kuzu.Connection, method_id: str) -> dict[str, Any
             # Assumption-level checkable: pre_run beats post_run beats unknown.
             if checkable == "pre_run" or (checkable == "post_run" and rec["checkable"] != "pre_run"):
                 rec["checkable"] = checkable
+            # A diagnostic may CHECK several assumptions while its numeric threshold
+            # pertains to exactly one: sample_size_power_check checks both asymptotic
+            # normality and regularity conditions, but a per-group replicate floor is a
+            # property of the former only. Honour that declared scope, or the floor leaks
+            # onto every assumption the diagnostic touches — which is how per-sample
+            # quantifiers (salmon, kallisto) acquired a replicate floor via their
+            # legitimate use of maximum-likelihood estimation.
+            scope = str(d_props.get("applies_to_assumption", "") or "")
+            threshold_applies = not scope or scope == a_id
+
             min_reps = d_props.get("min_replicates_per_group")
-            if min_reps is not None:
+            if min_reps is not None and threshold_applies:
                 # If two diagnostics for the same assumption disagree, enforce the
                 # STRICTEST floor (max) deterministically, rather than letting the
                 # last row by id silently win.
@@ -337,7 +347,7 @@ def method_preconditions(conn: kuzu.Connection, method_id: str) -> dict[str, Any
                 floor = min_reps if prior is None else max(prior, min_reps)
                 rec["threshold"] = {**(rec["threshold"] or {}), "min_replicates_per_group": floor}
             min_pep = d_props.get("min_peptides_per_protein")
-            if min_pep is not None:
+            if min_pep is not None and threshold_applies:
                 prior_pep = (rec["threshold"] or {}).get("min_peptides_per_protein")
                 floor_pep = min_pep if prior_pep is None else max(prior_pep, min_pep)
                 rec["threshold"] = {**(rec["threshold"] or {}), "min_peptides_per_protein": floor_pep}

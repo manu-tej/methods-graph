@@ -8,6 +8,8 @@ single VERDICT an LLM keys off to do bioinformatics analysis rigorously:
   * ``EVALUABLE``     — the graph can certify this analysis step; here are the checks.
   * ``BLOCKED``       — a pre-run gate FAILED (e.g. too few replicates) — refuse as-is.
   * ``NOT_EVALUABLE`` — honest coverage gap (unknown method, or no evaluability edges).
+  * ``FACTS_REQUIRED`` — a hard pre-run gate exists but its fact was never supplied;
+    uncertified, and deliberately NOT reported as EVALUABLE.
 
 The core (:func:`evaluate_preconditions`) is PURE — it takes the preconditions dict and a
 facts dict and needs no database, so the methodological logic is unit-testable in isolation.
@@ -21,6 +23,11 @@ from typing import Any
 EVALUABLE = "EVALUABLE"
 BLOCKED = "BLOCKED"
 NOT_EVALUABLE = "NOT_EVALUABLE"
+# A hard pre-run gate exists but the caller never supplied the fact it needs. Distinct from
+# EVALUABLE (checked and passed) and from NOT_EVALUABLE (no coverage at all): the analysis
+# is uncertified, and treating it as approval is how an agent optimised for task completion
+# routes around its own guardrail by simply not measuring.
+FACTS_REQUIRED = "FACTS_REQUIRED"
 
 # Per-gate results.
 PASS = "PASS"                          # supplied fact meets the threshold
@@ -67,6 +74,7 @@ def evaluate_preconditions(
     post_run_checks: list[dict[str, Any]] = []
     required_facts: list[str] = []
     any_fail = False
+    any_missing = False
 
     for a in assumptions:
         name = a.get("name", "")
@@ -74,12 +82,24 @@ def evaluate_preconditions(
         evidence = a.get("evidence", "")
         checkable = a.get("checkable") or ""
         threshold = a.get("threshold")  # {min_<dim>: int} or None
+        # {fact_key: True} or None. A presence predicate, for preconditions that are not
+        # "enough of something" but "was this done at all" — an appropriate background
+        # gene set, multiple-testing correction, a statistical test having been run. These
+        # are the dominant documented failure modes in real analyses and no numeric
+        # minimum can express any of them.
+        requires = a.get("requires")
 
         if checkable == "post_run":
             post_run_checks.append({"assumption": name, "diagnostics": diagnostics})
             continue
 
-        if checkable == "pre_run" and threshold:
+        # AMENABLE_TO records statistics runnable DOWNSTREAM of this tool's output, not
+        # statistics the tool itself performs — so an amenable-only inheritance must not
+        # gate the tool (that is how a read aligner acquired a replicate floor). When the
+        # tool genuinely runs the test, a separate source="used" record carries the gate.
+        gateable = (a.get("source") or "") != "amenable"
+
+        if checkable == "pre_run" and threshold and gateable:
             # One numeric gate per threshold dimension (sorted for determinism).
             for tkey in sorted(threshold):
                 tval = threshold[tkey]
@@ -89,6 +109,7 @@ def evaluate_preconditions(
                 supplied = facts.get(fkey)
                 if supplied is None:
                     result = INSUFFICIENT_INFO
+                    any_missing = True
                 elif supplied >= tval:
                     result = PASS
                 else:
@@ -97,6 +118,27 @@ def evaluate_preconditions(
                 gates.append({
                     "assumption": name, "diagnostics": diagnostics, "phase": "pre_run",
                     "threshold_key": fkey, "threshold": tval, "supplied": supplied,
+                    "result": result, "evidence": evidence,
+                })
+        elif checkable == "pre_run" and requires and gateable:
+            # Presence gate: the fact must equal the required value. Keys are already
+            # caller-facing (no ``min_`` prefix to strip).
+            for rkey in sorted(requires):
+                expected = requires[rkey]
+                if rkey not in required_facts:
+                    required_facts.append(rkey)
+                supplied = facts.get(rkey)
+                if supplied is None:
+                    result = INSUFFICIENT_INFO
+                    any_missing = True
+                elif bool(supplied) == bool(expected):
+                    result = PASS
+                else:
+                    result = FAIL
+                    any_fail = True
+                gates.append({
+                    "assumption": name, "diagnostics": diagnostics, "phase": "pre_run",
+                    "threshold_key": rkey, "threshold": expected, "supplied": supplied,
                     "result": result, "evidence": evidence,
                 })
         else:
@@ -111,13 +153,21 @@ def evaluate_preconditions(
     # The substrate keys assumptions by (id, source), so the SAME methodological gate can
     # arrive twice (tool-internal + downstream). Present each gate / post-run check once,
     # preserving order.
+    # An assumption already carrying a numeric gate needs no parallel "review this manually"
+    # entry — that is what the non-gating amenable twin would otherwise contribute.
+    keyed = {(g["assumption"], g["phase"]) for g in gates if g["threshold_key"]}
+    gates = [
+        g for g in gates
+        if g["threshold_key"] or (g["assumption"], g["phase"]) not in keyed
+    ]
     gates = _dedupe(gates, lambda g: (g["assumption"], g["threshold_key"], g["phase"]))
     post_run_checks = _dedupe(
         post_run_checks, lambda c: (c["assumption"], tuple(c["diagnostics"]))
     )
 
     return {
-        "status": BLOCKED if any_fail else EVALUABLE,
+        "status": (BLOCKED if any_fail else
+                   FACTS_REQUIRED if any_missing else EVALUABLE),
         "method_id": method_id,
         "refusal_reason": None,
         "required_facts": required_facts,
@@ -230,8 +280,9 @@ def evaluate_chain(
 
     ``steps`` is the ordered list of pipeline steps (each a ``m:<id>`` or intent keywords).
     ``facts`` are DATASET-level (e.g. ``replicates_per_group``) and apply to every step.
-    Chain status: ``NOT_EVALUABLE`` if any step is (a coverage gap); else ``BLOCKED`` if any
-    step is BLOCKED or any handoff is BROKEN; else ``EVALUABLE``.
+    Chain status, in precedence order: ``BLOCKED`` if any step is BLOCKED or any handoff is
+    BROKEN; else ``NOT_EVALUABLE`` if any step is a coverage gap; else ``FACTS_REQUIRED`` if
+    any step has an unmeasured hard gate; else ``EVALUABLE``.
     """
     step_results: list[dict[str, Any]] = []
     io: list[tuple[str | None, set[str], set[str]]] = []  # (method_id, out_data, in_data)
@@ -253,11 +304,17 @@ def evaluate_chain(
         result, shared = classify_handoff(out_data, in_data)
         handoffs.append({"from": from_id, "to": to_id, "result": result, "shared": shared})
 
-    if any(s["status"] == NOT_EVALUABLE for s in step_results):
-        status = NOT_EVALUABLE
-    elif (any(s["status"] == BLOCKED for s in step_results)
-          or any(h["result"] == HANDOFF_BROKEN for h in handoffs)):
+    # Precedence, most-actionable first. A definite violation outranks a coverage gap:
+    # reporting "gap" while a step provably fails hides the known behind the unknown. A gap
+    # outranks FACTS_REQUIRED, because an uncovered step can never be certified and saying
+    # "supply facts" would imply otherwise.
+    if (any(s["status"] == BLOCKED for s in step_results)
+            or any(h["result"] == HANDOFF_BROKEN for h in handoffs)):
         status = BLOCKED
+    elif any(s["status"] == NOT_EVALUABLE for s in step_results):
+        status = NOT_EVALUABLE
+    elif any(s["status"] == FACTS_REQUIRED for s in step_results):
+        status = FACTS_REQUIRED
     else:
         status = EVALUABLE
 

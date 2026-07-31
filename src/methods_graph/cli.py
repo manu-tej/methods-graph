@@ -1160,7 +1160,8 @@ def cmd_skills_coverage(*, db_path: Path) -> int:
     return 0
 
 
-_GUARDRAIL_EXIT = {guardrail.EVALUABLE: 0, guardrail.BLOCKED: 3, guardrail.NOT_EVALUABLE: 4}
+_GUARDRAIL_EXIT = {guardrail.EVALUABLE: 0, guardrail.BLOCKED: 3,
+                   guardrail.NOT_EVALUABLE: 4, guardrail.FACTS_REQUIRED: 5}
 
 
 def _parse_facts(raw: list[str] | None) -> dict[str, int]:
@@ -1438,6 +1439,10 @@ def main(argv: list[str] | None = None) -> int:
     ex.add_argument("--json", action="store_true", dest="as_json",
                     help="emit the full trace as JSON (default: human-readable)")
 
+    p_bench = sub.add_parser("bench", help="build the method-sequencing benchmark item set")
+    p_bench.add_argument("--pipelines", type=Path, default=Path("snapshots/pipelines"))
+    p_bench.add_argument("--out", type=Path, default=Path("bench"))
+
     args = parser.parse_args(argv)
     if args.cmd == "audit":
         return cmd_audit(
@@ -1525,6 +1530,12 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(args, "coverage", False):
             return cmd_skills_coverage(db_path=args.db)
         parser.error("skills: pass --coverage")
+    elif args.cmd == "bench":
+        from methods_graph.bench.run import build_from_clones
+        manifest = build_from_clones(args.pipelines, args.out, goals={})
+        print(f"bench: {manifest['n_used']} pipelines used, "
+              f"{manifest['n_dropped']} dropped, {manifest['n_items']} items")
+        return 0
     return 0
 
 
