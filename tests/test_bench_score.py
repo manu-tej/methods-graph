@@ -1,5 +1,5 @@
 from methods_graph.bench.oracle import StaticOracle
-from methods_graph.bench.score import match_steps, same_class, score_selection
+from methods_graph.bench.score import match_steps, same_class, score_selection, score_sequencing
 
 
 def _oracle():
@@ -129,3 +129,65 @@ def test_empty_prediction_scores_zero_without_dividing_by_zero():
     assert result["precision"] == 0.0
     assert result["recall"] == 0.0
     assert result["f1"] == 0.0
+
+
+def test_correct_order_scores_one():
+    gold_edges = [("m:fastqc", "m:star"), ("m:star", "m:salmon"),
+                  ("m:salmon", "m:deseq2")]
+    pred = ["m:fastqc", "m:star", "m:salmon", "m:deseq2"]
+    matched = match_steps(["m:fastqc", "m:star", "m:salmon", "m:deseq2"], pred, _oracle())
+    assert score_sequencing(gold_edges, matched, pred)["score"] == 1.0
+
+
+def test_reversed_order_scores_zero():
+    gold_edges = [("m:star", "m:salmon")]
+    pred = ["m:salmon", "m:star"]
+    matched = match_steps(["m:star", "m:salmon"], pred, _oracle())
+    assert score_sequencing(gold_edges, matched, pred)["score"] == 0.0
+
+
+def test_parallel_branches_are_not_penalized():
+    # fastqc and star are both required before salmon, but nothing orders them relative
+    # to each other. Either interleaving must score 1.0.
+    gold_edges = [("m:fastqc", "m:salmon"), ("m:star", "m:salmon")]
+    gold = ["m:fastqc", "m:star", "m:salmon"]
+    for pred in (["m:fastqc", "m:star", "m:salmon"], ["m:star", "m:fastqc", "m:salmon"]):
+        matched = match_steps(gold, pred, _oracle())
+        assert score_sequencing(gold_edges, matched, pred)["score"] == 1.0
+
+
+def test_order_metric_is_independent_of_naming_errors():
+    # Two of four steps are wrong; the ordering of the two correct ones is perfect.
+    gold_edges = [("m:fastqc", "m:star"), ("m:star", "m:salmon"),
+                  ("m:salmon", "m:deseq2")]
+    gold = ["m:fastqc", "m:star", "m:salmon", "m:deseq2"]
+    pred = ["m:star", "m:salmon"]
+    matched = match_steps(gold, pred, _oracle())
+    result = score_sequencing(gold_edges, matched, pred)
+    assert result["n_scorable"] == 1        # only star->salmon has both ends matched
+    assert result["score"] == 1.0
+
+
+def test_equivalent_substitution_keeps_its_position():
+    gold_edges = [("m:star", "m:salmon")]
+    pred = ["m:hisat2", "m:salmon"]
+    matched = match_steps(["m:star", "m:salmon"], pred, _oracle())
+    assert score_sequencing(gold_edges, matched, pred)["score"] == 1.0
+
+
+def test_no_scorable_edges_is_none_not_zero():
+    gold_edges = [("m:star", "m:salmon")]
+    pred = ["m:deseq2"]
+    matched = match_steps(["m:star", "m:salmon"], pred, _oracle())
+    result = score_sequencing(gold_edges, matched, pred)
+    assert result["score"] is None
+    assert result["n_scorable"] == 0
+
+
+def test_one_prediction_covering_both_ends_of_an_edge_is_not_credited():
+    # Nothing can precede itself; a single predicted tool matched to both endpoints
+    # supplies no ordering evidence.
+    gold_edges = [("m:star", "m:hisat2")]
+    matched = {"m:star": "m:star", "m:hisat2": "m:star"}
+    result = score_sequencing(gold_edges, matched, ["m:star"])
+    assert result["score"] == 0.0

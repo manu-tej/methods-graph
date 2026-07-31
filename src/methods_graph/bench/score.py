@@ -90,3 +90,37 @@ def score_selection(
         "n_matched": true_positives,
         "matched": matched,
     }
+
+
+def score_sequencing(
+    gold_edges: list[tuple[str, str]] | list[list[str]],
+    matched: dict[str, str],
+    pred: list[str],
+) -> dict[str, Any]:
+    """What order — the fraction of REQUIRED precedences the answer respects.
+
+    Scores the DAG's edges, never the gold sequence's adjacent pairs. Linearizing a DAG
+    puts parallel branches next to each other though nothing orders them, so an
+    adjacency metric marks a correct interleaving wrong. Only edges whose BOTH endpoints
+    were selected are scorable, which is what makes this independent of the selection
+    score rather than a second copy of it.
+    """
+    position = {method_id: index for index, method_id in enumerate(pred)}
+    scorable = [
+        (source, target) for source, target in gold_edges
+        if source in matched and target in matched
+    ]
+    if not scorable:
+        return {"score": None, "n_scorable": 0, "n_respected": 0,
+                "n_gold_edges": len(gold_edges)}
+
+    respected = sum(
+        1 for source, target in scorable
+        if position[matched[source]] < position[matched[target]]
+    )
+    return {
+        "score": respected / len(scorable),
+        "n_scorable": len(scorable),
+        "n_respected": respected,
+        "n_gold_edges": len(gold_edges),
+    }
