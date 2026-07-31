@@ -1240,6 +1240,100 @@ def cmd_guardrail_chain(
     return _GUARDRAIL_EXIT.get(verdict["status"], 0)
 
 
+def cmd_bench(args) -> int:
+    """Dispatch the bench subcommands. Returns a process exit code."""
+    from methods_graph.bench.oracle import coverage, load_oracle
+    from methods_graph.bench.run import (
+        build_from_clones, load_items, load_pipeline_manifests, rescore, run_items, summarize)
+
+    if args.bench_cmd == "build":
+        manifests = load_pipeline_manifests(args.pipelines.parent / "snapshot.json")
+        if not manifests and any(args.pipelines.glob("*/")):
+            _log.warning(
+                "bench build: no fetch manifest found for any pipeline under %s "
+                "(looked in %s and ingest.lock.json) — every item will record "
+                "nxf_ver 'unknown' and fall back to the bare git sha",
+                args.pipelines, args.pipelines.parent / "snapshot.json")
+        goals = json.loads(args.goals.read_text()) if args.goals else {}
+        # The projection is optional: without it items are built exactly as before and
+        # the manifest records `n_next_step_skipped: null` rather than 0.
+        build_oracle = None
+        if args.oracle_json is not None or args.db.exists():
+            build_oracle = load_oracle(
+                db_path=args.db if args.db.exists() else None,
+                json_path=args.oracle_json)
+        else:
+            _log.warning(
+                "bench build: no graph at %s and no --oracle-json; next-step items "
+                "whose answer already appears in the prompt cannot be detected",
+                args.db)
+        manifest = build_from_clones(
+            args.pipelines, args.out, goals=goals, manifests=manifests,
+            oracle=build_oracle)
+        print(json.dumps(manifest, indent=2, sort_keys=True))
+        return 0
+
+    oracle = load_oracle(db_path=args.db, json_path=args.oracle_json)
+
+    if args.bench_cmd == "coverage":
+        from methods_graph.bench.score import equivalence_pairs
+
+        module_ids = [
+            module_id
+            for item in load_items(args.items) if item["task"] == "whole_pipeline"
+            for module_id in item["gold"]["sequence"]
+        ]
+        report = coverage(oracle, module_ids)
+        # Published next to the numbers, not left in a test: these are the substitutions
+        # the selection and next-step metrics silently credit as correct. Computed here
+        # rather than inside coverage() so oracle.py stays the one file that knows about
+        # the graph and score.py stays the one file that knows what a metric is.
+        pairs = equivalence_pairs(oracle)
+        report["n_equivalence_pairs"] = len(pairs)
+        report["equivalence_pairs"] = pairs
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+
+    if args.bench_cmd == "run":
+        from methods_graph.bench.adapters import get_adapter
+        from methods_graph.bench.baselines import baseline_adapter, is_baseline_spec
+
+        items = load_items(args.items)
+        if args.task:
+            items = [i for i in items if i["task"] == args.task]
+        # `is not None`, so `--limit 0` means zero items rather than "no limit".
+        if args.limit is not None:
+            items = items[:args.limit]
+        # Baselines need the item set and the oracle; contestants need neither.
+        adapter = (baseline_adapter(args.model, items, oracle)
+                   if is_baseline_spec(args.model) else get_adapter(args.model))
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        # Streamed and flushed per row, not buffered until the loop ends: a
+        # KeyboardInterrupt or an OOM partway through a paid run must leave every
+        # answer already obtained on disk.
+        with args.out.open("w") as handle:
+            def _write(row):
+                handle.write(json.dumps(row, sort_keys=True) + "\n")
+                handle.flush()
+
+            rows = run_items(items, adapter, oracle, model=args.model, sink=_write)
+        print(json.dumps(summarize(rows), indent=2, sort_keys=True))
+        return 0
+
+    if args.bench_cmd == "score":
+        rows = [json.loads(line) for line in
+                args.results.read_text().splitlines() if line.strip()]
+        rescored = rescore(rows, oracle)
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(
+                "".join(json.dumps(row, sort_keys=True) + "\n" for row in rescored))
+        print(json.dumps(summarize(rescored), indent=2, sort_keys=True))
+        return 0
+
+    raise ValueError(f"unknown bench subcommand: {args.bench_cmd!r}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="methods-graph",
@@ -1439,9 +1533,43 @@ def main(argv: list[str] | None = None) -> int:
     ex.add_argument("--json", action="store_true", dest="as_json",
                     help="emit the full trace as JSON (default: human-readable)")
 
-    p_bench = sub.add_parser("bench", help="build the method-sequencing benchmark item set")
-    p_bench.add_argument("--pipelines", type=Path, default=Path("snapshots/pipelines"))
-    p_bench.add_argument("--out", type=Path, default=Path("bench"))
+    p_bench = sub.add_parser("bench", help="method-sequencing benchmark")
+    bench_sub = p_bench.add_subparsers(dest="bench_cmd", required=True)
+
+    b_build = bench_sub.add_parser("build", help="nf-core clones -> frozen item set")
+    b_build.add_argument("--pipelines", type=Path, default=Path("snapshots/pipelines"))
+    b_build.add_argument("--out", type=Path, default=Path("bench"))
+    b_build.add_argument("--goals", type=Path, default=None,
+                         help="JSON {pipeline: goal} map; the goal IS the prompt, so a "
+                              "pipeline without one is asked only by its bare name")
+    b_build.add_argument("--db", type=Path, default=Path("data/methods.kuzu"),
+                         help="graph used to drop next-step items that would print "
+                              "their own answer")
+    b_build.add_argument("--oracle-json", type=Path, default=None)
+
+    b_cov = bench_sub.add_parser(
+        "coverage", help="how much graph oracle backs the item set")
+    b_cov.add_argument("--items", type=Path, default=Path("bench/items"))
+    b_cov.add_argument("--db", type=Path, default=Path("data/methods.kuzu"))
+    b_cov.add_argument("--oracle-json", type=Path, default=None)
+
+    b_run = bench_sub.add_parser("run", help="run a model over the item set")
+    b_run.add_argument("--items", type=Path, default=Path("bench/items"))
+    b_run.add_argument("--db", type=Path, default=Path("data/methods.kuzu"))
+    b_run.add_argument("--oracle-json", type=Path, default=None)
+    b_run.add_argument("--model", required=True,
+                       help="claude:<model> | openai:<model> | static:<path> | "
+                            "gold: | modal: | random:<seed>[:<k>]")
+    b_run.add_argument("--out", type=Path, required=True)
+    b_run.add_argument("--limit", type=int, default=None)
+    b_run.add_argument("--task", choices=["whole_pipeline", "next_step"], default=None)
+
+    b_score = bench_sub.add_parser(
+        "score", help="re-derive scores from a results file's retained raw output")
+    b_score.add_argument("--results", type=Path, required=True)
+    b_score.add_argument("--db", type=Path, default=Path("data/methods.kuzu"))
+    b_score.add_argument("--oracle-json", type=Path, default=None)
+    b_score.add_argument("--out", type=Path, default=None)
 
     args = parser.parse_args(argv)
     if args.cmd == "audit":
@@ -1531,11 +1659,7 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_skills_coverage(db_path=args.db)
         parser.error("skills: pass --coverage")
     elif args.cmd == "bench":
-        from methods_graph.bench.run import build_from_clones
-        manifest = build_from_clones(args.pipelines, args.out, goals={})
-        print(f"bench: {manifest['n_used']} pipelines used, "
-              f"{manifest['n_dropped']} dropped, {manifest['n_items']} items")
-        return 0
+        return cmd_bench(args)
     return 0
 
 

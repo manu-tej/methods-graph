@@ -1,0 +1,37 @@
+{
+  "methods": ["m:fastqc", "m:trimgalore", "m:star", "m:hisat2", "m:salmon", "m:deseq2"],
+  "modules": {
+    "mod:fastqc": "m:fastqc",
+    "mod:trimgalore": "m:trimgalore",
+    "mod:star_align": "m:star",
+    "mod:star_genomegenerate": "m:star",
+    "mod:hisat2_align": "m:hisat2",
+    "mod:salmon_index": "m:salmon",
+    "mod:salmon_quant": "m:salmon",
+    "mod:deseq2_differential": "m:deseq2"
+  },
+  "operations": {
+    "m:fastqc": ["op:operation_0236", "op:operation_2238", "op:operation_3218"],
+    "m:trimgalore": ["op:operation_3192", "op:operation_3219", "op:operation_3237"],
+    "m:star": ["op:operation_0292"],
+    "m:hisat2": ["op:operation_0292"],
+    "m:salmon": ["op:operation_0236", "op:operation_2495", "op:operation_3800"],
+    "m:deseq2": ["op:operation_3223", "op:operation_3680"]
+  },
+  "inputs": {
+    "m:fastqc": ["data:data_1234"],
+    "m:trimgalore": ["data:data_1234"],
+    "m:star": ["data:data_1234", "data:data_1255", "data:data_2977"],
+    "m:hisat2": ["data:data_1234", "data:data_1255", "data:data_2977"],
+    "m:salmon": ["data:data_1234", "data:data_1255", "data:data_2977"],
+    "m:deseq2": ["data:data_3113", "data:data_3917"]
+  },
+  "outputs": {
+    "m:fastqc": ["data:data_2048"],
+    "m:trimgalore": ["data:data_1234", "data:data_2048"],
+    "m:star": ["data:data_0863", "data:data_2048", "data:data_3917"],
+    "m:hisat2": ["data:data_0863", "data:data_2048"],
+    "m:salmon": ["data:data_2048", "data:data_3917"],
+    "m:deseq2": ["data:data_2603", "data:data_3112"]
+  }
+}

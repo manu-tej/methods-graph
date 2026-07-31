@@ -3,10 +3,15 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
-from methods_graph.bench.run import build_from_clones
+from methods_graph.bench.oracle import StaticOracle
+from methods_graph.bench.run import build_from_clones, rescore, run_items, score_item, summarize
+from methods_graph.cli import main
+
+_BENCH_FIXTURES = Path(__file__).parent / "fixtures" / "bench"
 
 DAG = """flowchart TB
     v0(["TRIM"])
@@ -166,3 +171,448 @@ def test_missing_pipelines_directory_is_reported_clearly(tmp_path):
     FileNotFoundError by itself, so a loose match would pass unfixed code too."""
     with pytest.raises(FileNotFoundError, match=r"--pipelines path does not exist"):
         build_from_clones(tmp_path / "nope", tmp_path / "bench", goals={})
+
+
+def _oracle():
+    return StaticOracle(
+        methods=["m:fastqc", "m:star", "m:hisat2", "m:salmon", "m:deseq2"],
+        modules={"mod:fastqc": "m:fastqc", "mod:star_align": "m:star",
+                 "mod:salmon_quant": "m:salmon",
+                 "mod:deseq2_differential": "m:deseq2"},
+        operations={"m:star": ["op:0292"], "m:hisat2": ["op:0292"]},
+        inputs={"m:star": ["data:1234"], "m:hisat2": ["data:1234"],
+                "m:salmon": ["data:0863"], "m:deseq2": ["data:3917"]},
+        outputs={"m:star": ["data:0863"], "m:salmon": ["data:3917"]},
+    )
+
+
+def _whole_item():
+    return {
+        "id": "rnaseq/whole/001", "task": "whole_pipeline", "goal": "Bulk RNA-seq",
+        "given": [],
+        "gold": {
+            "sequence": ["mod:fastqc", "mod:star_align", "mod:salmon_quant",
+                         "mod:deseq2_differential"],
+            "edges": [["mod:fastqc", "mod:star_align"],
+                      ["mod:star_align", "mod:salmon_quant"],
+                      ["mod:salmon_quant", "mod:deseq2_differential"]],
+        },
+    }
+
+
+def test_ceiling_feeding_the_gold_answer_back_scores_one():
+    row = score_item(_whole_item(), '["fastqc","star","salmon","deseq2"]', _oracle())
+    assert row["selection"]["f1"] == 1.0
+    assert row["sequencing"]["score"] == 1.0
+    assert row["unresolved"] == []
+
+
+def test_row_retains_the_raw_output_so_scores_can_be_rederived():
+    raw = 'Sure!\n["fastqc","star"]'
+    assert score_item(_whole_item(), raw, _oracle())["raw"] == raw
+
+
+def test_unparseable_response_is_recorded_not_silently_zeroed():
+    row = score_item(_whole_item(), "I cannot help with that.", _oracle())
+    assert row["parsed"] is False
+    assert row["pred"] == []
+    assert row["selection"]["f1"] == 0.0
+
+
+def test_next_step_row_carries_its_bucket():
+    item = {"id": "rnaseq/next/002", "task": "next_step", "goal": "Bulk RNA-seq",
+            "given": ["mod:fastqc", "mod:star_align"],
+            "gold": {"next": "mod:salmon_quant"}}
+    row = score_item(item, '["salmon","kallisto"]', _oracle())
+    assert row["n_given"] == 2
+    assert row["next"]["top1"] is True
+
+
+def test_adapter_failure_is_recorded_against_the_item_and_the_run_continues():
+    from methods_graph.bench.adapters import AdapterError
+
+    def _flaky(prompt):
+        if "Bulk" in prompt:
+            raise AdapterError("rate limited")
+        return '["fastqc"]'
+
+    items = [_whole_item(), {**_whole_item(), "id": "other/whole/001", "goal": "Other"}]
+    rows = run_items(items, _flaky, _oracle(), model="test")
+    assert rows[0]["error"] == "rate limited"
+    assert rows[0]["selection"] is None
+    assert rows[1]["error"] is None
+
+
+def test_a_failure_row_carries_the_same_keys_a_scored_row_does():
+    """Ragged JSONL is awkward; the load-bearing part is gold_raw/given, without which
+    a failed item can never be rescored even if its raw output is recovered by hand."""
+    from methods_graph.bench.adapters import AdapterError
+
+    def _always_fails(_prompt):
+        raise AdapterError("rate limited")
+
+    item = _whole_item()
+    ok = run_items([item], lambda p: '["fastqc"]', _oracle(), model="t")[0]
+    bad = run_items([item], _always_fails, _oracle(), model="t")[0]
+    assert set(ok) <= set(bad)
+    assert bad["gold_raw"] == item["gold"]
+    assert bad["given"] == []
+
+
+def test_a_run_interrupted_by_a_non_adapter_exception_keeps_what_it_paid_for(tmp_path):
+    """An AdapterError was handled; a KeyboardInterrupt, an OOM, or any adapter raising
+    something else discarded every answer already obtained, because rows were buffered
+    in memory and written once after the loop."""
+    out = tmp_path / "results.jsonl"
+    items = [{**_whole_item(), "id": f"rnaseq/whole/{n:03d}"} for n in range(3)]
+    calls = {"n": 0}
+
+    def _explodes_on_the_third(_prompt):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise KeyboardInterrupt
+        return '["fastqc","star"]'
+
+    with out.open("w") as handle:
+        def _write(row):
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+            handle.flush()
+
+        with pytest.raises(KeyboardInterrupt):
+            run_items(items, _explodes_on_the_third, _oracle(), model="t", sink=_write)
+
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert [r["item"] for r in rows] == ["rnaseq/whole/000", "rnaseq/whole/001"]
+
+
+def test_a_malformed_item_fails_its_own_row_rather_than_the_whole_run():
+    """render_prompt used to sit outside the guard, so one bad item killed the run."""
+    items = [{"id": "bad/001", "task": "next_step", "given": []},   # no "goal" key
+             _whole_item()]
+    rows = run_items(items, lambda p: '["fastqc"]', _oracle(), model="t")
+    assert rows[0]["render_error"] is not None
+    assert rows[0]["error"].startswith("render failed")
+    assert rows[1]["error"] is None
+    assert summarize(rows)["n_render_errors"] == 1
+
+
+def test_rescore_reproduces_the_original_scores_from_raw_alone():
+    rows = run_items([_whole_item()], lambda p: '["fastqc","star","salmon","deseq2"]',
+                     _oracle(), model="test")
+    stripped = [{k: v for k, v in r.items()
+                 if k in ("item", "task", "raw", "model", "gold_raw", "given")}
+                for r in rows]
+    assert rescore(stripped, _oracle())[0]["selection"]["f1"] == 1.0
+
+
+def test_summary_separates_the_two_task_types():
+    rows = run_items([_whole_item()], lambda p: '["fastqc","star","salmon","deseq2"]',
+                     _oracle(), model="test")
+    summary = summarize(rows)
+    assert summary["whole_pipeline"]["n"] == 1
+    assert summary["whole_pipeline"]["selection_f1"] == 1.0
+    assert summary["next_step"]["n"] == 0
+
+
+def test_summary_reconciles_every_row_against_the_per_axis_denominators():
+    """A next-step row whose gold module reaches no method used to vanish: it counted
+    in n_rows and in nothing else, so the columns did not add up. At the measured ~6%
+    unresolvable rate that is one next-step row in sixteen."""
+    from methods_graph.bench.adapters import AdapterError
+
+    def _adapter(prompt):
+        if "Rate limited" in prompt:
+            raise AdapterError("rate limited")
+        return '["salmon"]'
+
+    items = [
+        _whole_item(),
+        {"id": "x/next/001", "task": "next_step", "goal": "Bulk RNA-seq",
+         "given": ["mod:fastqc"], "gold": {"next": "mod:salmon_quant"}},
+        # mod:nowhere reaches no method: unscorable, but it must still be counted.
+        {"id": "x/next/002", "task": "next_step", "goal": "Bulk RNA-seq",
+         "given": ["mod:fastqc"], "gold": {"next": "mod:nowhere"}},
+        {**_whole_item(), "id": "x/whole/002", "goal": "Rate limited"},
+    ]
+    summary = summarize(run_items(items, _adapter, _oracle(), model="t"))
+
+    assert summary["n_rows"] == 4
+    assert summary["n_errors"] == 1
+    assert summary["n_gold_unresolved"] == 1
+    assert summary["whole_pipeline"]["n"] == 1
+    assert summary["next_step"]["n"] == 1
+    assert (summary["n_rows"] == summary["n_errors"] + summary["n_gold_unresolved"]
+            + summary["whole_pipeline"]["n"] + summary["next_step"]["n"])
+
+
+def test_summary_reports_the_validity_denominator_not_just_the_mean():
+    """Validity has the worst coverage of any axis; a mean with no n is unreadable."""
+    rows = run_items([_whole_item()], lambda p: '["fastqc","star","salmon","deseq2"]',
+                     _oracle(), model="t")
+    whole = summarize(rows)["whole_pipeline"]
+    assert whole["validity_n_scored"] == 1
+    assert whole["n_gold_unresolved_steps"] == 0
+    assert whole["n_cyclic_edges_dropped"] == 0
+
+
+def test_summary_counts_a_deliberate_empty_answer_apart_from_an_unreadable_one():
+    items = [{**_whole_item(), "id": "a/whole/001", "goal": "Empty"},
+             {**_whole_item(), "id": "b/whole/001", "goal": "Refusal"}]
+    rows = run_items(items,
+                     lambda p: "[]" if "Empty" in p else "I cannot help with that.",
+                     _oracle(), model="t")
+    summary = summarize(rows)
+    assert summary["n_empty_answer"] == 1
+    assert summary["n_unparsed"] == 1
+    assert [r["parsed"] for r in rows] == [True, False]
+
+
+def test_cli_run_writes_one_jsonl_row_per_item(tmp_path):
+    items_dir = tmp_path / "items"
+    items_dir.mkdir()
+    (items_dir / "rnaseq.json").write_text(json.dumps([_whole_item()]))
+    canned = tmp_path / "canned.json"
+    canned.write_text(json.dumps(['["fastqc","star","salmon","deseq2"]']))
+    out = tmp_path / "results.jsonl"
+
+    code = main(["bench", "run", "--items", str(items_dir),
+                 "--model", f"static:{canned}", "--out", str(out),
+                 "--oracle-json", str(_write_oracle_json(tmp_path))])
+    assert code == 0
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["selection"]["f1"] == 1.0
+
+
+def _write_oracle_json(tmp_path):
+    """A serialized StaticOracle, so the CLI test needs no Kuzu database."""
+    path = tmp_path / "oracle.json"
+    path.write_text(json.dumps({
+        "methods": ["m:fastqc", "m:star", "m:salmon", "m:deseq2"],
+        "modules": {"mod:fastqc": "m:fastqc", "mod:star_align": "m:star",
+                    "mod:salmon_quant": "m:salmon",
+                    "mod:deseq2_differential": "m:deseq2"},
+        "operations": {}, "inputs": {}, "outputs": {},
+    }))
+    return path
+
+
+def _copy_fixture_items(tmp_path):
+    """The bench fixture item set, copied into its own directory.
+
+    ``load_items`` globs every ``*.json`` under ``--items``, so it cannot point at
+    ``tests/fixtures/bench/`` directly — that directory also holds ``oracle.json``,
+    a dict rather than a list of items, which ``load_items`` would try to sort by
+    ``item["id"]`` and blow up on.
+    """
+    items_dir = tmp_path / "items"
+    items_dir.mkdir()
+    (items_dir / "rnaseq.json").write_text((_BENCH_FIXTURES / "rnaseq.json").read_text())
+    return items_dir
+
+
+def test_cli_bench_coverage_runs_against_a_fixture_item_set(tmp_path, capsys):
+    items_dir = _copy_fixture_items(tmp_path)
+
+    code = main(["bench", "coverage", "--items", str(items_dir),
+                 "--oracle-json", str(_BENCH_FIXTURES / "oracle.json")])
+    assert code == 0
+
+    report = json.loads(capsys.readouterr().out)
+    # The fixture's whole_pipeline item names 6 modules (fastqc, trimgalore,
+    # star_genomegenerate, star_align, salmon_quant, deseq2_differential), all of
+    # which resolve in the fixture oracle — a real assertion on the printed report,
+    # not just an exit code.
+    assert report["n_modules"] == 6
+    assert report["resolved_fraction"] == 1.0
+    assert report["unresolved"] == []
+    # The equivalence relation is published with the numbers it affects: these are the
+    # substitutions the selection and next-step metrics credit as correct.
+    assert report["equivalence_pairs"] == [["m:hisat2", "m:star"]]
+    assert report["n_equivalence_pairs"] == 1
+    assert report["n_multi_wrapped"] == 0
+
+
+def test_cli_bench_score_rewrites_scores_into_the_out_file(tmp_path, capsys):
+    items_dir = _copy_fixture_items(tmp_path)
+    oracle_json = str(_BENCH_FIXTURES / "oracle.json")
+
+    # `load_items` sorts by item id, so canned responses must line up with
+    # sorted order: rnaseq/next/000, rnaseq/next/003, rnaseq/whole/001.
+    canned = tmp_path / "canned.json"
+    canned.write_text(json.dumps([
+        '["fastqc"]',
+        '["star"]',
+        '["fastqc","trimgalore","star","salmon","deseq2"]',
+    ]))
+    results = tmp_path / "results.jsonl"
+    run_code = main(["bench", "run", "--items", str(items_dir), "--oracle-json", oracle_json,
+                     "--model", f"static:{canned}", "--out", str(results)])
+    assert run_code == 0
+    capsys.readouterr()  # discard `bench run`'s own summary, not under test here
+
+    out = tmp_path / "scored.jsonl"
+    score_code = main(["bench", "score", "--results", str(results),
+                       "--oracle-json", oracle_json, "--out", str(out)])
+    assert score_code == 0
+
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert len(rows) == 3
+    whole = next(r for r in rows if r["task"] == "whole_pipeline")
+    assert whole["selection"]["f1"] == 1.0
+    next_first = next(r for r in rows if r["item"] == "rnaseq/next/000")
+    assert next_first["next"]["top1"] is True
+
+
+def test_manifest_revision_and_nxf_ver_reach_the_item(tmp_path):
+    clones = tmp_path / "pipelines"
+    clones.mkdir()
+    _clone(clones, "rnaseq", dag=DAG)
+
+    out = tmp_path / "bench"
+    build_from_clones(
+        clones, out,
+        goals={"rnaseq": "Bulk RNA-seq"},
+        manifests={"rnaseq": {"revision": "3.14.0", "nxf_ver": "23.04.0",
+                              "commit": "abc123"}})
+    items = json.loads((out / "items" / "rnaseq.json").read_text())
+    assert items[0]["gold"]["source"] == "nf-core/rnaseq@3.14.0"
+    assert items[0]["gold"]["nxf_ver"] == "23.04.0"
+
+
+def test_missing_manifest_still_builds_with_honest_unknowns(tmp_path):
+    clones = tmp_path / "pipelines"
+    clones.mkdir()
+    _clone(clones, "rnaseq", dag=DAG)
+
+    out = tmp_path / "bench"
+    build_from_clones(clones, out, goals={}, manifests=None)
+    items = json.loads((out / "items" / "rnaseq.json").read_text())
+    assert items[0]["gold"]["nxf_ver"] == "unknown"
+
+
+def test_load_pipeline_manifests_reads_the_snapshot(tmp_path):
+    from methods_graph.bench.run import load_pipeline_manifests
+
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps({
+        "created_at": "2026-07-31",
+        "sources": {"nfcore_pipelines": {"rnaseq": {"revision": "3.14.0",
+                                                    "nxf_ver": "23.04.0"}}},
+    }))
+    assert load_pipeline_manifests(snapshot)["rnaseq"]["nxf_ver"] == "23.04.0"
+
+
+def test_load_pipeline_manifests_of_a_snapshot_without_pipelines_is_empty(tmp_path):
+    from methods_graph.bench.run import load_pipeline_manifests
+
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps({"sources": {"nfcore_pipelines": None}}))
+    assert load_pipeline_manifests(snapshot) == {}
+
+
+def test_load_pipeline_manifests_of_a_missing_file_is_empty(tmp_path):
+    from methods_graph.bench.run import load_pipeline_manifests
+
+    assert load_pipeline_manifests(tmp_path / "absent.json") == {}
+
+
+def test_load_pipeline_manifests_reads_the_ingest_lock(tmp_path):
+    """`cmd_ingest` is the ONLY path that clones pipelines and it records them here, as
+    a list under a different filename. Reading only snapshot.json — which no code path
+    writes `sources.nfcore_pipelines` into — made Task 11's provenance a silent no-op."""
+    from methods_graph.bench.run import load_pipeline_manifests
+
+    (tmp_path / "ingest.lock.json").write_text(json.dumps({"pipelines": [
+        {"path": str(tmp_path / "pipelines" / "rnaseq"), "revision": "3.14.0",
+         "nxf_ver": "23.04.0", "commit": "abc"},
+    ]}))
+    manifests = load_pipeline_manifests(tmp_path / "snapshot.json")
+    assert manifests["rnaseq"]["nxf_ver"] == "23.04.0"
+    assert manifests["rnaseq"]["revision"] == "3.14.0"
+
+
+def test_snapshot_entries_win_over_the_ingest_lock_on_conflict(tmp_path):
+    from methods_graph.bench.run import load_pipeline_manifests
+
+    (tmp_path / "ingest.lock.json").write_text(json.dumps({"pipelines": [
+        {"path": str(tmp_path / "pipelines" / "rnaseq"), "nxf_ver": "22.10.0"},
+        {"path": str(tmp_path / "pipelines" / "sarek"), "nxf_ver": "23.10.0"},
+    ]}))
+    (tmp_path / "snapshot.json").write_text(json.dumps({
+        "sources": {"nfcore_pipelines": {"rnaseq": {"nxf_ver": "23.04.0"}}}}))
+
+    manifests = load_pipeline_manifests(tmp_path / "snapshot.json")
+    assert manifests["rnaseq"]["nxf_ver"] == "23.04.0"   # snapshot wins
+    assert manifests["sarek"]["nxf_ver"] == "23.10.0"    # lock-only entry survives
+
+
+def _projection_oracle():
+    return StaticOracle(
+        methods=["m:trimgalore", "m:star"],
+        modules={"mod:trimgalore": "m:trimgalore", "mod:star_align": "m:star"})
+
+
+def test_manifest_records_how_many_next_step_items_were_withheld(tmp_path):
+    """The exclusion has to be visible in the manifest, not silent."""
+    clones = tmp_path / "pipelines"
+    clones.mkdir()
+    _clone(clones, "rnaseq", dag=DAG)
+    manifest = build_from_clones(clones, tmp_path / "bench", goals={"rnaseq": "g"},
+                                 oracle=_projection_oracle())
+    # Gold is [trimgalore, star_align]; neither repeats a method, so nothing is dropped.
+    assert manifest["used"][0]["n_next_step_skipped"] == 0
+
+
+def test_without_an_oracle_the_skip_count_is_null_not_zero(tmp_path):
+    """`null` says "not checked"; `0` would claim the check ran and found nothing."""
+    clones = tmp_path / "pipelines"
+    clones.mkdir()
+    _clone(clones, "rnaseq", dag=DAG)
+    manifest = build_from_clones(clones, tmp_path / "bench", goals={"rnaseq": "g"})
+    assert manifest["used"][0]["n_next_step_skipped"] is None
+
+
+def test_pipelines_without_a_curated_goal_are_warned_about(tmp_path, caplog):
+    clones = tmp_path / "pipelines"
+    clones.mkdir()
+    _clone(clones, "rnaseq", dag=DAG)
+    with caplog.at_level("WARNING"):
+        build_from_clones(clones, tmp_path / "bench", goals={})
+    assert "no curated goal" in caplog.text
+    assert "rnaseq" in caplog.text
+
+
+def test_cli_build_reads_a_goals_file(tmp_path, capsys):
+    """Under this branch the goal IS the prompt; `Goal: rnaseq` is not a question."""
+    clones = tmp_path / "pipelines"
+    clones.mkdir()
+    _clone(clones, "rnaseq", dag=DAG)
+    goals = tmp_path / "goals.json"
+    goals.write_text(json.dumps({"rnaseq": "Bulk RNA-seq differential expression"}))
+
+    code = main(["bench", "build", "--pipelines", str(clones),
+                 "--out", str(tmp_path / "bench"), "--goals", str(goals),
+                 "--oracle-json", str(_write_oracle_json(tmp_path))])
+    assert code == 0
+    capsys.readouterr()
+    items = json.loads((tmp_path / "bench" / "items" / "rnaseq.json").read_text())
+    assert all(i["goal"] == "Bulk RNA-seq differential expression" for i in items)
+
+
+def test_missing_items_directory_is_an_error_not_an_empty_success(tmp_path):
+    """`bench run --items ./typo` used to print a null summary, write a zero-byte file
+    and exit 0 — indistinguishable from success."""
+    from methods_graph.bench.run import load_items
+
+    with pytest.raises(FileNotFoundError, match=r"--items path does not exist"):
+        load_items(tmp_path / "nope")
+
+
+def test_an_items_directory_with_no_items_is_an_error(tmp_path):
+    from methods_graph.bench.run import load_items
+
+    empty = tmp_path / "items"
+    empty.mkdir()
+    with pytest.raises(ValueError, match="no benchmark items"):
+        load_items(empty)
