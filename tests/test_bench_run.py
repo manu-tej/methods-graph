@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from methods_graph.bench.run import build_from_clones
 
 DAG = """flowchart TB
@@ -56,3 +58,23 @@ def test_manifest_and_items_are_written(tmp_path):
     assert (out / "gold" / "manifest.json").exists()
     written = json.loads((out / "items" / "rnaseq.json").read_text())
     assert any(item["task"] == "whole_pipeline" for item in written)
+
+
+def test_malformed_modules_json_is_dropped_not_fatal(tmp_path):
+    """One bad clone must not discard the whole build."""
+    clones = tmp_path / "pipelines"
+    clones.mkdir()
+    good = _clone(clones, "rnaseq", dag=DAG)
+    bad = _clone(clones, "broken", dag=DAG)
+    (bad / "modules.json").write_text("{not valid json")
+    manifest = build_from_clones(clones, tmp_path / "bench",
+                                 goals={"rnaseq": "Bulk RNA-seq", "broken": "Broken"})
+    assert manifest["n_used"] == 1
+    assert manifest["n_dropped"] == 1
+    assert manifest["dropped"][0]["pipeline"] == "broken"
+    assert manifest["dropped"][0]["reason"]
+
+
+def test_missing_pipelines_directory_is_reported_clearly(tmp_path):
+    with pytest.raises(FileNotFoundError, match="pipelines"):
+        build_from_clones(tmp_path / "nope", tmp_path / "bench", goals={})

@@ -23,6 +23,9 @@ def build_from_clones(
     pipelines_dir: Path, out_dir: Path, *, goals: dict[str, str],
 ) -> dict[str, Any]:
     """Build items for every clone under *pipelines_dir*; write items + manifest."""
+    if not pipelines_dir.exists():
+        raise FileNotFoundError(f"--pipelines path does not exist: {pipelines_dir}")
+
     items_dir, gold_dir = out_dir / "items", out_dir / "gold"
     items_dir.mkdir(parents=True, exist_ok=True)
     gold_dir.mkdir(parents=True, exist_ok=True)
@@ -39,7 +42,15 @@ def build_from_clones(
             continue
 
         text = dag_path.read_text()
-        sequence = gold_sequence(text, _module_map(pipeline_dir))
+        try:
+            sequence = gold_sequence(text, _module_map(pipeline_dir))
+        except (FileNotFoundError, json.JSONDecodeError, KeyError) as exc:
+            outcomes.append({"pipeline": name, "revision": revision,
+                             "status": "dropped", "n_items": 0,
+                             "reason": f"could not read pipeline metadata: "
+                                       f"{type(exc).__name__}: {exc}"})
+            continue
+
         if len(sequence) < 2:
             outcomes.append({"pipeline": name, "revision": revision,
                              "status": "dropped", "n_items": 0,
