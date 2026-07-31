@@ -73,17 +73,55 @@ def test_one_predicted_tool_cannot_satisfy_two_gold_steps():
 
 
 def test_matching_is_maximum_not_greedy():
-    # Greedy left-to-right would bind hisat2 to star, leaving nothing for hisat2's own
-    # gold slot. A maximum matching finds both.
-    gold = ["m:star", "m:hisat2"]
-    pred = ["m:hisat2", "m:star"]
-    assert len(match_steps(gold, pred, _oracle())) == 2
+    # Asymmetric case where greedy would fail. Gold_A can match both X and Y; Gold_B can
+    # match only X. If greedy assigns A→X first, B has no match (1 total). Maximum
+    # matching assigns A→Y, B→X (2 total) via augmenting path.
+    oracle = StaticOracle(
+        methods=[
+            "m:star", "m:hisat2", "m:bwa", "m:bowtie2", "m:salmon", "m:deseq2",
+            "m:fastqc",
+            "m:greedy_A", "m:greedy_B", "m:greedy_X", "m:greedy_Y",
+        ],
+        operations={
+            "m:star": ["op:operation_0292"],
+            "m:hisat2": ["op:operation_0292"],
+            "m:bwa": ["op:operation_0292", "op:operation_3198"],
+            "m:bowtie2": ["op:operation_3198"],
+            "m:salmon": ["op:operation_3800"],
+            "m:deseq2": ["op:operation_3223"],
+            "m:fastqc": ["op:operation_3218"],
+            "m:greedy_A": ["op:operation_greedy"],
+            "m:greedy_B": ["op:operation_greedy"],
+            "m:greedy_X": ["op:operation_greedy"],
+            "m:greedy_Y": ["op:operation_greedy"],
+        },
+        inputs={
+            "m:star": ["data:data_1234", "data:data_2977"],
+            "m:hisat2": ["data:data_1234", "data:data_2977"],
+            "m:bwa": ["data:data_2044", "data:data_3210"],
+            "m:salmon": ["data:data_1234"],
+            "m:deseq2": ["data:data_3917"],
+            "m:fastqc": ["data:data_1234"],
+            "m:greedy_A": ["data:data_greedy_common", "data:data_greedy_extra"],
+            "m:greedy_B": ["data:data_greedy_common"],
+            "m:greedy_X": ["data:data_greedy_common", "data:data_greedy_extra"],
+            "m:greedy_Y": ["data:data_greedy_extra"],
+        },
+    )
+    gold = ["m:greedy_A", "m:greedy_B"]
+    pred = ["m:greedy_X", "m:greedy_Y"]
+    assert len(match_steps(gold, pred, oracle)) == 2
 
 
 def test_extra_predictions_cost_precision_not_recall():
     result = score_selection(["m:star"], ["m:star", "m:deseq2", "m:fastqc"], _oracle())
     assert result["recall"] == 1.0
     assert result["precision"] == 1.0 / 3
+
+
+def test_a_repeated_step_does_not_cost_score():
+    result = score_selection(["m:star", "m:star"], ["m:star", "m:star"], _oracle())
+    assert result["f1"] == 1.0
 
 
 def test_empty_prediction_scores_zero_without_dividing_by_zero():

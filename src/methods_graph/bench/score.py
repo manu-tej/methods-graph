@@ -3,13 +3,22 @@
 A single accuracy figure hides both interesting failures — a model that knows every
 tool and orders them wrongly, and a model that names the right tools in an unrunnable
 order. Each metric returns ``None`` when its denominator is empty; ``0.0`` would claim a
-measurement that was never made.
+measurement that was never made. Exception: :func:`score_selection` returns ``0.0`` for
+an empty prediction list, since precision over an empty answer is genuinely zero, not
+undefined.
 """
 from __future__ import annotations
 
 from typing import Any
 
 from methods_graph.bench.oracle import Oracle
+
+
+def _unique(items: list[str]) -> list[str]:
+    """Order-preserving dedupe. Callers upstream already dedupe; this makes the
+    metric total rather than silently collapsing a repeat into a lost match.
+    """
+    return list(dict.fromkeys(items))
 
 
 def same_class(a: str, b: str, oracle: Oracle) -> bool:
@@ -41,6 +50,8 @@ def match_steps(
     strand a later gold step that only that tool could have covered. Kuhn's augmenting
     path, with both sides iterated in their given order, is deterministic.
     """
+    gold = _unique(gold)
+    pred = _unique(pred)
     adjacency = {g: [p for p in pred if same_class(g, p, oracle)] for g in gold}
     owner: dict[str, str] = {}  # predicted id -> gold id currently holding it
 
@@ -63,6 +74,8 @@ def score_selection(
     gold: list[str], pred: list[str], oracle: Oracle,
 ) -> dict[str, Any]:
     """Which methods — step-set F1, order ignored, equivalence classes applied."""
+    gold = _unique(gold)
+    pred = _unique(pred)
     matched = match_steps(gold, pred, oracle)
     true_positives = len(matched)
     precision = true_positives / len(pred) if pred else 0.0
