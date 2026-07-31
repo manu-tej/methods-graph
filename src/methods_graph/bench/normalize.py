@@ -19,10 +19,13 @@ from methods_graph.bench.oracle import Oracle
 # Names whose canonical form is not recoverable by punctuation stripping alone. Every
 # entry must name a method the graph actually carries; ``normalize_name`` re-checks
 # against the oracle, so a stale alias degrades to "unresolved" rather than to a wrong id.
+#
+# KEYS ARE LOOKED UP IN SPACE-SEPARATED FORM. `_candidates` collapses all punctuation to
+# single spaces BEFORE consulting this table, so an entry like "bwa-mem" can never match
+# — "bwa mem" is what arrives, and it already covers "BWA-MEM", "bwa_mem" and "BWA MEM".
 _ALIASES = {
     "bwa mem": "bwa",
     "bwa aln": "bwa",
-    "bwa-mem": "bwa",
     "trim galore": "trimgalore",
     "cut adapt": "cutadapt",
     "star aligner": "star",

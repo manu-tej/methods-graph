@@ -84,6 +84,37 @@ from them. CI runs two gates ([`.github/workflows/ci.yml`](.github/workflows/ci.
   rebuilds the graph, and asserts the rebuild reproduces the committed lock's graph hash
   (`python -m methods_graph.cli rebuild --check`).
 
+## Method-sequencing benchmark (`bench`)
+
+A LiveBench-style benchmark asking whether a model knows which methods a bioinformatics
+goal needs and in what order. Gold answers are derived from real nf-core pipeline DAGs
+(`nextflow -preview`); the graph is the scoring oracle, supplying method equivalence,
+data-type I/O and the module→method projection.
+
+```bash
+mg bench build --pipelines snapshots/pipelines --goals goals.json  # clones -> frozen items
+mg bench coverage --items bench/items                              # how much oracle backs them
+mg bench run --items bench/items --model claude:claude-opus-5 --out results.jsonl
+mg bench score --results results.jsonl --out rescored.jsonl        # re-derive from retained raw
+```
+
+**No items ship in the repo.** `snapshots/pipelines/` must be populated first — that
+needs Nextflow, Java, network access and a per-release `NXF_VER` pin, via
+`mg ingest` or `fetch_nfcore_pipeline`. `bench build` refuses a missing directory and
+`bench run` refuses an empty item set rather than reporting a null result as success.
+
+- `--model` accepts `claude:<model>`, `openai:<model>`, `static:<path>`, and the three
+  baselines `gold:` (ceiling, must score 1.0), `modal:` (answer the most common gold
+  pipeline regardless of the question) and `random:<seed>[:<k>]` (floor).
+- `--goals` maps pipeline name → the goal text that becomes the prompt. Without it a
+  pipeline is asked only by its bare name.
+- Four axes are reported separately, never pooled: selection (F1 over the method set),
+  sequencing (fraction of required DAG precedences respected), validity (does each
+  step's input reach it from something earlier), and next-step accuracy by prefix
+  length. Undefined is `null`, never `0.0`, and every axis prints its denominator.
+
+Note: `mg bench --pipelines X` is now `mg bench build --pipelines X`.
+
 ## Contribution model
 
 The graph design direction, curation choices, and public interpretation are mine. Claude
