@@ -64,7 +64,7 @@ def test_malformed_modules_json_is_dropped_not_fatal(tmp_path):
     """One bad clone must not discard the whole build."""
     clones = tmp_path / "pipelines"
     clones.mkdir()
-    good = _clone(clones, "rnaseq", dag=DAG)
+    _clone(clones, "rnaseq", dag=DAG)
     bad = _clone(clones, "broken", dag=DAG)
     (bad / "modules.json").write_text("{not valid json")
     manifest = build_from_clones(clones, tmp_path / "bench",
@@ -76,5 +76,7 @@ def test_malformed_modules_json_is_dropped_not_fatal(tmp_path):
 
 
 def test_missing_pipelines_directory_is_reported_clearly(tmp_path):
-    with pytest.raises(FileNotFoundError, match="pipelines"):
+    """Must match our own message, not the OS's — Path.iterdir() raises
+    FileNotFoundError by itself, so a loose match would pass unfixed code too."""
+    with pytest.raises(FileNotFoundError, match=r"--pipelines path does not exist"):
         build_from_clones(tmp_path / "nope", tmp_path / "bench", goals={})
