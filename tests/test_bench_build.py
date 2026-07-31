@@ -93,3 +93,12 @@ def test_manifest_is_sorted_for_stable_diffs():
          "reason": None, "n_items": 2},
     ])
     assert [p["pipeline"] for p in manifest["used"]] == ["atacseq", "sarek"]
+
+
+def test_unrecognized_status_is_rejected():
+    """An unknown status would otherwise be filed under 'used', hiding the drop entirely."""
+    with pytest.raises(ValueError, match="status"):
+        build_manifest([
+            {"pipeline": "x", "revision": "1", "status": "skipped",
+             "reason": "typo in caller", "n_items": 0},
+        ])

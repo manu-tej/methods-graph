@@ -59,13 +59,17 @@ def build_manifest(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
     """
     used, dropped = [], []
     for outcome in outcomes:
-        if outcome["status"] == "dropped":
+        status = outcome["status"]
+        if status == "dropped":
             if not outcome.get("reason"):
                 raise ValueError(
                     f"dropped pipeline {outcome['pipeline']!r} needs a reason")
             dropped.append(outcome)
-        else:
+        elif status == "used":
             used.append(outcome)
+        else:
+            raise ValueError(
+                f"pipeline {outcome['pipeline']!r} has unrecognized status {status!r}")
 
     by_name = lambda entry: entry["pipeline"]
     return {
