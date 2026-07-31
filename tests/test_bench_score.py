@@ -291,21 +291,36 @@ def test_position_buckets():
 
 
 def test_headline_excludes_the_first_step_bucket():
+    # Asymmetric bucket sizes: bucket "1-2" has 2 items (rates differ from "3-5"),
+    # so macro-mean over buckets diverges from per-item mean over non-bucket-0 rows.
+    # Macro-mean: (0.5 + 1.0) / 2 = 0.75. Per-item mean: 2/3 ≈ 0.667.
+    # The assertion pins the macro-mean, not the per-item alternative.
     rows = [
-        {"n_given": 0, "top1": True, "topk": True},    # trivially easy
-        {"n_given": 0, "top1": True, "topk": True},
-        {"n_given": 1, "top1": False, "topk": True},
-        {"n_given": 4, "top1": True, "topk": True},
+        {"n_given": 0, "top1": True, "topk": True},    # trivially easy, excluded
+        {"n_given": 1, "top1": False, "topk": True},   # bucket "1-2"
+        {"n_given": 2, "top1": True, "topk": True},    # bucket "1-2"
+        {"n_given": 4, "top1": True, "topk": True},    # bucket "3-5"
     ]
     result = aggregate_next_step(rows)
     assert result["by_bucket"]["0"]["top1"] == 1.0
-    assert result["by_bucket"]["1-2"]["top1"] == 0.0
+    assert result["by_bucket"]["1-2"]["top1"] == 0.5  # (0 + 1) / 2
     assert result["by_bucket"]["3-5"]["top1"] == 1.0
-    # Macro-mean over non-zero buckets: (0.0 + 1.0) / 2 — NOT the pooled 0.75.
-    assert result["headline_top1"] == 0.5
-    assert result["pooled_top1"] == 0.75
+    # Macro-mean over non-trivial buckets: (0.5 + 1.0) / 2 = 0.75, NOT the per-item
+    # mean of 2/3 ≈ 0.667 that would result if weighting by individual items.
+    assert result["headline_top1"] == 0.75
+    assert result["pooled_top1"] == 0.75  # (1 + 0 + 1 + 1) / 4
 
 
 def test_headline_is_none_when_only_first_step_items_exist():
     result = aggregate_next_step([{"n_given": 0, "top1": True, "topk": True}])
     assert result["headline_top1"] is None
+
+
+def test_repeated_leading_entry_does_not_evict_from_topk():
+    # Ranked list with repetitions: deduping avoids pushing a correct answer
+    # outside the top-k window purely by duplication.
+    ranked = ["m:star", "m:star", "m:star", "m:deseq2"]
+    result = score_next_step("m:deseq2", ranked, _oracle(), k=3)
+    # After deduping: ["m:star", "m:deseq2"], so deseq2 is at index 1 (within top-3).
+    assert result["topk"] is True
+    assert result["top1"] is False

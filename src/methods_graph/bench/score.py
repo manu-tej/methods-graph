@@ -1,11 +1,12 @@
-"""Three numbers, deliberately separate: did it pick, did it order, does it run.
+"""Four metric families: did it pick the right tools, did it order them correctly,
+does the pipeline run, and given progress, can it name the next step.
 
-A single accuracy figure hides both interesting failures — a model that knows every
-tool and orders them wrongly, and a model that names the right tools in an unrunnable
-order. Each metric returns ``None`` when its denominator is empty; ``0.0`` would claim a
-measurement that was never made. Exception: :func:`score_selection` returns ``0.0`` for
-an empty prediction list, since precision over an empty answer is genuinely zero, not
-undefined.
+A single accuracy figure hides interesting failures — a model that knows every tool
+and orders them wrongly, a model that names the right tools in an unrunnable order,
+or a model that can plan but struggles to sequence individual steps. Each metric
+returns ``None`` when its denominator is empty; ``0.0`` would claim a measurement
+that was never made. Exception: :func:`score_selection` returns ``0.0`` for an empty
+prediction list, since precision over an empty answer is genuinely zero, not undefined.
 """
 from __future__ import annotations
 
@@ -171,7 +172,13 @@ _FIRST_STEP_BUCKET = "0"
 def score_next_step(
     gold_next: str, ranked: list[str], oracle: Oracle, k: int = 3,
 ) -> dict[str, Any]:
-    """One next-step item: is the gold step (or its equivalent) ranked first, or in top-k?"""
+    """One next-step item: is the gold step (or its equivalent) ranked first, or in top-k?
+
+    Dedupes the ranked list first, matching the behavior of match_steps and
+    score_selection. A model answering ["STAR","STAR","STAR","HISAT2"] would
+    otherwise push HISAT2 outside top-3 purely by repetition.
+    """
+    ranked = _unique(ranked)
     return {
         "top1": bool(ranked) and same_class(gold_next, ranked[0], oracle),
         "topk": any(same_class(gold_next, candidate, oracle) for candidate in ranked[:k]),
