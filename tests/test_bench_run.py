@@ -351,3 +351,56 @@ def test_cli_bench_score_rewrites_scores_into_the_out_file(tmp_path, capsys):
     assert whole["selection"]["f1"] == 1.0
     next_first = next(r for r in rows if r["item"] == "rnaseq/next/000")
     assert next_first["next"]["top1"] is True
+
+
+def test_manifest_revision_and_nxf_ver_reach_the_item(tmp_path):
+    clones = tmp_path / "pipelines"
+    clones.mkdir()
+    _clone(clones, "rnaseq", dag=DAG)
+
+    out = tmp_path / "bench"
+    build_from_clones(
+        clones, out,
+        goals={"rnaseq": "Bulk RNA-seq"},
+        manifests={"rnaseq": {"revision": "3.14.0", "nxf_ver": "23.04.0",
+                              "commit": "abc123"}})
+    items = json.loads((out / "items" / "rnaseq.json").read_text())
+    assert items[0]["gold"]["source"] == "nf-core/rnaseq@3.14.0"
+    assert items[0]["gold"]["nxf_ver"] == "23.04.0"
+
+
+def test_missing_manifest_still_builds_with_honest_unknowns(tmp_path):
+    clones = tmp_path / "pipelines"
+    clones.mkdir()
+    _clone(clones, "rnaseq", dag=DAG)
+
+    out = tmp_path / "bench"
+    build_from_clones(clones, out, goals={}, manifests=None)
+    items = json.loads((out / "items" / "rnaseq.json").read_text())
+    assert items[0]["gold"]["nxf_ver"] == "unknown"
+
+
+def test_load_pipeline_manifests_reads_the_snapshot(tmp_path):
+    from methods_graph.bench.run import load_pipeline_manifests
+
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps({
+        "created_at": "2026-07-31",
+        "sources": {"nfcore_pipelines": {"rnaseq": {"revision": "3.14.0",
+                                                    "nxf_ver": "23.04.0"}}},
+    }))
+    assert load_pipeline_manifests(snapshot)["rnaseq"]["nxf_ver"] == "23.04.0"
+
+
+def test_load_pipeline_manifests_of_a_snapshot_without_pipelines_is_empty(tmp_path):
+    from methods_graph.bench.run import load_pipeline_manifests
+
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps({"sources": {"nfcore_pipelines": None}}))
+    assert load_pipeline_manifests(snapshot) == {}
+
+
+def test_load_pipeline_manifests_of_a_missing_file_is_empty(tmp_path):
+    from methods_graph.bench.run import load_pipeline_manifests
+
+    assert load_pipeline_manifests(tmp_path / "absent.json") == {}

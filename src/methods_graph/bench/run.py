@@ -55,12 +55,35 @@ def _revision(pipeline_dir: Path) -> str:
     return revision if completed.returncode == 0 and revision else "unknown"
 
 
+def load_pipeline_manifests(snapshot_path: Path) -> dict[str, dict[str, Any]]:
+    """Per-pipeline fetch manifests from a snapshot.json, or ``{}`` if absent.
+
+    Missing is not an error: an offline build from a plain directory of clones is a
+    supported path, and it degrades to "unknown" provenance rather than failing.
+    """
+    if not snapshot_path.exists():
+        return {}
+    try:
+        blob = json.loads(snapshot_path.read_text())
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return (blob.get("sources") or {}).get("nfcore_pipelines") or {}
+
+
 def build_from_clones(
     pipelines_dir: Path, out_dir: Path, *, goals: dict[str, str],
+    manifests: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Build items for every clone under *pipelines_dir*; write items + manifest."""
+    """Build items for every clone under *pipelines_dir*; write items + manifest.
+
+    *manifests* carries the ``fetch_nfcore_pipeline`` record per pipeline. It supplies
+    the RELEASE tag and the NXF_VER the DAG was previewed under — provenance a bare
+    clone cannot report, and which spec §1 requires so a disputed item can be re-derived.
+    """
     if not pipelines_dir.exists():
         raise FileNotFoundError(f"--pipelines path does not exist: {pipelines_dir}")
+
+    manifests = manifests or {}
 
     items_dir, gold_dir = out_dir / "items", out_dir / "gold"
     items_dir.mkdir(parents=True, exist_ok=True)
@@ -69,7 +92,11 @@ def build_from_clones(
     outcomes: list[dict[str, Any]] = []
     for pipeline_dir in sorted(p for p in pipelines_dir.iterdir() if p.is_dir()):
         name = pipeline_dir.name
-        revision = _revision(pipeline_dir)
+        manifest_entry = manifests.get(name) or {}
+        # The release tag names what a reader can check out; the commit is the fallback
+        # when no manifest recorded a tag.
+        revision = manifest_entry.get("revision") or _revision(pipeline_dir)
+        nxf_ver = manifest_entry.get("nxf_ver") or "unknown"
         dag_path = pipeline_dir / "dag.mmd"
         if not dag_path.exists():
             outcomes.append({"pipeline": name, "revision": revision,
@@ -100,7 +127,7 @@ def build_from_clones(
             continue
 
         items = make_items(
-            pipeline=name, revision=revision, nxf_ver="unknown",
+            pipeline=name, revision=revision, nxf_ver=nxf_ver,
             dag_sha256=hashlib.sha256(text.encode()).hexdigest(),
             goal=goals.get(name, name), sequence=sequence, edges=edges,
             derivation="nextflow_dsl2",

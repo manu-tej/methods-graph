@@ -1244,10 +1244,12 @@ def cmd_bench(args) -> int:
     """Dispatch the bench subcommands. Returns a process exit code."""
     from methods_graph.bench.oracle import coverage, load_oracle
     from methods_graph.bench.run import (
-        build_from_clones, load_items, rescore, run_items, summarize)
+        build_from_clones, load_items, load_pipeline_manifests, rescore, run_items, summarize)
 
     if args.bench_cmd == "build":
-        manifest = build_from_clones(args.pipelines, args.out, goals={})
+        manifests = load_pipeline_manifests(args.pipelines.parent / "snapshot.json")
+        manifest = build_from_clones(
+            args.pipelines, args.out, goals={}, manifests=manifests)
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
 
