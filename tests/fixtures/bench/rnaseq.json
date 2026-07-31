@@ -1,0 +1,39 @@
+[
+  {
+    "id": "rnaseq/whole/001",
+    "task": "whole_pipeline",
+    "goal": "Bulk RNA-seq differential expression from paired-end human FASTQ",
+    "given": [],
+    "gold": {
+      "sequence": ["mod:fastqc", "mod:trimgalore", "mod:hisat2_align",
+                   "mod:deseq2_differential"],
+      "edges": [["mod:fastqc", "mod:trimgalore"],
+                ["mod:trimgalore", "mod:hisat2_align"],
+                ["mod:hisat2_align", "mod:deseq2_differential"]],
+      "source": "nf-core/rnaseq@3.14.0",
+      "nxf_ver": "23.04.0",
+      "dag_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "derivation": "nextflow_dsl2"
+    }
+  },
+  {
+    "id": "rnaseq/next/000",
+    "task": "next_step",
+    "goal": "Bulk RNA-seq differential expression from paired-end human FASTQ",
+    "given": [],
+    "gold": {"next": "mod:fastqc", "source": "nf-core/rnaseq@3.14.0",
+             "nxf_ver": "23.04.0",
+             "dag_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+             "derivation": "nextflow_dsl2"}
+  },
+  {
+    "id": "rnaseq/next/003",
+    "task": "next_step",
+    "goal": "Bulk RNA-seq differential expression from paired-end human FASTQ",
+    "given": ["mod:fastqc", "mod:trimgalore", "mod:star_genomegenerate"],
+    "gold": {"next": "mod:star_align", "source": "nf-core/rnaseq@3.14.0",
+             "nxf_ver": "23.04.0",
+             "dag_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+             "derivation": "nextflow_dsl2"}
+  }
+]

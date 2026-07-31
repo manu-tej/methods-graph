@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from methods_graph.bench.oracle import StaticOracle
 from methods_graph.bench.run import build_from_clones, rescore, run_items, score_item, summarize
 from methods_graph.cli import main
+
+_BENCH_FIXTURES = Path(__file__).parent / "fixtures" / "bench"
 
 DAG = """flowchart TB
     v0(["TRIM"])
@@ -286,3 +289,63 @@ def _write_oracle_json(tmp_path):
         "operations": {}, "inputs": {}, "outputs": {},
     }))
     return path
+
+
+def _copy_fixture_items(tmp_path):
+    """The bench fixture item set, copied into its own directory.
+
+    ``load_items`` globs every ``*.json`` under ``--items``, so it cannot point at
+    ``tests/fixtures/bench/`` directly — that directory also holds ``oracle.json``,
+    a dict rather than a list of items, which ``load_items`` would try to sort by
+    ``item["id"]`` and blow up on.
+    """
+    items_dir = tmp_path / "items"
+    items_dir.mkdir()
+    (items_dir / "rnaseq.json").write_text((_BENCH_FIXTURES / "rnaseq.json").read_text())
+    return items_dir
+
+
+def test_cli_bench_coverage_runs_against_a_fixture_item_set(tmp_path, capsys):
+    items_dir = _copy_fixture_items(tmp_path)
+
+    code = main(["bench", "coverage", "--items", str(items_dir),
+                 "--oracle-json", str(_BENCH_FIXTURES / "oracle.json")])
+    assert code == 0
+
+    report = json.loads(capsys.readouterr().out)
+    # The fixture's whole_pipeline item names 4 modules, all of which resolve in the
+    # fixture oracle — a real assertion on the printed report, not just an exit code.
+    assert report["n_modules"] == 4
+    assert report["resolved_fraction"] == 1.0
+    assert report["unresolved"] == []
+
+
+def test_cli_bench_score_rewrites_scores_into_the_out_file(tmp_path, capsys):
+    items_dir = _copy_fixture_items(tmp_path)
+    oracle_json = str(_BENCH_FIXTURES / "oracle.json")
+
+    # `load_items` sorts by item id, so canned responses must line up with
+    # sorted order: rnaseq/next/000, rnaseq/next/003, rnaseq/whole/001.
+    canned = tmp_path / "canned.json"
+    canned.write_text(json.dumps([
+        '["fastqc"]',
+        '["star"]',
+        '["fastqc","trimgalore","hisat2","deseq2"]',
+    ]))
+    results = tmp_path / "results.jsonl"
+    run_code = main(["bench", "run", "--items", str(items_dir), "--oracle-json", oracle_json,
+                     "--model", f"static:{canned}", "--out", str(results)])
+    assert run_code == 0
+    capsys.readouterr()  # discard `bench run`'s own summary, not under test here
+
+    out = tmp_path / "scored.jsonl"
+    score_code = main(["bench", "score", "--results", str(results),
+                       "--oracle-json", oracle_json, "--out", str(out)])
+    assert score_code == 0
+
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert len(rows) == 3
+    whole = next(r for r in rows if r["task"] == "whole_pipeline")
+    assert whole["selection"]["f1"] == 1.0
+    next_first = next(r for r in rows if r["item"] == "rnaseq/next/000")
+    assert next_first["next"]["top1"] is True

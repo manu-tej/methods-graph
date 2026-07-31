@@ -324,3 +324,84 @@ def test_repeated_leading_entry_does_not_evict_from_topk():
     # After deduping: ["m:star", "m:deseq2"], so deseq2 is at index 1 (within top-3).
     assert result["topk"] is True
     assert result["top1"] is False
+
+
+import json
+from pathlib import Path
+
+from methods_graph.bench.baselines import gold_adapter, modal_adapter, random_adapter
+from methods_graph.bench.oracle import load_oracle
+from methods_graph.bench.run import run_items, summarize
+
+_FIXTURES = Path(__file__).parent / "fixtures" / "bench"
+
+
+def _fixture_items():
+    return json.loads((_FIXTURES / "rnaseq.json").read_text())
+
+
+def _fixture_oracle():
+    return load_oracle(json_path=_FIXTURES / "oracle.json")
+
+
+def test_ceiling_gold_fed_back_scores_one_on_every_metric():
+    # The fixture's one whole_pipeline item deliberately runs fastqc -> trimgalore ->
+    # hisat2_align -> deseq2_differential rather than nf-core/rnaseq's default
+    # star_align + salmon_quant path. star and salmon are still in the fixture oracle
+    # (exercised by the next_step items below and by the known-limitation test), but
+    # putting BOTH fastqc and salmon in one gold sequence would poison this exact
+    # test: they are same_class per the fixture oracle (both carry op:operation_0236
+    # and input data:data_1234, see the known-limitation test), and match_steps's
+    # maximum-cardinality matching does not prefer identity pairs when a mutual
+    # same_class collision is present in gold==pred — it provably swaps them instead
+    # (verified directly against match_steps/score_sequencing: swapping the fastqc/
+    # salmon assignment drops sequencing from 1.0 to 0.5 even though the answer is
+    # gold verbatim). That is a real, separate gap in match_steps's tie-breaking
+    # this task is not scoped to fix; the HISAT2 path sidesteps it so this CI gate
+    # measures the baselines under test, not that unrelated gap.
+    items = [i for i in _fixture_items() if i["task"] == "whole_pipeline"]
+    oracle = _fixture_oracle()
+    rows = run_items(items, gold_adapter(items, oracle), oracle, model="gold")
+    summary = summarize(rows)
+    assert summary["whole_pipeline"]["selection_f1"] == 1.0
+    assert summary["whole_pipeline"]["sequencing"] == 1.0
+    assert summary["n_errors"] == 0
+
+
+def test_random_baseline_is_deterministic_for_a_seed():
+    oracle = _fixture_oracle()
+    first = random_adapter(oracle, k=4, seed=7)("any prompt")
+    second = random_adapter(oracle, k=4, seed=7)("any prompt")
+    assert first == second
+
+
+def test_random_baseline_differs_across_seeds():
+    oracle = _fixture_oracle()
+    assert (random_adapter(oracle, k=4, seed=7)("p")
+            != random_adapter(oracle, k=4, seed=8)("p"))
+
+
+def test_modal_baseline_ignores_the_goal():
+    items = [i for i in _fixture_items() if i["task"] == "whole_pipeline"]
+    adapter = modal_adapter(items, _fixture_oracle())
+    assert adapter("Goal: A") == adapter("Goal: something completely different")
+
+
+def test_known_limitation_coarse_edam_operation_bridges_fastqc_and_salmon():
+    """KNOWN LIMITATION, recorded so it stays visible rather than latent.
+
+    Against the fixture oracle's real values, fastqc and salmon share EDAM
+    operation_0236 (Sequence composition calculation) AND input data:data_1234, so
+    same_class's operation+input-overlap rule treats a QC tool and a quantifier as
+    interchangeable — the same failure shape test_bwa_is_not_credited_for_spliced_
+    alignment guards against above, surfacing on a different pair because
+    operation_0236 is coarse enough to bridge them.
+
+    This assertion describes CURRENT behaviour; it is not a desired property, and
+    same_class must not be changed to make this test pass. If same_class is ever
+    tightened (e.g. requiring ALL shared operations, or blacklisting bridging
+    operations like operation_0236), this assertion should flip to False as part of
+    that change — the point of pinning it here is that the flip happens on purpose,
+    not that the current value is correct.
+    """
+    assert same_class("m:fastqc", "m:salmon", _fixture_oracle()) is True
