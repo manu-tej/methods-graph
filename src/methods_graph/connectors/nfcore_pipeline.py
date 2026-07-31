@@ -30,7 +30,7 @@ _NAME_AS = re.compile(r"([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?")
 _REL_FROM_PATH = re.compile(r"modules/nf-core/(.+?)(?:/main)?$")
 
 
-def _module_paths_from_modules_json(modules_json: dict[str, Any]) -> list[str]:
+def module_paths_from_modules_json(modules_json: dict[str, Any]) -> list[str]:
     """Return sorted 'nf-core/<path>' module keys from a modules.json."""
     paths: list[str] = []
     for _repo, repo_body in (modules_json.get("repos") or {}).items():
@@ -48,7 +48,7 @@ def _load_meta(pipeline_dir: Path, rel_path: str) -> dict[str, Any] | None:
     return meta if isinstance(meta, dict) else None
 
 
-def _process_to_modid(pipeline_dir: Path, path_to_modid: dict[str, str]) -> dict[str, str]:
+def process_to_modid(pipeline_dir: Path, path_to_modid: dict[str, str]) -> dict[str, str]:
     """Map each DSL2 process invocation name (the alias used at the call site, e.g.
     ``KRAKEN2`` from ``include { KRAKEN2_KRAKEN2 as KRAKEN2 }``) to ``mod:<name>``
     by scanning the pipeline's ``.nf`` files for module includes and resolving the
@@ -83,7 +83,7 @@ def parse_pipeline(
                       f"https://github.com/nf-core/{name}", ingested_at)
 
     modules_json = json.loads((pipeline_dir / "modules.json").read_text())
-    rel_paths = _module_paths_from_modules_json(modules_json)
+    rel_paths = module_paths_from_modules_json(modules_json)
 
     # Single pass: read each vendored module's meta.yml ONCE.  A module is
     # resolved only if its meta.yml exists and declares a usable `name`
@@ -126,7 +126,7 @@ def parse_pipeline(
     if not emit_wiring:
         return nodes, edges
     if dag_path.exists():
-        proc2mod = _process_to_modid(pipeline_dir, path_to_modid)
+        proc2mod = process_to_modid(pipeline_dir, path_to_modid)
         # Collapse process-label edges onto module ids, keeping each module pair's
         # EARLIEST rank.  Aliased instances of one tool (e.g. SAMTOOLS_SORT and
         # SAMTOOLS_SORT_QUALIMAP both -> mod:samtools_sort) collapse distinct DAG
