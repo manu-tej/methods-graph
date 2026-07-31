@@ -1240,6 +1240,56 @@ def cmd_guardrail_chain(
     return _GUARDRAIL_EXIT.get(verdict["status"], 0)
 
 
+def cmd_bench(args) -> int:
+    """Dispatch the bench subcommands. Returns a process exit code."""
+    from methods_graph.bench.oracle import coverage, load_oracle
+    from methods_graph.bench.run import (
+        build_from_clones, load_items, rescore, run_items, summarize)
+
+    if args.bench_cmd == "build":
+        manifest = build_from_clones(args.pipelines, args.out, goals={})
+        print(json.dumps(manifest, indent=2, sort_keys=True))
+        return 0
+
+    oracle = load_oracle(db_path=args.db, json_path=args.oracle_json)
+
+    if args.bench_cmd == "coverage":
+        module_ids = [
+            module_id
+            for item in load_items(args.items) if item["task"] == "whole_pipeline"
+            for module_id in item["gold"]["sequence"]
+        ]
+        print(json.dumps(coverage(oracle, module_ids), indent=2, sort_keys=True))
+        return 0
+
+    if args.bench_cmd == "run":
+        from methods_graph.bench.adapters import get_adapter
+
+        items = load_items(args.items)
+        if args.task:
+            items = [i for i in items if i["task"] == args.task]
+        if args.limit:
+            items = items[:args.limit]
+        rows = run_items(items, get_adapter(args.model), oracle, model=args.model)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows))
+        print(json.dumps(summarize(rows), indent=2, sort_keys=True))
+        return 0
+
+    if args.bench_cmd == "score":
+        rows = [json.loads(line) for line in
+                args.results.read_text().splitlines() if line.strip()]
+        rescored = rescore(rows, oracle)
+        if args.out:
+            args.out.write_text(
+                "".join(json.dumps(row, sort_keys=True) + "\n" for row in rescored))
+        print(json.dumps(summarize(rescored), indent=2, sort_keys=True))
+        return 0
+
+    raise ValueError(f"unknown bench subcommand: {args.bench_cmd!r}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="methods-graph",
@@ -1439,9 +1489,35 @@ def main(argv: list[str] | None = None) -> int:
     ex.add_argument("--json", action="store_true", dest="as_json",
                     help="emit the full trace as JSON (default: human-readable)")
 
-    p_bench = sub.add_parser("bench", help="build the method-sequencing benchmark item set")
-    p_bench.add_argument("--pipelines", type=Path, default=Path("snapshots/pipelines"))
-    p_bench.add_argument("--out", type=Path, default=Path("bench"))
+    p_bench = sub.add_parser("bench", help="method-sequencing benchmark")
+    bench_sub = p_bench.add_subparsers(dest="bench_cmd", required=True)
+
+    b_build = bench_sub.add_parser("build", help="nf-core clones -> frozen item set")
+    b_build.add_argument("--pipelines", type=Path, default=Path("snapshots/pipelines"))
+    b_build.add_argument("--out", type=Path, default=Path("bench"))
+
+    b_cov = bench_sub.add_parser(
+        "coverage", help="how much graph oracle backs the item set")
+    b_cov.add_argument("--items", type=Path, default=Path("bench/items"))
+    b_cov.add_argument("--db", type=Path, default=Path("data/methods.kuzu"))
+    b_cov.add_argument("--oracle-json", type=Path, default=None)
+
+    b_run = bench_sub.add_parser("run", help="run a model over the item set")
+    b_run.add_argument("--items", type=Path, default=Path("bench/items"))
+    b_run.add_argument("--db", type=Path, default=Path("data/methods.kuzu"))
+    b_run.add_argument("--oracle-json", type=Path, default=None)
+    b_run.add_argument("--model", required=True,
+                       help="claude:<model> | openai:<model> | static:<path>")
+    b_run.add_argument("--out", type=Path, required=True)
+    b_run.add_argument("--limit", type=int, default=None)
+    b_run.add_argument("--task", choices=["whole_pipeline", "next_step"], default=None)
+
+    b_score = bench_sub.add_parser(
+        "score", help="re-derive scores from a results file's retained raw output")
+    b_score.add_argument("--results", type=Path, required=True)
+    b_score.add_argument("--db", type=Path, default=Path("data/methods.kuzu"))
+    b_score.add_argument("--oracle-json", type=Path, default=None)
+    b_score.add_argument("--out", type=Path, default=None)
 
     args = parser.parse_args(argv)
     if args.cmd == "audit":
@@ -1531,11 +1607,7 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_skills_coverage(db_path=args.db)
         parser.error("skills: pass --coverage")
     elif args.cmd == "bench":
-        from methods_graph.bench.run import build_from_clones
-        manifest = build_from_clones(args.pipelines, args.out, goals={})
-        print(f"bench: {manifest['n_used']} pipelines used, "
-              f"{manifest['n_dropped']} dropped, {manifest['n_items']} items")
-        return 0
+        return cmd_bench(args)
     return 0
 
 

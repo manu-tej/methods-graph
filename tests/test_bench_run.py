@@ -6,7 +6,9 @@ import subprocess
 
 import pytest
 
-from methods_graph.bench.run import build_from_clones
+from methods_graph.bench.oracle import StaticOracle
+from methods_graph.bench.run import build_from_clones, rescore, run_items, score_item, summarize
+from methods_graph.cli import main
 
 DAG = """flowchart TB
     v0(["TRIM"])
@@ -166,3 +168,121 @@ def test_missing_pipelines_directory_is_reported_clearly(tmp_path):
     FileNotFoundError by itself, so a loose match would pass unfixed code too."""
     with pytest.raises(FileNotFoundError, match=r"--pipelines path does not exist"):
         build_from_clones(tmp_path / "nope", tmp_path / "bench", goals={})
+
+
+def _oracle():
+    return StaticOracle(
+        methods=["m:fastqc", "m:star", "m:hisat2", "m:salmon", "m:deseq2"],
+        modules={"mod:fastqc": "m:fastqc", "mod:star_align": "m:star",
+                 "mod:salmon_quant": "m:salmon",
+                 "mod:deseq2_differential": "m:deseq2"},
+        operations={"m:star": ["op:0292"], "m:hisat2": ["op:0292"]},
+        inputs={"m:star": ["data:1234"], "m:hisat2": ["data:1234"],
+                "m:salmon": ["data:0863"], "m:deseq2": ["data:3917"]},
+        outputs={"m:star": ["data:0863"], "m:salmon": ["data:3917"]},
+    )
+
+
+def _whole_item():
+    return {
+        "id": "rnaseq/whole/001", "task": "whole_pipeline", "goal": "Bulk RNA-seq",
+        "given": [],
+        "gold": {
+            "sequence": ["mod:fastqc", "mod:star_align", "mod:salmon_quant",
+                         "mod:deseq2_differential"],
+            "edges": [["mod:fastqc", "mod:star_align"],
+                      ["mod:star_align", "mod:salmon_quant"],
+                      ["mod:salmon_quant", "mod:deseq2_differential"]],
+        },
+    }
+
+
+def test_ceiling_feeding_the_gold_answer_back_scores_one():
+    row = score_item(_whole_item(), '["fastqc","star","salmon","deseq2"]', _oracle())
+    assert row["selection"]["f1"] == 1.0
+    assert row["sequencing"]["score"] == 1.0
+    assert row["unresolved"] == []
+
+
+def test_row_retains_the_raw_output_so_scores_can_be_rederived():
+    raw = 'Sure!\n["fastqc","star"]'
+    assert score_item(_whole_item(), raw, _oracle())["raw"] == raw
+
+
+def test_unparseable_response_is_recorded_not_silently_zeroed():
+    row = score_item(_whole_item(), "I cannot help with that.", _oracle())
+    assert row["parsed"] is False
+    assert row["pred"] == []
+    assert row["selection"]["f1"] == 0.0
+
+
+def test_next_step_row_carries_its_bucket():
+    item = {"id": "rnaseq/next/002", "task": "next_step", "goal": "Bulk RNA-seq",
+            "given": ["mod:fastqc", "mod:star_align"],
+            "gold": {"next": "mod:salmon_quant"}}
+    row = score_item(item, '["salmon","kallisto"]', _oracle())
+    assert row["n_given"] == 2
+    assert row["next"]["top1"] is True
+
+
+def test_adapter_failure_is_recorded_against_the_item_and_the_run_continues():
+    from methods_graph.bench.adapters import AdapterError
+
+    def _flaky(prompt):
+        if "Bulk" in prompt:
+            raise AdapterError("rate limited")
+        return '["fastqc"]'
+
+    items = [_whole_item(), {**_whole_item(), "id": "other/whole/001", "goal": "Other"}]
+    rows = run_items(items, _flaky, _oracle(), model="test")
+    assert rows[0]["error"] == "rate limited"
+    assert rows[0]["selection"] is None
+    assert rows[1]["error"] is None
+
+
+def test_rescore_reproduces_the_original_scores_from_raw_alone():
+    rows = run_items([_whole_item()], lambda p: '["fastqc","star","salmon","deseq2"]',
+                     _oracle(), model="test")
+    stripped = [{k: v for k, v in r.items()
+                 if k in ("item", "task", "raw", "model", "gold_raw", "given")}
+                for r in rows]
+    assert rescore(stripped, _oracle())[0]["selection"]["f1"] == 1.0
+
+
+def test_summary_separates_the_two_task_types():
+    rows = run_items([_whole_item()], lambda p: '["fastqc","star","salmon","deseq2"]',
+                     _oracle(), model="test")
+    summary = summarize(rows)
+    assert summary["whole_pipeline"]["n"] == 1
+    assert summary["whole_pipeline"]["selection_f1"] == 1.0
+    assert summary["next_step"]["n"] == 0
+
+
+def test_cli_run_writes_one_jsonl_row_per_item(tmp_path):
+    items_dir = tmp_path / "items"
+    items_dir.mkdir()
+    (items_dir / "rnaseq.json").write_text(json.dumps([_whole_item()]))
+    canned = tmp_path / "canned.json"
+    canned.write_text(json.dumps(['["fastqc","star","salmon","deseq2"]']))
+    out = tmp_path / "results.jsonl"
+
+    code = main(["bench", "run", "--items", str(items_dir),
+                 "--model", f"static:{canned}", "--out", str(out),
+                 "--oracle-json", str(_write_oracle_json(tmp_path))])
+    assert code == 0
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["selection"]["f1"] == 1.0
+
+
+def _write_oracle_json(tmp_path):
+    """A serialized StaticOracle, so the CLI test needs no Kuzu database."""
+    path = tmp_path / "oracle.json"
+    path.write_text(json.dumps({
+        "methods": ["m:fastqc", "m:star", "m:salmon", "m:deseq2"],
+        "modules": {"mod:fastqc": "m:fastqc", "mod:star_align": "m:star",
+                    "mod:salmon_quant": "m:salmon",
+                    "mod:deseq2_differential": "m:deseq2"},
+        "operations": {}, "inputs": {}, "outputs": {},
+    }))
+    return path

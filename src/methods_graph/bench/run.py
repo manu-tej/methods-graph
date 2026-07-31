@@ -5,12 +5,20 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
+from methods_graph.bench.adapters import AdapterError
 from methods_graph.bench.build import build_manifest, make_items
 from methods_graph.bench.gold import gold_edges, gold_sequence
+from methods_graph.bench.normalize import (
+    normalize_answer, project_edges, project_sequence)
+from methods_graph.bench.oracle import Oracle
+from methods_graph.bench.render import parse_tool_list, render_prompt
+from methods_graph.bench.score import (
+    aggregate_next_step, match_steps, position_bucket, score_next_step,
+    score_selection, score_sequencing, score_validity)
 from methods_graph.connectors.nfcore_pipeline import (
     iter_module_metas, module_paths_from_modules_json, process_to_modid)
 
@@ -104,3 +112,128 @@ def build_from_clones(
     manifest = build_manifest(outcomes)
     (gold_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
     return manifest
+
+
+def load_items(items_dir: Path) -> list[dict[str, Any]]:
+    """Every item under *items_dir*, ordered by id so runs are comparable."""
+    items: list[dict[str, Any]] = []
+    for path in sorted(items_dir.glob("*.json")):
+        items.extend(json.loads(path.read_text()))
+    return sorted(items, key=lambda item: item["id"])
+
+
+def score_item(item: dict[str, Any], raw: str, oracle: Oracle) -> dict[str, Any]:
+    """One model answer, scored on every axis its task type supports.
+
+    ``raw`` is kept on the row: every score here is a pure function of it, so a metric
+    can be redefined and the whole run re-scored without spending another API call.
+    """
+    names = parse_tool_list(raw)
+    pred, unresolved = normalize_answer(names, oracle)
+    row: dict[str, Any] = {
+        "item": item["id"], "task": item["task"], "raw": raw,
+        "parsed": bool(names), "pred": pred, "unresolved": unresolved, "error": None,
+        # The item's own gold and prefix, verbatim. Together with `raw` these are
+        # everything `rescore` needs, so a redefined metric can be applied to a finished
+        # run without re-reading the item set — or paying for the API calls again.
+        "gold_raw": item["gold"], "given": list(item.get("given") or []),
+    }
+
+    if item["task"] == "whole_pipeline":
+        gold_modules = item["gold"]["sequence"]
+        gold, gold_unresolved = project_sequence(gold_modules, oracle)
+        edges, n_cyclic = project_edges(
+            item["gold"].get("edges") or [], gold_modules, oracle)
+        selection = score_selection(gold, pred, oracle)
+        row.update({
+            "gold": gold,
+            "gold_unresolved": gold_unresolved,
+            "n_cyclic_edges_dropped": n_cyclic,
+            "selection": selection,
+            "sequencing": score_sequencing(edges, selection["matched"], pred),
+            "validity": score_validity(pred, oracle),
+        })
+        return row
+
+    if item["task"] == "next_step":
+        gold_next = oracle.method_for_module(item["gold"]["next"])
+        n_given = len(item.get("given") or [])
+        row.update({"gold": gold_next, "n_given": n_given,
+                    "bucket": position_bucket(n_given)})
+        # An unresolvable gold answer cannot be scored against; it is reported, not zeroed.
+        row["next"] = (None if gold_next is None
+                       else score_next_step(gold_next, pred, oracle))
+        return row
+
+    raise ValueError(f"unknown task type: {item['task']!r}")
+
+
+def run_items(
+    items: list[dict[str, Any]], adapter: Callable[[str], str], oracle: Oracle,
+    *, model: str,
+) -> list[dict[str, Any]]:
+    """Render, call, score — one row per item, in item order.
+
+    An adapter failure is recorded against its item and the run continues: a rate limit
+    partway through a 500-item set must not discard the 300 answers already paid for.
+    """
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        prompt = render_prompt(item, oracle)
+        try:
+            raw = adapter(prompt)
+        except AdapterError as exc:
+            rows.append({"item": item["id"], "task": item["task"], "model": model,
+                         "raw": None, "parsed": False, "pred": [], "unresolved": [],
+                         "error": str(exc), "selection": None, "sequencing": None,
+                         "validity": None, "next": None})
+            continue
+        rows.append({**score_item(item, raw, oracle), "model": model})
+    return rows
+
+
+def rescore(rows: list[dict[str, Any]], oracle: Oracle) -> list[dict[str, Any]]:
+    """Re-derive every score from the retained raw output, leaving failures untouched."""
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("raw") is None:
+            out.append(dict(row))
+            continue
+        item = {"id": row["item"], "task": row["task"], "goal": "",
+                "given": row.get("given") or [], "gold": row["gold_raw"]}
+        out.append({**score_item(item, row["raw"], oracle), "model": row.get("model")})
+    return out
+
+
+def _mean(values: list[float | None]) -> float | None:
+    present = [v for v in values if v is not None]
+    return sum(present) / len(present) if present else None
+
+
+def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The headline table: two task types, never pooled into one accuracy figure."""
+    whole = [r for r in rows if r["task"] == "whole_pipeline" and not r["error"]]
+    nxt = [r for r in rows if r["task"] == "next_step" and not r["error"] and r["next"]]
+
+    return {
+        "n_rows": len(rows),
+        "n_errors": sum(1 for r in rows if r["error"]),
+        "n_unparsed": sum(1 for r in rows if not r["parsed"] and not r["error"]),
+        "whole_pipeline": {
+            "n": len(whole),
+            "selection_f1": _mean([r["selection"]["f1"] for r in whole]),
+            "selection_precision": _mean([r["selection"]["precision"] for r in whole]),
+            "selection_recall": _mean([r["selection"]["recall"] for r in whole]),
+            "sequencing": _mean([r["sequencing"]["score"] for r in whole]),
+            "sequencing_n_scored": sum(
+                1 for r in whole if r["sequencing"]["score"] is not None),
+            "validity": _mean([r["validity"]["score"] for r in whole]),
+            "validity_coverage": _mean([r["validity"]["coverage"] for r in whole]),
+        },
+        "next_step": {
+            "n": len(nxt),
+            **aggregate_next_step([
+                {"n_given": r["n_given"], "top1": r["next"]["top1"],
+                 "topk": r["next"]["topk"]} for r in nxt]),
+        },
+    }

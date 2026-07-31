@@ -10,6 +10,7 @@ metric read without its denominator is a metric misread.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Iterable, Protocol
 
@@ -153,3 +154,23 @@ def coverage(oracle: Oracle, module_ids: list[str]) -> dict[str, Any]:
         "n_with_output_data": sum(1 for m in methods if oracle.outputs(m)),
         "methods": methods,
     }
+
+
+def load_oracle(*, db_path: Path | None = None, json_path: Path | None = None) -> Oracle:
+    """A :class:`KuzuOracle` from the graph, or a :class:`StaticOracle` from JSON.
+
+    The JSON form exists so the CLI is testable without a built database — the same
+    reason the scorer takes an ``Oracle`` rather than a connection.
+    """
+    if json_path is not None:
+        blob = json.loads(json_path.read_text())
+        return StaticOracle(
+            methods=blob.get("methods", []),
+            modules=blob.get("modules", {}),
+            operations=blob.get("operations", {}),
+            inputs=blob.get("inputs", {}),
+            outputs=blob.get("outputs", {}),
+        )
+    if db_path is None:
+        raise ValueError("one of db_path or json_path is required")
+    return KuzuOracle(db_path)
