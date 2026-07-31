@@ -859,7 +859,10 @@ git commit -m "feat(bench): selection metric with operation+input-type equivalen
 
 **Interfaces:**
 - Consumes: `match_steps` (Task 3), projected gold edges (Task 2)
-- Produces: `def score_sequencing(gold_edges, matched, pred, oracle) -> dict[str, Any]`
+- Produces: `def score_sequencing(gold_edges, matched, pred) -> dict[str, Any]`
+
+Takes no oracle: equivalence was already resolved into `matched` by Task 3, so this is
+pure list-and-set arithmetic.
 
 **Scores edges, not adjacent pairs.** Two steps on parallel branches land adjacent in any linearization though nothing orders them; scoring the linearization marks a correct answer wrong. `gold["edges"]` was frozen in Plan 1 for exactly this.
 
@@ -876,14 +879,14 @@ def test_correct_order_scores_one():
                   ("m:salmon", "m:deseq2")]
     pred = ["m:fastqc", "m:star", "m:salmon", "m:deseq2"]
     matched = match_steps(["m:fastqc", "m:star", "m:salmon", "m:deseq2"], pred, _oracle())
-    assert score_sequencing(gold_edges, matched, pred, _oracle())["score"] == 1.0
+    assert score_sequencing(gold_edges, matched, pred)["score"] == 1.0
 
 
 def test_reversed_order_scores_zero():
     gold_edges = [("m:star", "m:salmon")]
     pred = ["m:salmon", "m:star"]
     matched = match_steps(["m:star", "m:salmon"], pred, _oracle())
-    assert score_sequencing(gold_edges, matched, pred, _oracle())["score"] == 0.0
+    assert score_sequencing(gold_edges, matched, pred)["score"] == 0.0
 
 
 def test_parallel_branches_are_not_penalized():
@@ -893,7 +896,7 @@ def test_parallel_branches_are_not_penalized():
     gold = ["m:fastqc", "m:star", "m:salmon"]
     for pred in (["m:fastqc", "m:star", "m:salmon"], ["m:star", "m:fastqc", "m:salmon"]):
         matched = match_steps(gold, pred, _oracle())
-        assert score_sequencing(gold_edges, matched, pred, _oracle())["score"] == 1.0
+        assert score_sequencing(gold_edges, matched, pred)["score"] == 1.0
 
 
 def test_order_metric_is_independent_of_naming_errors():
@@ -903,7 +906,7 @@ def test_order_metric_is_independent_of_naming_errors():
     gold = ["m:fastqc", "m:star", "m:salmon", "m:deseq2"]
     pred = ["m:star", "m:salmon"]
     matched = match_steps(gold, pred, _oracle())
-    result = score_sequencing(gold_edges, matched, pred, _oracle())
+    result = score_sequencing(gold_edges, matched, pred)
     assert result["n_scorable"] == 1        # only star->salmon has both ends matched
     assert result["score"] == 1.0
 
@@ -912,14 +915,14 @@ def test_equivalent_substitution_keeps_its_position():
     gold_edges = [("m:star", "m:salmon")]
     pred = ["m:hisat2", "m:salmon"]
     matched = match_steps(["m:star", "m:salmon"], pred, _oracle())
-    assert score_sequencing(gold_edges, matched, pred, _oracle())["score"] == 1.0
+    assert score_sequencing(gold_edges, matched, pred)["score"] == 1.0
 
 
 def test_no_scorable_edges_is_none_not_zero():
     gold_edges = [("m:star", "m:salmon")]
     pred = ["m:deseq2"]
     matched = match_steps(["m:star", "m:salmon"], pred, _oracle())
-    result = score_sequencing(gold_edges, matched, pred, _oracle())
+    result = score_sequencing(gold_edges, matched, pred)
     assert result["score"] is None
     assert result["n_scorable"] == 0
 
@@ -929,7 +932,7 @@ def test_one_prediction_covering_both_ends_of_an_edge_is_not_credited():
     # supplies no ordering evidence.
     gold_edges = [("m:star", "m:hisat2")]
     matched = {"m:star": "m:star", "m:hisat2": "m:star"}
-    result = score_sequencing(gold_edges, matched, ["m:star"], _oracle())
+    result = score_sequencing(gold_edges, matched, ["m:star"])
     assert result["score"] == 0.0
 ```
 
@@ -947,7 +950,6 @@ def score_sequencing(
     gold_edges: list[tuple[str, str]] | list[list[str]],
     matched: dict[str, str],
     pred: list[str],
-    oracle: Oracle,
 ) -> dict[str, Any]:
     """What order — the fraction of REQUIRED precedences the answer respects.
 
@@ -2025,7 +2027,7 @@ def score_item(item: dict[str, Any], raw: str, oracle: Oracle) -> dict[str, Any]
             "gold_unresolved": gold_unresolved,
             "n_cyclic_edges_dropped": n_cyclic,
             "selection": selection,
-            "sequencing": score_sequencing(edges, selection["matched"], pred, oracle),
+            "sequencing": score_sequencing(edges, selection["matched"], pred),
             "validity": score_validity(pred, oracle),
         })
         return row
