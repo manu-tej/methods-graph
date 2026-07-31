@@ -409,3 +409,104 @@ def test_load_pipeline_manifests_of_a_missing_file_is_empty(tmp_path):
     from methods_graph.bench.run import load_pipeline_manifests
 
     assert load_pipeline_manifests(tmp_path / "absent.json") == {}
+
+
+def test_load_pipeline_manifests_reads_the_ingest_lock(tmp_path):
+    """`cmd_ingest` is the ONLY path that clones pipelines and it records them here, as
+    a list under a different filename. Reading only snapshot.json — which no code path
+    writes `sources.nfcore_pipelines` into — made Task 11's provenance a silent no-op."""
+    from methods_graph.bench.run import load_pipeline_manifests
+
+    (tmp_path / "ingest.lock.json").write_text(json.dumps({"pipelines": [
+        {"path": str(tmp_path / "pipelines" / "rnaseq"), "revision": "3.14.0",
+         "nxf_ver": "23.04.0", "commit": "abc"},
+    ]}))
+    manifests = load_pipeline_manifests(tmp_path / "snapshot.json")
+    assert manifests["rnaseq"]["nxf_ver"] == "23.04.0"
+    assert manifests["rnaseq"]["revision"] == "3.14.0"
+
+
+def test_snapshot_entries_win_over_the_ingest_lock_on_conflict(tmp_path):
+    from methods_graph.bench.run import load_pipeline_manifests
+
+    (tmp_path / "ingest.lock.json").write_text(json.dumps({"pipelines": [
+        {"path": str(tmp_path / "pipelines" / "rnaseq"), "nxf_ver": "22.10.0"},
+        {"path": str(tmp_path / "pipelines" / "sarek"), "nxf_ver": "23.10.0"},
+    ]}))
+    (tmp_path / "snapshot.json").write_text(json.dumps({
+        "sources": {"nfcore_pipelines": {"rnaseq": {"nxf_ver": "23.04.0"}}}}))
+
+    manifests = load_pipeline_manifests(tmp_path / "snapshot.json")
+    assert manifests["rnaseq"]["nxf_ver"] == "23.04.0"   # snapshot wins
+    assert manifests["sarek"]["nxf_ver"] == "23.10.0"    # lock-only entry survives
+
+
+def _projection_oracle():
+    return StaticOracle(
+        methods=["m:trimgalore", "m:star"],
+        modules={"mod:trimgalore": "m:trimgalore", "mod:star_align": "m:star"})
+
+
+def test_manifest_records_how_many_next_step_items_were_withheld(tmp_path):
+    """The exclusion has to be visible in the manifest, not silent."""
+    clones = tmp_path / "pipelines"
+    clones.mkdir()
+    _clone(clones, "rnaseq", dag=DAG)
+    manifest = build_from_clones(clones, tmp_path / "bench", goals={"rnaseq": "g"},
+                                 oracle=_projection_oracle())
+    # Gold is [trimgalore, star_align]; neither repeats a method, so nothing is dropped.
+    assert manifest["used"][0]["n_next_step_skipped"] == 0
+
+
+def test_without_an_oracle_the_skip_count_is_null_not_zero(tmp_path):
+    """`null` says "not checked"; `0` would claim the check ran and found nothing."""
+    clones = tmp_path / "pipelines"
+    clones.mkdir()
+    _clone(clones, "rnaseq", dag=DAG)
+    manifest = build_from_clones(clones, tmp_path / "bench", goals={"rnaseq": "g"})
+    assert manifest["used"][0]["n_next_step_skipped"] is None
+
+
+def test_pipelines_without_a_curated_goal_are_warned_about(tmp_path, caplog):
+    clones = tmp_path / "pipelines"
+    clones.mkdir()
+    _clone(clones, "rnaseq", dag=DAG)
+    with caplog.at_level("WARNING"):
+        build_from_clones(clones, tmp_path / "bench", goals={})
+    assert "no curated goal" in caplog.text
+    assert "rnaseq" in caplog.text
+
+
+def test_cli_build_reads_a_goals_file(tmp_path, capsys):
+    """Under this branch the goal IS the prompt; `Goal: rnaseq` is not a question."""
+    clones = tmp_path / "pipelines"
+    clones.mkdir()
+    _clone(clones, "rnaseq", dag=DAG)
+    goals = tmp_path / "goals.json"
+    goals.write_text(json.dumps({"rnaseq": "Bulk RNA-seq differential expression"}))
+
+    code = main(["bench", "build", "--pipelines", str(clones),
+                 "--out", str(tmp_path / "bench"), "--goals", str(goals),
+                 "--oracle-json", str(_write_oracle_json(tmp_path))])
+    assert code == 0
+    capsys.readouterr()
+    items = json.loads((tmp_path / "bench" / "items" / "rnaseq.json").read_text())
+    assert all(i["goal"] == "Bulk RNA-seq differential expression" for i in items)
+
+
+def test_missing_items_directory_is_an_error_not_an_empty_success(tmp_path):
+    """`bench run --items ./typo` used to print a null summary, write a zero-byte file
+    and exit 0 — indistinguishable from success."""
+    from methods_graph.bench.run import load_items
+
+    with pytest.raises(FileNotFoundError, match=r"--items path does not exist"):
+        load_items(tmp_path / "nope")
+
+
+def test_an_items_directory_with_no_items_is_an_error(tmp_path):
+    from methods_graph.bench.run import load_items
+
+    empty = tmp_path / "items"
+    empty.mkdir()
+    with pytest.raises(ValueError, match="no benchmark items"):
+        load_items(empty)

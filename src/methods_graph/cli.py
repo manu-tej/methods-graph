@@ -1248,8 +1248,28 @@ def cmd_bench(args) -> int:
 
     if args.bench_cmd == "build":
         manifests = load_pipeline_manifests(args.pipelines.parent / "snapshot.json")
+        if not manifests and any(args.pipelines.glob("*/")):
+            _log.warning(
+                "bench build: no fetch manifest found for any pipeline under %s "
+                "(looked in %s and ingest.lock.json) — every item will record "
+                "nxf_ver 'unknown' and fall back to the bare git sha",
+                args.pipelines, args.pipelines.parent / "snapshot.json")
+        goals = json.loads(args.goals.read_text()) if args.goals else {}
+        # The projection is optional: without it items are built exactly as before and
+        # the manifest records `n_next_step_skipped: null` rather than 0.
+        build_oracle = None
+        if args.oracle_json is not None or args.db.exists():
+            build_oracle = load_oracle(
+                db_path=args.db if args.db.exists() else None,
+                json_path=args.oracle_json)
+        else:
+            _log.warning(
+                "bench build: no graph at %s and no --oracle-json; next-step items "
+                "whose answer already appears in the prompt cannot be detected",
+                args.db)
         manifest = build_from_clones(
-            args.pipelines, args.out, goals={}, manifests=manifests)
+            args.pipelines, args.out, goals=goals, manifests=manifests,
+            oracle=build_oracle)
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
 
@@ -1280,7 +1300,8 @@ def cmd_bench(args) -> int:
         items = load_items(args.items)
         if args.task:
             items = [i for i in items if i["task"] == args.task]
-        if args.limit:
+        # `is not None`, so `--limit 0` means zero items rather than "no limit".
+        if args.limit is not None:
             items = items[:args.limit]
         rows = run_items(items, get_adapter(args.model), oracle, model=args.model)
         args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -1294,6 +1315,7 @@ def cmd_bench(args) -> int:
                 args.results.read_text().splitlines() if line.strip()]
         rescored = rescore(rows, oracle)
         if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
             args.out.write_text(
                 "".join(json.dumps(row, sort_keys=True) + "\n" for row in rescored))
         print(json.dumps(summarize(rescored), indent=2, sort_keys=True))
@@ -1507,6 +1529,13 @@ def main(argv: list[str] | None = None) -> int:
     b_build = bench_sub.add_parser("build", help="nf-core clones -> frozen item set")
     b_build.add_argument("--pipelines", type=Path, default=Path("snapshots/pipelines"))
     b_build.add_argument("--out", type=Path, default=Path("bench"))
+    b_build.add_argument("--goals", type=Path, default=None,
+                         help="JSON {pipeline: goal} map; the goal IS the prompt, so a "
+                              "pipeline without one is asked only by its bare name")
+    b_build.add_argument("--db", type=Path, default=Path("data/methods.kuzu"),
+                         help="graph used to drop next-step items that would print "
+                              "their own answer")
+    b_build.add_argument("--oracle-json", type=Path, default=None)
 
     b_cov = bench_sub.add_parser(
         "coverage", help="how much graph oracle backs the item set")

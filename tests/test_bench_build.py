@@ -74,6 +74,46 @@ def test_items_are_unchanged_when_no_edges_are_supplied():
     assert all("edges" not in item["gold"] for item in make_items(**COMMON))
 
 
+_INDEX_THEN_USE = ["mod:fastqc", "mod:star_genomegenerate", "mod:star_align",
+                   "mod:salmon_quant"]
+_WRAPS = {"mod:fastqc": "m:fastqc", "mod:star_genomegenerate": "m:star",
+          "mod:star_align": "m:star", "mod:salmon_quant": "m:salmon"}
+
+
+def test_a_next_step_item_is_not_built_when_the_prompt_would_contain_its_own_answer():
+    """`given` is rendered in METHOD space, so `star_genomegenerate` then `star_align`
+    shows the model "Completed so far: fastqc, star" and asks it to name star. The
+    whole index-then-use family (salmon, bwa, samtools) is degenerate the same way —
+    free marks for every model and both baselines."""
+    items = make_items(**{**COMMON, "sequence": _INDEX_THEN_USE},
+                       method_for_module=_WRAPS.get)
+    nxt = [i for i in items if i["task"] == "next_step"]
+
+    assert [i["gold"]["next"] for i in nxt] == [
+        "mod:fastqc", "mod:star_genomegenerate", "mod:salmon_quant"]
+    for item in nxt:
+        given_methods = {_WRAPS[m] for m in item["given"]}
+        assert _WRAPS[item["gold"]["next"]] not in given_methods
+
+
+def test_next_step_items_are_unchanged_without_a_projection():
+    """The default must preserve existing behaviour exactly — callers with no oracle
+    build the same set they always did."""
+    assert (make_items(**{**COMMON, "sequence": _INDEX_THEN_USE})
+            == make_items(**{**COMMON, "sequence": _INDEX_THEN_USE},
+                          method_for_module=None))
+    assert len([i for i in make_items(**{**COMMON, "sequence": _INDEX_THEN_USE})
+                if i["task"] == "next_step"]) == 4
+
+
+def test_an_unresolvable_gold_module_still_gets_its_item():
+    """No method means nothing could have leaked; the scorer reports it as
+    gold_unresolved rather than dropping it."""
+    items = make_items(**{**COMMON, "sequence": ["mod:fastqc", "mod:local_process"]},
+                       method_for_module={"mod:fastqc": "m:fastqc"}.get)
+    assert len([i for i in items if i["task"] == "next_step"]) == 2
+
+
 def test_manifest_counts_used_and_dropped():
     manifest = build_manifest([
         {"pipeline": "rnaseq", "revision": "3.14.0", "status": "used",

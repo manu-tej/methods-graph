@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
@@ -17,10 +18,12 @@ from methods_graph.bench.normalize import (
 from methods_graph.bench.oracle import Oracle
 from methods_graph.bench.render import parse_tool_list, render_prompt
 from methods_graph.bench.score import (
-    aggregate_next_step, match_steps, position_bucket, score_next_step,
-    score_selection, score_sequencing, score_validity)
+    aggregate_next_step, position_bucket, score_next_step, score_selection,
+    score_sequencing, score_validity)
 from methods_graph.connectors.nfcore_pipeline import (
     iter_module_metas, module_paths_from_modules_json, process_to_modid)
+
+_log = logging.getLogger(__name__)
 
 
 def _module_map(pipeline_dir: Path) -> dict[str, str]:
@@ -55,43 +58,78 @@ def _revision(pipeline_dir: Path) -> str:
     return revision if completed.returncode == 0 and revision else "unknown"
 
 
-def load_pipeline_manifests(snapshot_path: Path) -> dict[str, dict[str, Any]]:
-    """Per-pipeline fetch manifests from a snapshot.json, or ``{}`` if absent.
+def _read_json(path: Path) -> Any:
+    """Parsed JSON, or ``None`` if the file is missing or unreadable.
 
     Missing is not an error: an offline build from a plain directory of clones is a
     supported path, and it degrades to "unknown" provenance rather than failing.
     """
-    if not snapshot_path.exists():
-        return {}
+    if not path.exists():
+        return None
     try:
-        blob = json.loads(snapshot_path.read_text())
+        return json.loads(path.read_text())
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return {}
-    return (blob.get("sources") or {}).get("nfcore_pipelines") or {}
+        return None
+
+
+def load_pipeline_manifests(snapshot_path: Path) -> dict[str, dict[str, Any]]:
+    """Per-pipeline fetch manifests, keyed by pipeline directory name.
+
+    Two sources, because the two write paths disagree. ``snapshot.json`` carries
+    ``sources.nfcore_pipelines`` as a name -> record MAP, but nothing writes it:
+    ``cmd_fetch`` calls ``write_manifest`` without that argument. ``cmd_ingest`` — the
+    only path that actually clones pipelines — records them as a LIST under
+    ``ingest.lock.json``'s ``"pipelines"``. Reading only the first meant every build
+    fell back to the git sha and stamped ``nxf_ver: "unknown"``, which is exactly the
+    provenance loss this record exists to prevent. Snapshot entries win on conflict,
+    being the explicitly-declared form.
+    """
+    merged: dict[str, dict[str, Any]] = {}
+
+    lock = _read_json(snapshot_path.parent / "ingest.lock.json")
+    for entry in (lock or {}).get("pipelines") or []:
+        path = entry.get("path")
+        if path:
+            merged[Path(path).name] = entry
+
+    blob = _read_json(snapshot_path) or {}
+    merged.update((blob.get("sources") or {}).get("nfcore_pipelines") or {})
+    return merged
 
 
 def build_from_clones(
     pipelines_dir: Path, out_dir: Path, *, goals: dict[str, str],
     manifests: dict[str, dict[str, Any]] | None = None,
+    oracle: Oracle | None = None,
 ) -> dict[str, Any]:
     """Build items for every clone under *pipelines_dir*; write items + manifest.
 
     *manifests* carries the ``fetch_nfcore_pipeline`` record per pipeline. It supplies
     the RELEASE tag and the NXF_VER the DAG was previewed under — provenance a bare
     clone cannot report, and which spec §1 requires so a disputed item can be re-derived.
+
+    *oracle* is used only to project modules onto methods when deciding whether a
+    next-step item would print its own answer; see :func:`make_items`. Without one the
+    items are built exactly as before and the per-pipeline skip count is recorded as
+    ``null`` rather than ``0``, so "not checked" stays distinguishable from
+    "none skipped".
     """
     if not pipelines_dir.exists():
         raise FileNotFoundError(f"--pipelines path does not exist: {pipelines_dir}")
 
     manifests = manifests or {}
+    method_for_module = None if oracle is None else oracle.method_for_module
 
     items_dir, gold_dir = out_dir / "items", out_dir / "gold"
     items_dir.mkdir(parents=True, exist_ok=True)
     gold_dir.mkdir(parents=True, exist_ok=True)
 
     outcomes: list[dict[str, Any]] = []
+    missing_goals: list[str] = []
     for pipeline_dir in sorted(p for p in pipelines_dir.iterdir() if p.is_dir()):
         name = pipeline_dir.name
+        if name not in goals:
+            missing_goals.append(name)
         manifest_entry = manifests.get(name) or {}
         # The release tag names what a reader can check out; the commit is the fallback
         # when no manifest recorded a tag.
@@ -101,6 +139,7 @@ def build_from_clones(
         if not dag_path.exists():
             outcomes.append({"pipeline": name, "revision": revision,
                              "status": "dropped", "n_items": 0,
+                             "n_next_step_skipped": None,
                              "reason": "no dag.mmd produced by nextflow -preview"})
             continue
 
@@ -116,6 +155,7 @@ def build_from_clones(
                 UnicodeDecodeError, yaml.YAMLError) as exc:
             outcomes.append({"pipeline": name, "revision": revision,
                              "status": "dropped", "n_items": 0,
+                             "n_next_step_skipped": None,
                              "reason": f"could not read pipeline metadata: "
                                        f"{type(exc).__name__}: {exc}"})
             continue
@@ -123,6 +163,7 @@ def build_from_clones(
         if len(sequence) < 2:
             outcomes.append({"pipeline": name, "revision": revision,
                              "status": "dropped", "n_items": 0,
+                             "n_next_step_skipped": None,
                              "reason": f"gold sequence too short ({len(sequence)} steps)"})
             continue
 
@@ -130,11 +171,22 @@ def build_from_clones(
             pipeline=name, revision=revision, nxf_ver=nxf_ver,
             dag_sha256=hashlib.sha256(text.encode()).hexdigest(),
             goal=goals.get(name, name), sequence=sequence, edges=edges,
-            derivation="nextflow_dsl2",
+            derivation="nextflow_dsl2", method_for_module=method_for_module,
         )
+        # One next-step position per gold step is the ceiling; the shortfall is what
+        # make_items withheld because the prompt would have printed its own answer.
+        n_next_step = sum(1 for item in items if item["task"] == "next_step")
         (items_dir / f"{name}.json").write_text(json.dumps(items, indent=2, sort_keys=True))
         outcomes.append({"pipeline": name, "revision": revision, "status": "used",
-                         "reason": None, "n_items": len(items)})
+                         "reason": None, "n_items": len(items),
+                         "n_next_step_skipped": (
+                             None if oracle is None else len(sequence) - n_next_step)})
+
+    if missing_goals:
+        _log.warning(
+            "bench build: %d of %d pipeline(s) have no curated goal and fall back to "
+            "their bare name as the entire prompt: %s",
+            len(missing_goals), len(outcomes), sorted(missing_goals))
 
     manifest = build_manifest(outcomes)
     (gold_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
@@ -142,10 +194,22 @@ def build_from_clones(
 
 
 def load_items(items_dir: Path) -> list[dict[str, Any]]:
-    """Every item under *items_dir*, ordered by id so runs are comparable."""
+    """Every item under *items_dir*, ordered by id so runs are comparable.
+
+    Empty is an error, not a result. ``Path.glob`` over a directory that does not exist
+    yields nothing, so the previous silence made ``bench run --items ./typo`` print a
+    null summary, write a zero-byte results file and exit 0 — indistinguishable from
+    success, and the most likely first-real-use outcome given no items ship in the repo.
+    """
+    if not items_dir.exists():
+        raise FileNotFoundError(f"--items path does not exist: {items_dir}")
     items: list[dict[str, Any]] = []
     for path in sorted(items_dir.glob("*.json")):
         items.extend(json.loads(path.read_text()))
+    if not items:
+        raise ValueError(
+            f"--items path contains no benchmark items: {items_dir} "
+            f"(run `methods-graph bench build` first)")
     return sorted(items, key=lambda item: item["id"])
 
 
