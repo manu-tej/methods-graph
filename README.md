@@ -67,22 +67,74 @@ rather than upstream dumps.
 
 ```bash
 uv sync --extra dev
-uv run pytest -q                                  # 552 passed, 1 skipped
+uv run pytest -q                                  # 771 passed, 1 skipped
 uv run python examples/causal_evaluability_demo.py
 ```
 
 The demo is self-contained: it builds a compact, faithfully-grounded graph from the
 shipped curated maps, so no external fetch or database is required.
 
+Contributing? [`CLAUDE.md`](CLAUDE.md) documents the conventions, identifier schemes, and
+the traps that have actually cost time here.
+
+## The graph at a glance
+
+Built artifact (`data/methods.kuzu`, regenerated — not committed): **905 methods**, 19,425
+nodes, 32,757 edges. Curation depth is uneven by design, and every query surface reports
+its own denominator rather than implying uniform coverage:
+
+| Attribute | Methods carrying it |
+|---|---|
+| EDAM operation (`PERFORMS`) | 415 / 905 (46%) |
+| bioconda package | 745 (82%) |
+| container | 646 (71%) |
+| bio.tools id | 450 (50%) |
+| typed input `Data` node | 49 (5.4%) |
+| typed output `Data` node | 39 (4.3%) |
+
+Semantic `Data` typing is the thin layer, and deliberately so — it is hand-curated where
+a handoff needs to be checkable, not inferred. Treat any I/O-derived result as scoped to
+those 49/39, which is why the tooling prints coverage next to every number.
+
+## What you can run against it
+
+```bash
+mg guardrail --method m:deseq2 --fact replicates_per_group=2   # one step's preconditions
+mg explain --method m:deseq2                                   # why it has that verdict
+mg audit --db data/methods.kuzu                                # graph invariant checks
+
+# a whole proposed pipeline: per-step verdicts plus the data handoffs between them
+mg guardrail-chain --step m:fastqc --step m:star --step m:salmon --step m:deseq2
+```
+
+`guardrail` returns `EVALUABLE` / `BLOCKED` / `NOT_EVALUABLE` / `FACTS_REQUIRED`, e.g.:
+
+```text
+BLOCKED  (m:deseq2)
+  [FAIL] asymptotic (large-sample) normality — replicates_per_group supplied=2 >= 3?
+  [REQUIRES_REVIEW] independence of observations — manual check
+  [POST-RUN] normality — run: diag:qq_plot, diag:shapiro_wilk
+```
+
+`NOT_EVALUABLE` is a first-class answer: an uncovered method is reported as a coverage
+gap, never silently approved.
+
 ## Reproducibility
 
-`data/methods.lock.json` pins source snapshots and records the hash of a graph rebuilt
-from them. CI runs two gates ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
+`data/methods.lock.json` records source pins, per-source hashes, and the content hash of a
+graph rebuilt from them. CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
 
-- **On every push / PR** — the full test suite plus lock-schema validity.
-- **Weekly / on demand** — a reproducibility gate that fetches the pinned sources,
-  rebuilds the graph, and asserts the rebuild reproduces the committed lock's graph hash
-  (`python -m methods_graph.cli rebuild --check`).
+- **Every push to `main` / every PR** — the full test suite. Tests needing the built
+  database skip automatically (`data/*.kuzu` is gitignored), so anything DB-gated is
+  enforced locally, not in CI.
+- **Weekly / on demand** — two separate questions:
+  - *Is the build deterministic given identical snapshots?* **Hard gate.** Two rebuilds
+    must produce the same graph hash. Currently passing.
+  - *Has upstream drifted from the lock?* **Informational.** `fetch` clones nf-core/modules
+    at `master` HEAD and queries the BioContainers and bio.tools APIs live; neither API is
+    pinned in the lock at all. The lock therefore records pins nothing replays, and a
+    rebuild diverges as soon as upstream moves. Closing that gap means threading the pins
+    into `fetch`; until then the drift is reported rather than treated as a regression.
 
 ## Method-sequencing benchmark (`bench`)
 
