@@ -1,0 +1,14 @@
+name: fastqc_qc
+description: Quality control
+tools:
+  - fastqc:
+      description: FastQC
+      identifier: biotools:fastqc
+input:
+  - reads:
+      type: file
+      pattern: "*.fastq.gz"
+output:
+  - html:
+      type: file
+      pattern: "*.html"

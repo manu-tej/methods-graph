@@ -1,0 +1,11 @@
+# mini gaf-eco-mapping
+EXP	Default	ECO:0000269
+IDA	Default	ECO:0000314
+IDA	GO_REF:0000001	ECO:9999999
+IPI	Default	ECO:0000353
+IMP	Default	ECO:0000315
+IEA	Default	ECO:0000501
+HDA	Default	ECO:0007005
+IGI	Default	ECO:0000316
+IEP	Default	ECO:0000270
+malformed line without tabs

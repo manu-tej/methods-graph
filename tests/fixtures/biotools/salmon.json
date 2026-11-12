@@ -1,0 +1,14 @@
+{
+  "biotoolsID": "salmon",
+  "topic": [
+    {"uri": "http://edamontology.org/topic_3170", "term": "RNA-Seq"}
+  ],
+  "function": [
+    {
+      "operation": [
+        {"uri": "http://edamontology.org/operation_3800", "term": "RNA-Seq quantification"},
+        {"uri": "http://edamontology.org/operation_2495", "term": "Gene expression analysis"}
+      ]
+    }
+  ]
+}

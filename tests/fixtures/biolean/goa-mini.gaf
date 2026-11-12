@@ -1,0 +1,31 @@
+!gaf-version: 2.2
+!generated-by: biolean-fixture
+!date-generated: 2026-01-01
+UniProtKB	P00009	DUP	involved_in	GO:0000030	GO_REF:0000002	IEA		P	dup gene 2		protein	taxon:9606	20260301	UniProt		
+UniProtKB	P00008	DUP	involved_in	GO:0000030	GO_REF:0000002	IEA		P	dup gene 1		protein	taxon:9606	20260301	UniProt		
+UniProtKB	P00007	GG	involved_in	GO:0009999	PMID:22	IDA		P	gene G		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00007	GG	involved_in	GO:0000100	PMID:24	IDA		P	gene G		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00007	GG	involved_in	GO:0000090	PMID:23	XYZ		P	gene G		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00007	GG	involved_in	GO:0000090	PMID:21	IDA		P	gene G		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00006	GF	involved_in	GO:0000011	PMID:20	IDA		P	gene F		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00005	GE	involved_in	GO:0000110	PMID:19	IDA		P	gene E		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00004	GD	located_in	GO:0000310	PMID:15	HDA		C	gene D		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00004	GD	located_in	GO:0000310	PMID:15	HDA		C	gene D		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00004	GD	binds	GO:0000310	PMID:16	IDA		C	gene D		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00004	GD	located_in	GO:0000300	PMID:17	HDA		C	gene D		protein		20200101	UniProt		
+UniProtKB	P00004	GD	located_in	GO:0000310	PMID:18	IDA		C	gene D		protein	taxon:9606	20200101	UniProt	
+UniProtKB	P00003	GC	enables	GO:0000210	PMID:13	IPI	UniProtKB:Q0002	F	gene C		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00003	GC	enables	GO:0000210	PMID:11|PMID:12	IDA		F	gene C		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00003	GC	enables	GO:0000200	PMID:14	IDA		F	gene C		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00002	GB	involved_in	GO:0000060	PMID:10	IMP		P	gene B		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00002	GB	involved_in	GO:0000050	PMID:9	IDA		P	gene B		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00002	GB	involved_in	GO:0000040	PMID:8	IMP		P	gene B		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00002	GB	NOT|involved_in	GO:0000040	PMID:25	IDA		P	gene B		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00001	GA	involved_in	GO:0000030	PMID:2	IPI	UniProtKB:Q0001	P	gene A		protein	taxon:9606|taxon:562	20200102	UniProt		
+UniProtKB	P00001	GA	involved_in	GO:0000030	PMID:1	IDA		P	gene A		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00001	GA	involved_in	GO:0000020	PMID:7	IMP		P	gene A		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00001	GA	involved_in	GO:0000010	GO_REF:0000002	IEA		P	gene A		protein	taxon:9606	20260301	UniProt		
+UniProtKB	P00001	GA	involved_in	GO:0000010	PMID:3	IDA		P	gene A		protein	taxon:9606	20190101	UniProt		
+UniProtKB	P00001	GA	involved_in	GO:0000005	PMID:6	IDA		P	gene A		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00001	GA	acts_upstream_of_or_within	GO:0000010	PMID:4	IMP		P	gene A		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P00001	GA	NOT|involved_in	GO:0000010	PMID:5	IDA		P	gene A		protein	taxon:9606	20200101	UniProt		

@@ -1,0 +1,31 @@
+# methods-graph ingestion manifest — every input pinned, no silent drops.
+#
+# Run:  mg ingest --manifest ingest.example.yaml --dest .work --db data/methods.kuzu
+#
+# `mg ingest` resolves the declared shared sources FIRST (failing loudly if any is
+# missing), then clones each pinned pipeline + generates its ground-truth DAG (with
+# the matching Nextflow version), builds the graph from the pipelines' own vendored
+# modules + the shared sources, gates on the audit, and writes <dest>/ingest.lock.json
+# recording exactly what went in (commits, dag, source digests, audit summary).
+
+# Shared-source snapshot dir (the layout `mg fetch --dest <snapshot_dir>` writes).
+# Relative paths are resolved against this manifest's directory.
+snapshot_dir: snapshots
+
+# Declared shared sources. Declaring a key REQUIRES it to be present (a missing
+# one aborts the build — no layer is ever silently dropped). A null value uses the
+# standard fetch layout; give a path to override. Omit a key to not load it.
+sources:
+  edam:           # snapshots/EDAM.tsv
+  biocontainers:  # snapshots/biocontainers/
+  biotools:       # snapshots/biotools/
+  stato:          # snapshots/stato.owl
+  obi:            # snapshots/obi.owl
+
+# Pipelines to ingest, each pinned to a release tag (revision) and the Nextflow
+# version it builds under. Method nodes + DAG wiring come from each pipeline's own
+# vendored modules, so they are version-matched.
+pipelines:
+  - {name: rnaseq, revision: "3.14.0", nxf_ver: "23.10.0"}
+  # - {name: sarek,     revision: "3.4.0",  nxf_ver: "23.10.0"}
+  # - {name: methylseq, revision: "4.2.0",  nxf_ver: "23.10.0"}

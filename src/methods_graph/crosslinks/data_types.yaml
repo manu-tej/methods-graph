@@ -1,0 +1,59 @@
+# Curated data-type layer: canonical RNA-seq data types (content, not file format)
+# + each tool's true I/O. Emits grounded Method->Data INPUT/OUTPUT edges so pipelines
+# COMPOSE on what actually flows between them (a count matrix feeds DE) instead of
+# joining on coarse file formats (everything "matches" via TSV/GZIP). See data_handoffs.py.
+#
+# Every `edam:` id below was verified present as a Data NODE in the built graph (the
+# EDAM connector loads only a subset of Data concepts; an id absent there yields no
+# edge). tool_io produces/consumes are grounded in each module's meta.yml input/output.
+
+data_types:
+  # --- sequence / alignment ---
+  raw_reads:               {edam: data_1234, label: "Sequence set (nucleic acid)"}  # FASTQ read set
+  reference_genome:        {edam: data_2977, label: "Nucleic acid sequence"}         # genome FASTA (see note 1)
+  transcript_fasta:        {edam: data_2977, label: "Nucleic acid sequence"}         # transcriptome FASTA (see note 1)
+  gene_annotation:         {edam: data_1255, label: "Sequence features"}             # GTF/GFF
+  aligned_reads:           {edam: data_0863, label: "Sequence alignment"}            # BAM/SAM/CRAM
+  assembled_transcripts:   {edam: data_0925, label: "Sequence assembly"}             # StringTie assembled GTF
+  # --- expression / counts (the cross-pipeline bridge lives here) ---
+  count_matrix:            {edam: data_3917, label: "Count matrix"}                  # raw counts  [PRIMARY BRIDGE]
+  gene_expression_matrix:  {edam: data_3112, label: "Gene expression matrix"}        # normalised / TPM / intensities
+  sample_metadata:         {edam: data_3113, label: "Sample annotation"}             # samplesheet / coldata / cls
+  # --- differential + enrichment ---
+  de_results:              {edam: data_2603, label: "Expression data"}              # DE results table (broader, see note 2)
+  gene_set_collection:     {edam: data_2600, label: "Pathway or network"}           # GMT/GMX gene sets (broader, see note 2)
+  go_enrichment_results:   {edam: data_3754, label: "GO-term enrichment data"}      # gprofiler2 functional enrichment
+  pathway_enrichment_results: {edam: data_3953, label: "Pathway overrepresentation data"} # GSEA
+  qc_report:               {edam: data_2048, label: "Report"}                       # FastQC/fastp/MultiQC/alignment QC
+  #
+  # note 1: EDAM does not type FASTA by reference-vs-transcriptome role; both are
+  #         data_2977, so they are indistinguishable at the content layer (acceptable).
+  # note 2: de_results and gene_set_collection have no exact EDAM Data id; these are
+  #         the closest node-backed parents (ontology gap, flagged for future EDAM PR).
+
+tool_io:
+  # ===== nf-core/rnaseq =====
+  m:fastqc:     {produces: [qc_report], consumes: [raw_reads]}
+  m:trimgalore: {produces: [raw_reads, qc_report], consumes: [raw_reads]}
+  m:fastp:      {produces: [raw_reads, qc_report], consumes: [raw_reads]}
+  m:star:       {produces: [aligned_reads, count_matrix, qc_report], consumes: [raw_reads, reference_genome, gene_annotation]}
+  m:hisat2:     {produces: [aligned_reads, qc_report], consumes: [raw_reads, reference_genome, gene_annotation]}
+  m:salmon:     {produces: [count_matrix, qc_report], consumes: [raw_reads, transcript_fasta, reference_genome, gene_annotation]}
+  m:kallisto:   {produces: [count_matrix, qc_report], consumes: [raw_reads, transcript_fasta, gene_annotation]}
+  m:rsem:       {produces: [count_matrix, transcript_fasta, aligned_reads, qc_report], consumes: [raw_reads, reference_genome, gene_annotation, aligned_reads]}
+  m:samtools:   {produces: [aligned_reads, raw_reads, qc_report], consumes: [aligned_reads, reference_genome]}
+  m:tximeta:    {produces: [count_matrix, gene_expression_matrix], consumes: [count_matrix]}   # tximport: per-sample quant -> gene counts + TPM
+  m:summarizedexperiment: {produces: [count_matrix], consumes: [count_matrix, sample_metadata]}  # builds SE from the pipeline's own count matrices (not external expr matrices)
+  m:gffread:    {produces: [gene_annotation, transcript_fasta], consumes: [gene_annotation, reference_genome]}
+  m:stringtie:  {produces: [assembled_transcripts, gene_annotation], consumes: [aligned_reads, gene_annotation]}
+  # m:custom intentionally omitted: it collapses heterogeneous custom modules
+  # (rsemmergecounts / tx2gene / gtffilter / tabulartogseagct / matrixfilter), so a
+  # single union of I/O types would be dishonest -- consistent with method_operations.yaml.
+
+  # ===== nf-core/differentialabundance =====
+  m:deseq2:     {produces: [de_results, gene_expression_matrix], consumes: [count_matrix, sample_metadata]}   # THE rnaseq->DE handoff
+  m:limma:      {produces: [de_results], consumes: [gene_expression_matrix, sample_metadata]}                 # intensities, NOT raw counts
+  m:gsea:       {produces: [pathway_enrichment_results], consumes: [gene_expression_matrix, gene_set_collection, sample_metadata]}
+  m:gprofiler2: {produces: [go_enrichment_results], consumes: [de_results, gene_set_collection]}
+  m:affy:       {produces: [gene_expression_matrix], consumes: [sample_metadata]}   # microarray loader (parallel to rnaseq, not downstream)
+  m:proteus:    {produces: [gene_expression_matrix], consumes: [sample_metadata]}   # proteomics loader (parallel to rnaseq, not downstream)

@@ -1,0 +1,76 @@
+import kuzu
+from methods_graph.types import NodeRecord, MethodRecord, EdgeRecord, NodeKind, EdgeKind, Provenance
+from methods_graph.graph.loader import build_graph
+
+P = Provenance("test", "x", "2026-06-08")
+
+
+def test_build_graph_loads_nodes_and_edges(tmp_path):
+    nodes = [
+        MethodRecord("m:salmon", "salmon", NodeKind.METHOD, {"version": "1.10.0"}, P,
+                     bioconda_pkg="salmon", biotools_id="salmon"),
+        NodeRecord("op:operation_3798", "Read summarisation", NodeKind.OPERATION, {}, P),
+    ]
+    edges = [EdgeRecord("m:salmon", "op:operation_3798", EdgeKind.PERFORMS, {}, P)]
+    db_path = tmp_path / "methods.kuzu"
+    build_graph(nodes, edges, db_path, staging_dir=tmp_path / "stg")
+
+    db = kuzu.Database(str(db_path))
+    conn = kuzu.Connection(db)
+    res = conn.execute("MATCH (m:Entity {kind:'Method'})-[r:Rel]->(o:Entity) "
+                       "RETURN m.id, r.kind, o.id")
+    rows = [row for row in res]
+    assert ["m:salmon", "PERFORMS", "op:operation_3798"] in rows
+
+
+def test_build_graph_is_idempotent(tmp_path):
+    nodes = [NodeRecord("op:x", "X", NodeKind.OPERATION, {}, P)]
+    db_path = tmp_path / "methods.kuzu"
+    build_graph(nodes, [], db_path, staging_dir=tmp_path / "stg")
+    build_graph(nodes, [], db_path, staging_dir=tmp_path / "stg")   # rebuild, no error
+    conn = kuzu.Connection(kuzu.Database(str(db_path)))
+    count = [r for r in conn.execute("MATCH (n:Entity) RETURN count(n)")][0][0]
+    assert count == 1
+
+
+def test_build_graph_default_staging_sibling_does_not_crash(tmp_path):
+    """Regression: cmd_build's default --staging is '<db>.staging', which matches
+    the loader's '<db>.*' WAL/shadow cleanup glob.  That cleanup targets FILES
+    (WAL/shadow/lock) and must skip directories — otherwise unlinking the staging
+    dir raises EPERM ('Operation not permitted') on macOS and aborts the build."""
+    from pathlib import Path
+    db_path = tmp_path / "methods.kuzu"
+    staging = Path(str(db_path) + ".staging")   # collides with the <db>.* cleanup glob
+    nodes = [NodeRecord("op:x", "X", NodeKind.OPERATION, {}, P)]
+    build_graph(nodes, [], db_path, staging_dir=staging)            # must not raise
+    conn = kuzu.Connection(kuzu.Database(str(db_path)))
+    assert [r for r in conn.execute("MATCH (n:Entity) RETURN count(n)")][0][0] == 1
+
+
+def test_dangling_edge_is_dropped_not_errored(tmp_path):
+    nodes = [NodeRecord("op:x", "X", NodeKind.OPERATION, {}, P)]
+    dangling = EdgeRecord("op:x", "op:missing", EdgeKind.PERFORMS, {}, P)
+    db_path = tmp_path / "methods.kuzu"
+    build_graph(nodes, [dangling], db_path, staging_dir=tmp_path / "stg")
+    conn = kuzu.Connection(kuzu.Database(str(db_path)))
+    count = [r for r in conn.execute("MATCH ()-[r:Rel]->() RETURN count(r)")][0][0]
+    assert count == 0
+
+
+def test_provenance_columns_load_into_correct_fields(tmp_path):
+    """Guard against silent corruption from positional COPY column mis-mapping."""
+    prov = Provenance("edam", "http://edam", "2026-06-08")
+    nodes = [NodeRecord("op:x", "X", NodeKind.OPERATION, {}, prov)]
+    db_path = tmp_path / "methods.kuzu"
+    build_graph(nodes, [], db_path, staging_dir=tmp_path / "stg")
+
+    conn = kuzu.Connection(kuzu.Database(str(db_path)))
+    res = conn.execute(
+        "MATCH (n:Entity {id:'op:x'}) RETURN n.source, n.source_url, n.ingested_at"
+    )
+    rows = [row for row in res]
+    assert len(rows) == 1
+    source, source_url, ingested_at = rows[0]
+    assert source == "edam"
+    assert source_url == "http://edam"
+    assert ingested_at == "2026-06-08"

@@ -1,0 +1,2 @@
+fixture-a namespaces="biolean-ledger" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMbAzXs+U7A5SHaOn6qNz6u0kT9Uum+Im3a2LWplOXyA biolean-fixture-A
+fixture-b namespaces="biolean-ledger" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBPfOM5BpELtoEjb/EmTQkHkiFTlHC9PN21eB3mmqldN biolean-fixture-B

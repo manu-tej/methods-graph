@@ -1,0 +1,17 @@
+name: samtools_stats
+description: Produce comprehensive statistics from a BAM file
+tools:
+  - samtools:
+      description: Suite of programs for interacting with high-throughput sequencing data
+      homepage: http://www.htslib.org
+      identifier: biotools:samtools
+      edam_operations:
+        - "operation_2403"
+      edam_topics: []
+  - bcftools:
+      description: Utilities for variant calling and manipulating VCFs and BCFs
+      homepage: https://samtools.github.io/bcftools
+      identifier: biotools:bcftools
+      edam_operations: []
+      edam_topics:
+        - "topic_3168"

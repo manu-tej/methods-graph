@@ -1,0 +1,12 @@
+{
+  "name": "salmon",
+  "versions": [
+    {
+      "meta_version": "1.10.0",
+      "images": [
+        {"image_name": "quay.io/biocontainers/salmon:1.10.0--h7e5ed60_0",
+         "registry": "quay.io"}
+      ]
+    }
+  ]
+}

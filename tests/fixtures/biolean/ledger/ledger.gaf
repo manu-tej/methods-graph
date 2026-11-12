@@ -1,0 +1,14 @@
+!gaf-version: 2.2
+!generated-by: biolean-ledger-fixture
+!date-generated: 2026-02-02
+!go-version: http://purl.obolibrary.org/obo/go/releases/2026-02-02/extensions/go-plus.ofn
+UniProtKB	P10001	G1	involved_in	GO:0000002	PMID:100|PMID:99	IDA		P	gene one		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P10001	G1	involved_in	GO:0000002	PMID:100|PMID:99	IDA		P	gene one		protein	taxon:9606	20200101	MGI		
+UniProtKB	P10001	G1	NOT|involved_in	GO:0000003	PMID:101	IDA		P	gene one		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P10002	G2	involved_in	GO:0000001	PMID:102	IMP		P	gene two		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P10002	G2	enables	GO:0000021	PMID:103	IDA		F	gene two		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P10003	G3	involved_in	GO:0000003	PMID:104	IDA		P	gene three		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P10003	G3	enables	GO:0000020	PMID:105	IPI	UniProtKB:P10002	F	gene three		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P10004	G4	involved_in	GO:0000002	GO_REF:0000002	IEA		P	gene four		protein	taxon:9606	20260101	UniProt		
+UniProtKB	P10004	G4	involved_in	GO:0000003	PMID:106	IDA		P	gene four		protein	taxon:9606	20200101	UniProt		
+UniProtKB	P10005	G5	involved_in	GO:0000001	PMID:108	IDA		P	gene five		protein	taxon:9606|taxon:562	20200101	UniProt		

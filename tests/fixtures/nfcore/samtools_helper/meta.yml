@@ -1,0 +1,16 @@
+name: samtools_helper
+description: Module using samtools plus an in-house helper script
+tools:
+  - samtools:
+      description: Suite of programs for interacting with high-throughput sequencing data
+      homepage: http://www.htslib.org
+      identifier: biotools:samtools
+      edam_operations:
+        - "operation_2403"
+      edam_topics: []
+  - helperscript:
+      description: Internal helper with no bioconda package
+      homepage: ""
+      identifier: ""
+      edam_operations: []
+      edam_topics: []

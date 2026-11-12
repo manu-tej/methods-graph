@@ -1,0 +1,2320 @@
+"""Command-line entry points for the methods graph pipeline.
+
+Implemented subcommands:
+  query      -- seed a subgraph by keyword and print RAG text
+  methods    -- dump all methods as AnalysisMethod-shaped JSON
+  build      -- build the Kùzu DB from local source snapshots (connectors → resolver → loader)
+                optionally enriched with bio.tools EDAM operations via --biotools <dir>
+  fetch      -- download real source snapshots (EDAM, nf-core/modules, BioContainers)
+                and record a versioned snapshot.json manifest for seamless upgrades
+  ingest     -- reproducible build from a declarative manifest: fetch the pinned
+                pipelines, resolve declared shared sources (fail loudly if any is
+                missing), build, gate on the audit, and write an ingest.lock.json
+  audit      -- run correctness checks (schema invariants, provenance, dup ids, coverage)
+                against a built Kùzu DB; exits 0 if all checks pass, 1 otherwise
+  export-kgx -- export the graph to KGX TSV format (nodes.tsv + edges.tsv) for
+                interoperability with other Knowledge Graph tools
+
+Deferred subcommands:
+  resolve  -- enrich method nodes with pipeline-DAG ordering and external-registry
+              enrichment (bio.tools cross-linking etc.)  (Phase 2)
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import logging
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, Callable
+
+from methods_graph.provider.quration_provider import KuzuMethodsGraphProvider
+from methods_graph import guardrail
+
+_log = logging.getLogger(__name__)
+
+
+def cmd_query(*, db_path: Path, keywords: list[str], k_hops: int) -> None:
+    """Print RAG text for the subgraph seeded by the given keywords."""
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        print(provider.retrieve_context_for_keywords(keywords, k_hops=k_hops))
+
+
+def cmd_methods(*, db_path: Path) -> None:
+    """Dump all methods as AnalysisMethod-shaped JSON to stdout."""
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        print(json.dumps(provider.get_methods(), indent=2))
+
+
+def cmd_suggest(*, db_path: Path, have: list[str], limit: int) -> None:
+    """Print attestation-ranked next-step suggestions for the given frontier as JSON."""
+    import kuzu
+    from methods_graph.planner import expand
+
+    db = conn = None
+    try:
+        db = kuzu.Database(str(db_path), read_only=True)
+        conn = kuzu.Connection(db)
+        suggestions = expand(conn, have, limit=limit)
+    finally:
+        if conn is not None:
+            conn.close()
+        if db is not None:
+            db.close()
+    print(json.dumps([s.to_dict() for s in suggestions], indent=2))
+
+
+def cmd_build(
+    *,
+    edam: Path | None,
+    nfcore_modules: Path | None,
+    biocontainers: Path | None,
+    nfcore_pipelines: Path | None = None,
+    biotools: Path | None = None,
+    stato: Path | None = None,
+    obi: Path | None = None,
+    skills: Path | None = None,
+    db_path: Path,
+    staging_dir: Path,
+    ingested_at: str,
+    no_wiring: bool = False,
+) -> None:
+    """Build a Kùzu graph from local source snapshots: connectors → resolver → loader.
+
+    ``no_wiring=True`` skips DOWNSTREAM_OF generation for pipelines (used for bulk
+    catalog imports, where no Nextflow DAG exists and io_inferred wiring would be
+    O(modules^2) noise that drowns the real nextflow_dsl2 DAGs).
+
+    Optional ``--biotools <dir>`` enriches each Method whose biotoolsID matches a
+    bio.tools JSON record with PERFORMS (operation) edges.
+
+    Optional ``--stato <path>`` and ``--obi <path>`` load STATO/OBI OWL ontology
+    files into StatisticalMethod, Assay, Protocol, StudyDesign, Instrument, and
+    Material nodes with IS_A edges.
+    """
+    # Grouped here for readability (build is the only subcommand that needs these).
+    from methods_graph.connectors.edam import parse_edam
+    from methods_graph.connectors.nfcore import parse_module
+    from methods_graph.connectors.nfcore_pipeline import parse_pipeline
+    from methods_graph.connectors.biocontainers import parse_biocontainer
+    from methods_graph.connectors.biotools import load_biotools_edam
+    from methods_graph.connectors.ontology import parse_stato, parse_obi
+    from methods_graph.resolve.resolver import resolve
+    from methods_graph.pipeline_merge import merge_downstream_of
+    from methods_graph.graph.loader import build_graph
+    from methods_graph.types import EdgeKind, EdgeRecord, MethodRecord, NodeKind, Provenance
+
+    all_nodes: list = []
+    all_edges: list = []
+
+    # --- guard: fail loudly on non-existent source paths ---
+    if edam is not None and not Path(edam).exists():
+        raise FileNotFoundError(f"--edam path does not exist: {edam}")
+    if nfcore_modules is not None and not Path(nfcore_modules).exists():
+        raise FileNotFoundError(f"--nfcore-modules path does not exist: {nfcore_modules}")
+    if nfcore_pipelines is not None and not Path(nfcore_pipelines).exists():
+        raise FileNotFoundError(f"--nfcore-pipelines path does not exist: {nfcore_pipelines}")
+    if biocontainers is not None and not Path(biocontainers).exists():
+        raise FileNotFoundError(f"--biocontainers path does not exist: {biocontainers}")
+    if biotools is not None and not Path(biotools).exists():
+        raise FileNotFoundError(f"--biotools path does not exist: {biotools}")
+    if stato is not None and not Path(stato).exists():
+        raise FileNotFoundError(f"--stato path does not exist: {stato}")
+    if obi is not None and not Path(obi).exists():
+        raise FileNotFoundError(f"--obi path does not exist: {obi}")
+
+    # --- EDAM ---
+    if edam is not None:
+        nodes, edges = parse_edam(edam, ingested_at=ingested_at)
+        all_nodes.extend(nodes)
+        all_edges.extend(edges)
+
+    # --- nf-core modules ---
+    # Discover recursively: any directory that directly contains a meta.yml is a module dir.
+    # Sorted for deterministic, reproducible builds. De-duplicated via dict-keyed set.
+    module_parse_failures = 0
+    if nfcore_modules is not None:
+        seen_dirs: set[Path] = set()
+        for meta_file in sorted(Path(nfcore_modules).rglob("meta.yml")):
+            module_dir = meta_file.parent
+            if module_dir in seen_dirs:
+                continue
+            seen_dirs.add(module_dir)
+            # Derive the authoritative tool identity from the first path
+            # component relative to the modules root.  Real nf-core modules
+            # live at ``<tool>/<subcommand>/meta.yml`` (depth ≥ 2), so
+            # ``rel.parts[0]`` is unambiguously the tool name.  For example:
+            #   bcftools/sort/meta.yml  → tool_id = "bcftools"
+            #   bcftools/view/meta.yml  → tool_id = "bcftools"
+            # This prevents generic subcommand keys such as ``sort`` or
+            # ``view`` from creating separate, colliding method ids when
+            # multiple tools share the same sub-command name.
+            # For single-level paths (``<tool>/meta.yml``, depth = 1) no
+            # override is needed: the directory IS the tool and the meta.yml
+            # tool key already matches it.
+            rel = meta_file.relative_to(nfcore_modules)
+            # Anchor the tool name on the 'nf-core' path segment when present, so
+            # nfcore_modules may point at a TREE of pipeline checkouts (ingest):
+            #   <pipeline>/modules/nf-core/<tool>/[<subcommand>/]meta.yml
+            # Otherwise nfcore_modules IS the modules root: <tool>/[<sub>/]meta.yml.
+            parts = rel.parts
+            if "nf-core" in parts:
+                j = len(parts) - 1 - parts[::-1].index("nf-core")
+                after = parts[j + 1:-1]   # components between 'nf-core' and 'meta.yml'
+            else:
+                after = parts[:-1]        # strip trailing 'meta.yml'
+            # A nested (subcommand) module is <tool>/<subcommand> → override the
+            # generic meta key with the directory-derived tool; a flat <tool> dir
+            # already matches its meta key, so no override (None).
+            tool_id = after[0] if len(after) >= 2 else None
+            # Bulk catalog imports parse thousands of third-party modules; a single
+            # malformed meta.yml must not abort the whole build.  Skip + log + count.
+            try:
+                nodes, edges = parse_module(module_dir, ingested_at=ingested_at,
+                                            tool_id=tool_id)
+            except Exception as exc:  # noqa: BLE001 — robustness over diverse inputs
+                module_parse_failures += 1
+                _log.warning("skipping unparseable module %s: %s", module_dir, exc)
+                continue
+            all_nodes.extend(nodes)
+            all_edges.extend(edges)
+    if module_parse_failures:
+        _log.warning("module parse: skipped %d unparseable module(s)", module_parse_failures)
+
+    # --- biocontainers ---
+    if biocontainers is not None:
+        for json_path in sorted(Path(biocontainers).glob("*.json")):
+            data = json.loads(json_path.read_text())
+            nodes, edges = parse_biocontainer(data, ingested_at=ingested_at)
+            all_nodes.extend(nodes)
+            all_edges.extend(edges)
+
+    # --- nf-core pipelines ---
+    # A pipeline root is a dir with modules.json AND a modules/nf-core/ tree;
+    # rglob is unanchored, so skip nested/decoy modules.json files.
+    if nfcore_pipelines is not None:
+        for mj in sorted(Path(nfcore_pipelines).rglob("modules.json")):
+            if not (mj.parent / "modules" / "nf-core").is_dir():
+                continue
+            try:
+                nodes, edges = parse_pipeline(mj.parent, ingested_at=ingested_at,
+                                              emit_wiring=not no_wiring)
+            except Exception as exc:  # noqa: BLE001 — robustness over diverse inputs
+                _log.warning("skipping unparseable pipeline %s: %s", mj.parent, exc)
+                continue
+            all_nodes.extend(nodes)
+            all_edges.extend(edges)
+
+    # --- STATO ---
+    if stato is not None:
+        stato_nodes, stato_edges = parse_stato(Path(stato), ingested_at=ingested_at)
+        all_nodes.extend(stato_nodes)
+        all_edges.extend(stato_edges)
+
+    # --- OBI ---
+    if obi is not None:
+        obi_nodes, obi_edges = parse_obi(Path(obi), ingested_at=ingested_at)
+        all_nodes.extend(obi_nodes)
+        all_edges.extend(obi_edges)
+
+    # --- partition method vs other nodes ---
+    method_nodes = [n for n in all_nodes if isinstance(n, MethodRecord)]
+    other_nodes = [n for n in all_nodes if not isinstance(n, MethodRecord)]
+
+    # --- warn on empty build ---
+    if not all_nodes:
+        _log.warning("build produced an empty graph; no sources resolved to any nodes")
+
+    # Accumulate DOWNSTREAM_OF attestations BEFORE resolve.  resolve() dedupes
+    # edges by (from,to,kind) keeping only the first edge's properties, which
+    # would drop the per-pipeline metadata of duplicate cross-pipeline orderings.
+    # DOWNSTREAM_OF endpoints are module ids (mod:<name>), which resolve does not
+    # remap, so pre-resolve keys are final.  (If method-level DOWNSTREAM_OF is ever
+    # added, this must move after resolve AND resolve must preserve duplicate
+    # DOWNSTREAM_OF metadata.)
+    all_edges = merge_downstream_of(all_edges)
+
+    # --- resolve ---
+    resolved_nodes, resolved_edges = resolve(
+        method_nodes=method_nodes,
+        other_nodes=other_nodes,
+        src_edges=all_edges,
+        ingested_at=ingested_at,
+    )
+
+    # --- bio.tools EDAM enrichment (post-resolve, pre-load) ---
+    bt_edges_added = 0
+    if biotools is not None:
+        bt_map = load_biotools_edam(Path(biotools))
+        bt_prov = Provenance("biotools", "https://bio.tools", ingested_at)
+        # Build a set of existing (from_id, to_id, kind) triples for deduplication.
+        existing_edge_keys: set[tuple[str, str, str]] = {
+            (e.from_id, e.to_id, e.kind.value) for e in resolved_edges
+        }
+        extra_edges: list[EdgeRecord] = []
+        for node in resolved_nodes:
+            if not isinstance(node, MethodRecord):
+                continue
+            bt_id = (node.biotools_id or "").strip().lower()
+            if not bt_id or bt_id not in bt_map:
+                continue
+            info = bt_map[bt_id]
+            for op_id in info["operations"]:
+                key = (node.id, op_id, EdgeKind.PERFORMS.value)
+                if key not in existing_edge_keys:
+                    extra_edges.append(EdgeRecord(node.id, op_id, EdgeKind.PERFORMS, {}, bt_prov))
+                    existing_edge_keys.add(key)
+        resolved_edges = list(resolved_edges) + extra_edges
+        bt_edges_added = len(extra_edges)
+        if bt_edges_added:
+            _log.info("bio.tools enrichment: added %d PERFORMS edges", bt_edges_added)
+
+    # --- curated module-context operation corrections + backfill (review I2 + I1) ---
+    # bio.tools tags the *tool*; nf-core uses a specific *subcommand*, so some
+    # tool-level PERFORMS edges are wrong (removed here) and utility tools are
+    # missing (backfilled here).  Runs AFTER bio.tools enrichment so removes can
+    # delete bio.tools edges; adds emit only when both endpoints exist.
+    from methods_graph.crosslinks.method_operations import build_operation_edits
+
+    mo_add, mo_remove, mo_report = build_operation_edits(resolved_nodes, ingested_at=ingested_at)
+    _before_mo = len(resolved_edges)
+    if mo_remove:
+        resolved_edges = [
+            e for e in resolved_edges
+            if (e.from_id, e.to_id, e.kind.value) not in mo_remove
+        ]
+    mo_removed = _before_mo - len(resolved_edges)
+    mo_existing = {(e.from_id, e.to_id, e.kind.value) for e in resolved_edges}
+    new_mo = [e for e in mo_add if (e.from_id, e.to_id, e.kind.value) not in mo_existing]
+    resolved_edges = list(resolved_edges) + new_mo
+    mo_edges_added = len(new_mo)
+    if mo_report.skipped:
+        _log.info("method-operations: skipped %d add(s) (no matching node in this build): %s",
+                  len(mo_report.skipped), mo_report.skipped)
+    if mo_removed or mo_edges_added:
+        _log.info("method-operations: removed %d wrong PERFORMS edge(s), added %d curated PERFORMS edge(s)",
+                  mo_removed, mo_edges_added)
+
+    # --- curated data-type handoffs (post-resolve, pre-load) ---
+    # Type tool I/O on data CONTENT (EDAM Data: count matrix, ...) so pipelines
+    # compose on what actually flows between them, not on coarse file formats
+    # (where everything "matches" via TSV/GZIP).  Emitted only when both the
+    # Method and the Data node exist; skips are logged, never silently dropped.
+    from methods_graph.crosslinks.data_handoffs import build_data_io_edges
+
+    dio_existing = {(e.from_id, e.to_id, e.kind.value) for e in resolved_edges}
+    dio_edges, dio_report = build_data_io_edges(resolved_nodes, ingested_at=ingested_at)
+    new_dio = [e for e in dio_edges
+               if (e.from_id, e.to_id, e.kind.value) not in dio_existing]
+    resolved_edges = list(resolved_edges) + new_dio
+    dio_edges_added = len(new_dio)
+    if dio_report.skipped:
+        _log.info("data-handoffs: skipped %d unresolved I/O edge(s): %s",
+                  len(dio_report.skipped), dio_report.skipped)
+    if dio_edges_added:
+        _log.info("data-handoffs: added %d Method->Data I/O edges (semantic composition)",
+                  dio_edges_added)
+
+    # --- external skill library (post-resolve, pre-load) ---
+    if skills is not None:
+        from methods_graph.connectors.skills import load_skill_library, build_skill_records
+        skill_recs = load_skill_library(Path(skills), source=Path(skills).name)
+        sk_nodes, sk_edges, sk_report = build_skill_records(
+            resolved_nodes, skill_recs, ingested_at=ingested_at)
+        resolved_nodes = list(resolved_nodes) + sk_nodes
+        sk_existing = {(e.from_id, e.to_id, e.kind.value) for e in resolved_edges}
+        resolved_edges = list(resolved_edges) + [
+            e for e in sk_edges if (e.from_id, e.to_id, e.kind.value) not in sk_existing]
+        _log.info("skills: minted %d Skill nodes, %d WRAPS edges, %d unwired",
+                  sk_report.skills, sk_report.wraps, len(sk_report.unwired))
+
+    # --- execution specs (post-resolve, pre-load) ---
+    # Extract each vendored module's runnable recipe (pinned container + command +
+    # typed I/O) from its own main.nf / environment.yml, and attach it as an
+    # ExecutionSpec node via RUNS_AS.  Also the authoritative container source
+    # (the module's `container:` directive), which the BioContainers snapshot misses.
+    exec_nodes_added = 0
+    if nfcore_pipelines is not None:
+        from methods_graph.connectors.module_execution import build_execution_records
+
+        node_ids = {n.id for n in resolved_nodes}
+        ex_nodes, ex_edges, ex_report = build_execution_records(
+            [Path(nfcore_pipelines)], node_ids, ingested_at=ingested_at)
+        resolved_nodes = list(resolved_nodes) + ex_nodes
+        ex_existing = {(e.from_id, e.to_id, e.kind.value) for e in resolved_edges}
+        new_ex = [e for e in ex_edges if (e.from_id, e.to_id, e.kind.value) not in ex_existing]
+        resolved_edges = list(resolved_edges) + new_ex
+        exec_nodes_added = len(ex_nodes)
+        if ex_report.skipped:
+            _log.info("execution: skipped %d module(s) with no resolved node: %s",
+                      len(ex_report.skipped), ex_report.skipped[:10])
+        if exec_nodes_added:
+            _log.info("execution: added %d ExecutionSpec nodes + RUNS_AS edges", exec_nodes_added)
+
+    # --- curated Method→StatisticalMethod cross-links (post-resolve, pre-load) ---
+    # Only runs when StatisticalMethod nodes are present (i.e. STATO/OBI loaded);
+    # otherwise the targets cannot exist and the step is a no-op.  The builder
+    # emits an edge only when BOTH endpoints resolve to the right kinds, so it
+    # never creates a dangling/mistyped link; skipped links are logged, not
+    # silently dropped.
+    xl_edges_added = 0
+    amenable_edges_added = 0
+    # NOTE: the entire curated-statistics layer (cross-links, amenable stats, assumptions,
+    # diagnostics, AND the curated StatisticalMethod nodes below) is intentionally gated on
+    # STATO/OBI being loaded.  In a STATO-less build (an explicit --no-stato opt-out; STATO
+    # is fetched by default) this layer — including the self-contained curated GSEA node — is
+    # deliberately absent; the canonical ingest path always loads STATO, so a normal build
+    # always has it.  (The audit's curated-link integrity check treats the resulting absent
+    # endpoints as legitimate skips, so it does not false-positive on this reduced config.)
+    has_stat_method = any(n.kind == NodeKind.STATISTICAL_METHOD for n in resolved_nodes)
+    if has_stat_method:
+        # Mint curated StatisticalMethod nodes (e.g. GSEA's enrichment statistic) FIRST,
+        # so USES/AMENABLE/REQUIRES edges that target them resolve in the builders below.
+        from methods_graph.crosslinks.assumptions import build_curated_statistical_method_nodes
+
+        _existing_sm_ids = {n.id for n in resolved_nodes}
+        curated_sm_nodes = [
+            n for n in build_curated_statistical_method_nodes(ingested_at=ingested_at)
+            if n.id not in _existing_sm_ids
+        ]
+        resolved_nodes = list(resolved_nodes) + curated_sm_nodes
+        if curated_sm_nodes:
+            _log.info("crosslinks: minted %d curated StatisticalMethod node(s)", len(curated_sm_nodes))
+
+        from methods_graph.crosslinks import build_crosslink_edges
+
+        xl_edges, xl_report = build_crosslink_edges(resolved_nodes, ingested_at=ingested_at)
+        existing_keys: set[tuple[str, str, str]] = {
+            (e.from_id, e.to_id, e.kind.value) for e in resolved_edges
+        }
+        # Mirror the bio.tools dedup: grow the key set as we accept edges so a
+        # future multi-entry map can never inject a duplicate triple.
+        new_xl: list[EdgeRecord] = []
+        for e in xl_edges:
+            key = (e.from_id, e.to_id, e.kind.value)
+            if key not in existing_keys:
+                new_xl.append(e)
+                existing_keys.add(key)
+        resolved_edges = list(resolved_edges) + new_xl
+        xl_edges_added = len(new_xl)
+        if xl_report.skipped:
+            _log.info(
+                "crosslinks: skipped %d ungrounded/unmatched link(s): %s",
+                len(xl_report.skipped), xl_report.skipped,
+            )
+        for w in xl_report.warnings:
+            _log.warning("crosslinks: %s", w)
+        if xl_edges_added:
+            _log.info("crosslinks: added %d USES_STATISTICAL_METHOD edges", xl_edges_added)
+
+        # Statistical-method assumptions: mint Assumption nodes + grounded
+        # REQUIRES_ASSUMPTION edges (StatisticalMethod→Assumption).  Methods
+        # inherit these transitively via USES_STATISTICAL_METHOD.
+        from methods_graph.crosslinks.assumptions import build_assumption_records
+
+        a_nodes, a_edges, a_report = build_assumption_records(
+            resolved_nodes, ingested_at=ingested_at
+        )
+        existing_node_ids = {n.id for n in resolved_nodes}
+        new_a_nodes = [n for n in a_nodes if n.id not in existing_node_ids]
+        resolved_nodes = list(resolved_nodes) + new_a_nodes
+        new_a_edges: list[EdgeRecord] = []
+        for e in a_edges:
+            key = (e.from_id, e.to_id, e.kind.value)
+            if key not in existing_keys:
+                new_a_edges.append(e)
+                existing_keys.add(key)
+        resolved_edges = list(resolved_edges) + new_a_edges
+        assum_edges_added = len(new_a_edges)
+        if a_report.skipped:
+            _log.info(
+                "assumptions: skipped %d unmatched edge(s): %s",
+                len(a_report.skipped), a_report.skipped,
+            )
+        if assum_edges_added:
+            _log.info(
+                "assumptions: minted %d Assumption nodes, added %d REQUIRES_ASSUMPTION edges",
+                len(new_a_nodes), assum_edges_added,
+            )
+
+        # Applicable statistics: grounded Operation→StatisticalMethod AMENABLE_TO
+        # edges (what statistics you can run ON a step's results).  A Method becomes
+        # amenable transitively via PERFORMS.  No-op unless Operation nodes exist.
+        from methods_graph.crosslinks.amenable import build_amenable_edges
+
+        am_edges, am_report = build_amenable_edges(resolved_nodes, ingested_at=ingested_at)
+        new_am: list[EdgeRecord] = []
+        for e in am_edges:
+            key = (e.from_id, e.to_id, e.kind.value)
+            if key not in existing_keys:
+                new_am.append(e)
+                existing_keys.add(key)
+        resolved_edges = list(resolved_edges) + new_am
+        amenable_edges_added = len(new_am)
+        if am_report.skipped:
+            _log.info(
+                "amenable: skipped %d unmatched link(s): %s",
+                len(am_report.skipped), am_report.skipped,
+            )
+        for w in am_report.warnings:
+            _log.warning("amenable: %s", w)
+        if amenable_edges_added:
+            _log.info("amenable: added %d AMENABLE_TO edges", amenable_edges_added)
+    else:
+        assum_edges_added = 0
+
+    # --- assumption diagnostics (post-resolve, pre-load) ---
+    # For each assumption a method relies on (via USES_STATISTICAL_METHOD →
+    # REQUIRES_ASSUMPTION), attach the diagnostic test/plot/procedure that checks
+    # whether the available data MEETS it.  Runs AFTER assumptions are minted;
+    # grounded — a Diagnostic is emitted only when an Assumption node it checks exists.
+    diag_nodes_added = 0
+    from methods_graph.crosslinks.assumption_diagnostics import build_diagnostic_records
+
+    dg_nodes, dg_edges, dg_report = build_diagnostic_records(resolved_nodes, ingested_at=ingested_at)
+    _existing_ids = {n.id for n in resolved_nodes}
+    new_dg_nodes = [n for n in dg_nodes if n.id not in _existing_ids]
+    resolved_nodes = list(resolved_nodes) + new_dg_nodes
+    _dg_existing = {(e.from_id, e.to_id, e.kind.value) for e in resolved_edges}
+    new_dg_edges = [e for e in dg_edges if (e.from_id, e.to_id, e.kind.value) not in _dg_existing]
+    resolved_edges = list(resolved_edges) + new_dg_edges
+    diag_nodes_added = len(new_dg_nodes)
+    if dg_report.skipped:
+        _log.info("diagnostics: skipped %d (assumption not present): %s",
+                  len(dg_report.skipped), dg_report.skipped[:8])
+    if diag_nodes_added:
+        _log.info("diagnostics: minted %d Diagnostic nodes + %d CHECKED_BY edges",
+                  diag_nodes_added, len(new_dg_edges))
+
+    # --- curated assay -> method bridge (post-resolve, pre-load) ---
+    # Bridge orphaned OBI assay nodes (RPPA, phospho-protein readouts) to the tool
+    # that analyzes their data matrix, so an assay readout can ground to a method.
+    # Grounded; emitted only when BOTH the Assay and the Method node exist.
+    assay_method_edges_added = 0
+    from methods_graph.crosslinks.assay_methods import build_assay_method_edges
+
+    am2_edges, am2_report = build_assay_method_edges(resolved_nodes, ingested_at=ingested_at)
+    _am2_existing = {(e.from_id, e.to_id, e.kind.value) for e in resolved_edges}
+    new_am2 = [e for e in am2_edges if (e.from_id, e.to_id, e.kind.value) not in _am2_existing]
+    resolved_edges = list(resolved_edges) + new_am2
+    assay_method_edges_added = len(new_am2)
+    if am2_report.skipped:
+        _log.info("assay-methods: skipped %d unmatched link(s): %s",
+                  len(am2_report.skipped), am2_report.skipped)
+    for w in am2_report.warnings:
+        _log.warning("assay-methods: %s", w)
+    if assay_method_edges_added:
+        _log.info("assay-methods: added %d ANALYZED_BY edges", assay_method_edges_added)
+
+    # --- data modalities (post-resolve, pre-load) ---
+    # Curated pipeline -> modality map (bulk RNA-seq, microarray, …). Grounded — a
+    # Modality node is minted only when a present Pipeline references it.
+    modality_nodes_added = 0
+    from methods_graph.crosslinks.modalities import build_modality_records
+
+    md_nodes, md_edges, md_report = build_modality_records(resolved_nodes, ingested_at=ingested_at)
+    _md_ids = {n.id for n in resolved_nodes}
+    new_md_nodes = [n for n in md_nodes if n.id not in _md_ids]
+    resolved_nodes = list(resolved_nodes) + new_md_nodes
+    _md_existing = {(e.from_id, e.to_id, e.kind.value) for e in resolved_edges}
+    new_md_edges = [e for e in md_edges if (e.from_id, e.to_id, e.kind.value) not in _md_existing]
+    resolved_edges = list(resolved_edges) + new_md_edges
+    modality_nodes_added = len(new_md_nodes)
+    if md_report.skipped:
+        _log.info("modalities: skipped %d (pipeline not present): %s",
+                  len(md_report.skipped), md_report.skipped[:8])
+    if modality_nodes_added:
+        _log.info("modalities: minted %d Modality nodes + %d HAS_MODALITY edges",
+                  modality_nodes_added, len(new_md_edges))
+
+    # --- load ---
+    summary = build_graph(resolved_nodes, resolved_edges, db_path, staging_dir=staging_dir)
+
+    # --- summary ---
+
+    n_methods = sum(1 for n in resolved_nodes if isinstance(n, MethodRecord))
+    bt_suffix = f", {bt_edges_added} bio.tools edges added" if biotools is not None else ""
+
+    _ONTOLOGY_KINDS = {
+        NodeKind.STATISTICAL_METHOD, NodeKind.ASSAY, NodeKind.PROTOCOL,
+        NodeKind.STUDY_DESIGN, NodeKind.INSTRUMENT, NodeKind.MATERIAL,
+        NodeKind.ASSUMPTION, NodeKind.DIAGNOSTIC,
+    }
+    n_onto = sum(1 for n in resolved_nodes if n.kind in _ONTOLOGY_KINDS)
+    onto_suffix = f", {n_onto} ontology nodes" if (stato is not None or obi is not None) else ""
+    xl_suffix = (
+        f", {xl_edges_added} stat-method links, {assum_edges_added} assumption links"
+        f", {amenable_edges_added} amenable-stat links"
+        if has_stat_method else ""
+    )
+    n_pipes = sum(1 for n in resolved_nodes if n.kind == NodeKind.PIPELINE)
+    pipe_suffix = f", {n_pipes} pipelines" if nfcore_pipelines is not None else ""
+    mo_suffix = (
+        f", curated PERFORMS (+{mo_edges_added}/-{mo_removed})"
+        if (mo_edges_added or mo_removed) else ""
+    )
+    dio_suffix = f", {dio_edges_added} data-typed I/O edges" if dio_edges_added else ""
+    exec_suffix = f", {exec_nodes_added} execution specs" if exec_nodes_added else ""
+    diag_suffix = f", {diag_nodes_added} diagnostics" if diag_nodes_added else ""
+    assay_suffix = f", {assay_method_edges_added} assay->method links" if assay_method_edges_added else ""
+    mod_suffix = f", {modality_nodes_added} modalities" if modality_nodes_added else ""
+
+    print(
+        f"Built graph: {n_methods} methods, {summary['nodes']} nodes, "
+        f"{summary['edges_loaded']} edges loaded "
+        f"({summary['edges_dropped']} dangling dropped){pipe_suffix}{bt_suffix}{onto_suffix}{xl_suffix}{mo_suffix}{dio_suffix}{exec_suffix}{diag_suffix}{assay_suffix}{mod_suffix} -> {db_path}"
+    )
+
+
+def cmd_ingest(
+    *,
+    manifest_path: Path,
+    dest: Path,
+    db_path: Path,
+    staging_dir: Path,
+    ingested_at: str,
+    runner: Callable[..., Any] = subprocess.run,
+) -> dict:
+    """Reproducible, declarative ingest: fetch declared pipelines, resolve declared
+    shared sources (fail loudly if any is missing), build, gate on the audit, and
+    write an ``ingest.lock.json`` recording exactly what went in.
+
+    Method nodes + DAG wiring come from each pipeline's OWN vendored modules
+    (version-matched), so ``nfcore_modules``/``nfcore_pipelines`` both point at the
+    fetched pipelines tree.  The audit runs as a HARD gate: a graph that fails any
+    invariant raises (the lock is still written, recording the failure).
+    """
+    import hashlib
+
+    import kuzu
+
+    from methods_graph.audit import audit_graph
+    from methods_graph.fetch import fetch_nfcore_pipeline
+    from methods_graph.ingest import load_manifest, resolve_sources
+
+    dest = Path(dest)
+    spec = load_manifest(manifest_path)
+
+    # 1. Resolve shared sources FIRST — cheap, no network; fails loudly listing
+    #    every declared-but-missing source so a build never silently drops a layer.
+    sources = resolve_sources(spec)
+
+    # 2. Fetch each declared pipeline (clone@revision + ground-truth DAG, NXF pinned).
+    dest.mkdir(parents=True, exist_ok=True)
+    pipeline_manifests: list[dict] = []
+    fetch_failures: list[str] = []
+    for p in spec.pipelines:
+        try:
+            pm = fetch_nfcore_pipeline(p.name, dest, revision=p.revision, nxf_ver=p.nxf_ver,
+                                       with_dag=spec.wiring, fetched_at=ingested_at, runner=runner)
+        except (subprocess.CalledProcessError, OSError) as exc:
+            # A bad/transient clone must not abort a catalog ingest — but only swallow
+            # clone-shaped failures; a genuine bug (KeyError, etc.) propagates.
+            fetch_failures.append(f"{p.name}@{p.revision}")
+            _log.warning("ingest: skipping %s@%s (fetch failed: %s)", p.name, p.revision, exc)
+            continue
+        pipeline_manifests.append(pm)
+        _log.info("ingest: fetched %s@%s commit=%s dag=%s",
+                  p.name, p.revision, (pm["commit"] or "")[:12], pm["dag"])
+    if fetch_failures:
+        _log.warning("ingest: %d pipeline(s) failed to fetch and were skipped: %s",
+                     len(fetch_failures), fetch_failures)
+    # A total fetch outage must NOT silently build an (ontology-only) graph that then
+    # passes the audit gate and writes a lock claiming success.
+    if spec.pipelines and not pipeline_manifests:
+        raise RuntimeError(
+            f"ingest: all {len(spec.pipelines)} declared pipeline(s) failed to fetch "
+            f"({fetch_failures}); refusing to build a pipeline-empty graph")
+
+    pipelines_root = dest / "pipelines"
+    have_pipelines = bool(spec.pipelines)
+
+    # 3. Build from the resolved shared sources + the pipelines' vendored modules.
+    cmd_build(
+        edam=sources.get("edam"),
+        nfcore_modules=pipelines_root if have_pipelines else None,
+        nfcore_pipelines=pipelines_root if have_pipelines else None,
+        biocontainers=sources.get("biocontainers"),
+        biotools=sources.get("biotools"),
+        stato=sources.get("stato"),
+        obi=sources.get("obi"),
+        db_path=db_path,
+        staging_dir=staging_dir,
+        ingested_at=ingested_at,
+        no_wiring=not spec.wiring,
+    )
+
+    # 4. Audit gate.
+    db = conn = None
+    n_pipeline_nodes = 0
+    try:
+        db = kuzu.Database(str(db_path), read_only=True)
+        conn = kuzu.Connection(db)
+        audit = audit_graph(conn)
+        _pn = conn.execute("MATCH (p:Entity {kind:'Pipeline'}) RETURN count(*)")
+        n_pipeline_nodes = _pn.get_next()[0] if _pn.has_next() else 0
+    finally:
+        if conn is not None:
+            conn.close()
+        if db is not None:
+            db.close()
+
+    # 5. Lock — record exactly what went in (written even on audit failure).
+    def _digest(p: Path) -> str:
+        p = Path(p)
+        if p.is_file():
+            return "sha256:" + hashlib.sha256(p.read_bytes()).hexdigest()[:16]
+        return "dir"
+
+    lock = {
+        "ingested_at": ingested_at,
+        "manifest": str(Path(manifest_path)),
+        "db": str(db_path),
+        "wiring": spec.wiring,
+        "pipelines": pipeline_manifests,
+        "fetch_failures": fetch_failures,
+        "sources": {k: {"path": str(v), "digest": _digest(v)} for k, v in sources.items()},
+        "audit": {
+            "ok": audit.ok,
+            "node_count": audit.node_count,
+            "pipeline_nodes": n_pipeline_nodes,
+            "invariants_total": len(audit.invariants),
+            "invariants_passed": sum(1 for i in audit.invariants if i.ok),
+        },
+    }
+    lock_path = dest / "ingest.lock.json"
+    lock_path.write_text(json.dumps(lock, indent=2, sort_keys=True))
+
+    if not audit.ok:
+        failing = [i.name for i in audit.invariants if not i.ok]
+        raise RuntimeError(f"ingest: audit FAILED {failing}; lock written to {lock_path}")
+    # Floor: we fetched pipelines but the build produced zero Pipeline nodes -> the build
+    # silently dropped them (e.g. a connector regression). The audit's count==0 invariants
+    # are vacuously satisfied, so guard it explicitly.
+    if pipeline_manifests and n_pipeline_nodes == 0:
+        raise RuntimeError(
+            f"ingest: fetched {len(pipeline_manifests)} pipeline(s) but built graph has 0 "
+            f"Pipeline nodes — the build dropped them; lock written to {lock_path}")
+
+    skipped_note = f" ({len(fetch_failures)} fetch-skipped)" if fetch_failures else ""
+    print(
+        f"Ingested {len(pipeline_manifests)}/{len(spec.pipelines)} pipeline(s){skipped_note}: "
+        f"{audit.node_count} nodes, "
+        f"audit OK ({lock['audit']['invariants_passed']}/{lock['audit']['invariants_total']}) "
+        f"-> {db_path}  (lock: {lock_path})"
+    )
+    return lock
+
+
+def cmd_audit(*, db_path: Path, snapshot_dir: Path | None, as_json: bool) -> int:
+    """Run KG correctness checks and print a report.
+
+    Returns 0 if all checks pass, 1 if any check fails.
+    """
+    from methods_graph.audit import audit_graph
+
+    db = None
+    conn = None
+    try:
+        import kuzu
+        db = kuzu.Database(str(db_path), read_only=True)
+        conn = kuzu.Connection(db)
+        result = audit_graph(conn, snapshot_dir=snapshot_dir)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    if as_json:
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+    else:
+        print(result.to_text())
+
+    return 0 if result.ok else 1
+
+
+def _git_head_lock(lock_path: Path) -> dict | None:
+    """The committed (git HEAD) version of the lock file, or None if absent/unreadable."""
+    try:
+        out = subprocess.run(
+            ["git", "show", f"HEAD:{lock_path.as_posix()}"],
+            capture_output=True, text=True, check=True,
+        )
+        return json.loads(out.stdout)
+    except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def cmd_rebuild(
+    *,
+    db_path: Path,
+    snapshots_dir: Path,
+    ingested_at: str | None = None,
+    verify: bool = True,
+    check: bool = False,
+    diff_only: bool = False,
+) -> int:
+    """Reproducible pipeline: verify snapshots -> build -> audit gate -> lock + coverage-diff.
+
+    The canonical offline build from ``snapshots/`` (zero network, deterministic). Writes a
+    committed ``data/methods.lock.json`` carrying a content-hash fingerprint of the graph.
+    Returns non-zero if snapshots drift, the audit fails, or (``--check``) the rebuilt graph
+    hash does not match the committed lock.
+    """
+    import kuzu
+
+    from methods_graph.audit import audit_graph
+    from methods_graph.pipeline import (
+        build_lock, compute_graph_hash, diff_coverage, load_lock, verifiable_sources,
+        verify_snapshots, write_lock,
+    )
+
+    lock_path = db_path.parent / "methods.lock.json"
+    snapshot_json_path = snapshots_dir / "snapshot.json"
+    snapshot_json = (json.loads(snapshot_json_path.read_text(encoding="utf-8"))
+                     if snapshot_json_path.exists() else {})
+
+    def _print_diff(new_lock: dict) -> None:
+        prior = _git_head_lock(lock_path)
+        if prior is None:
+            print("coverage: baseline (no prior committed lock)")
+            return
+        deltas = diff_coverage(prior, new_lock)
+        if not deltas:
+            print("coverage: no change vs committed lock")
+            return
+        print("coverage Δ vs committed lock:")
+        for field, old, new in deltas:
+            print(f"  {field}: {old} -> {new}")
+
+    # --diff-only: compare the working-tree lock to the committed one; no rebuild.
+    if diff_only:
+        current = load_lock(lock_path)
+        if current is None:
+            print(f"no lock at {lock_path}; run `mg rebuild` first", file=sys.stderr)
+            return 1
+        _print_diff(current)
+        return 0
+
+    ingested_at = (ingested_at or str(snapshot_json.get("created_at", ""))[:10]
+                   or datetime.date.today().isoformat())
+
+    if verify:
+        mismatches = verify_snapshots(snapshot_json, snapshots_dir)
+        if mismatches:
+            print("snapshot verification FAILED (sources drifted from snapshot.json):",
+                  file=sys.stderr)
+            for source, expected, actual in mismatches:
+                print(f"  {source}: expected {expected[:16]}, got {actual[:16]}", file=sys.stderr)
+            return 1
+        verified = verifiable_sources(snapshot_json)
+        total = len(snapshot_json.get("sources", {}))
+        skipped = total - len(verified)
+        print(f"verify: {len(verified)} pinned source(s) match snapshot.json "
+              f"({', '.join(verified)}); {skipped} unhashed source(s) skipped")
+
+    cmd_build(
+        edam=snapshots_dir / "EDAM.tsv",
+        nfcore_modules=snapshots_dir / "modules",
+        biocontainers=snapshots_dir / "biocontainers",
+        biotools=snapshots_dir / "biotools",
+        stato=snapshots_dir / "stato.owl",
+        obi=snapshots_dir / "obi.owl",
+        skills=snapshots_dir / "skills" / "bioclaw",
+        db_path=db_path,
+        staging_dir=Path(str(db_path) + ".staging"),
+        ingested_at=ingested_at,
+    )
+
+    db = kuzu.Database(str(db_path), read_only=True)
+    conn = kuzu.Connection(db)
+    try:
+        result = audit_graph(conn)
+        if not result.ok:
+            print("AUDIT FAILED — not writing lock:", file=sys.stderr)
+            print(result.to_text(), file=sys.stderr)
+            return 1
+        graph_hash = compute_graph_hash(conn)
+        edge_count = conn.execute("MATCH ()-[r:Rel]->() RETURN count(r)").get_next()[0]
+    finally:
+        try:
+            conn.close()
+        finally:
+            db.close()
+
+    new_lock = build_lock(
+        snapshot_json=snapshot_json, ingested_at=ingested_at,
+        counts={"nodes": result.node_count, "edges": edge_count},
+        coverage=result.coverage, graph_hash=graph_hash,
+        flags={"db": str(db_path), "snapshots": str(snapshots_dir)},
+    )
+
+    if check:
+        committed = load_lock(lock_path)
+        if committed is None:
+            print(f"--check: no committed lock at {lock_path}", file=sys.stderr)
+            return 1
+        if committed.get("graph_hash") != graph_hash:
+            print("--check: graph hash MISMATCH (rebuild is NOT reproducible vs lock)",
+                  file=sys.stderr)
+            print(f"  committed: {committed.get('graph_hash')}", file=sys.stderr)
+            print(f"  rebuilt:   {graph_hash}", file=sys.stderr)
+            return 1
+        print(f"--check: graph hash matches committed lock ({graph_hash[:23]}...)")
+        return 0
+
+    write_lock(lock_path, new_lock)
+    print(f"wrote {lock_path}  hash={graph_hash[:23]}...  "
+          f"nodes={result.node_count} edges={edge_count}")
+    _print_diff(new_lock)
+    return 0
+
+
+def cmd_explain(
+    *, db_path: Path, method: str | None = None, skill: str | None = None, as_json: bool = False
+) -> int:
+    """Trace a method/skill's evaluability: assumption -> chain -> evidence DOI -> source YAML."""
+    from methods_graph.explain import explain, format_traces
+    from methods_graph.provider.quration_provider import KuzuMethodsGraphProvider
+
+    target = method or skill or ""
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        try:
+            traces = explain(provider, method=method, skill=skill)
+        except KeyError:
+            print(f"unknown method: {target}", file=sys.stderr)
+            return 4
+    if as_json:
+        print(json.dumps({"target": target, "traces": traces},
+                         indent=2, sort_keys=True, default=str))
+    else:
+        print(format_traces(target, traces))
+    return 0
+
+
+def cmd_fetch(
+    *,
+    dest: Path,
+    do_edam: bool,
+    do_nfcore: bool,
+    do_biocontainers: bool,
+    do_biotools: bool = True,
+    do_stato: bool = True,
+    do_obi: bool = True,
+    fetched_at: str,
+    # Injectable network seams (default to real stdlib helpers; override in tests).
+    _edam_http_get: Callable[[str], tuple[bytes, dict[str, str]]] | None = None,
+    _nfcore_runner: Callable[..., Any] | None = None,
+    _bc_http_get_json: Callable[[str], Any] | None = None,
+    _biotools_http_get_json: Callable[[str], Any] | None = None,
+    _stato_http_get: Callable[[str], tuple[bytes, dict[str, str]]] | None = None,
+    _obi_http_get: Callable[[str], tuple[bytes, dict[str, str]]] | None = None,
+) -> None:
+    """Download source snapshots and write a snapshot.json manifest.
+
+    Order of operations:
+      1. Fetch EDAM TSV (if --no-edam not set).
+      2. Shallow-clone nf-core/modules (if --no-nfcore not set).
+      3. Derive bioconda package names from the cloned modules tree.
+      4. Fetch BioContainers records for those packages (if --no-biocontainers not set).
+      5. Derive bio.tools IDs from the cloned modules tree.
+      6. Fetch bio.tools records for those IDs (if --no-biotools not set).
+      7. Fetch STATO OWL (if --no-stato not set).
+      8. Fetch OBI OWL (if --no-obi not set).
+      9. Write snapshot.json manifest.
+
+    The ``_edam_http_get``, ``_nfcore_runner``, ``_bc_http_get_json``,
+    ``_biotools_http_get_json``, ``_stato_http_get``, and ``_obi_http_get``
+    parameters are optional injectable seams for unit testing.  When *None*
+    (the default used by ``main()``), the real stdlib helpers are used.  Do
+    not pass these from the CLI; they exist solely to make the function
+    testable without a network.
+    """
+    from methods_graph.fetch import (
+        bioconda_packages_from_nfcore,
+        biotools_ids_from_nfcore,
+        fetch_biocontainers,
+        fetch_biotools,
+        fetch_edam,
+        fetch_nfcore,
+        fetch_stato,
+        fetch_obi,
+        write_manifest,
+        _stdlib_http_get,
+        _stdlib_http_get_json,
+    )
+
+    # Resolve injectable seams to defaults if not provided.
+    edam_http_get = _edam_http_get if _edam_http_get is not None else _stdlib_http_get
+    nfcore_runner = _nfcore_runner if _nfcore_runner is not None else subprocess.run
+    bc_http_get_json = _bc_http_get_json if _bc_http_get_json is not None else _stdlib_http_get_json
+    bt_http_get_json = _biotools_http_get_json if _biotools_http_get_json is not None else _stdlib_http_get_json
+    stato_http_get = _stato_http_get if _stato_http_get is not None else _stdlib_http_get
+    obi_http_get = _obi_http_get if _obi_http_get is not None else _stdlib_http_get
+
+    dest.mkdir(parents=True, exist_ok=True)
+
+    edam_manifest: dict | None = None
+    nfcore_manifest: dict | None = None
+    biocontainers_manifest: dict | None = None
+    biotools_manifest: dict | None = None
+    stato_manifest: dict | None = None
+    obi_manifest: dict | None = None
+
+    # --- EDAM ---
+    if do_edam:
+        print("Fetching EDAM ontology TSV …")
+        edam_manifest = fetch_edam(dest, fetched_at=fetched_at, http_get=edam_http_get)
+        print(f"  EDAM: {edam_manifest['rows']} rows, sha256={edam_manifest['sha256'][:12]}…")
+
+    # --- nf-core/modules clone ---
+    if do_nfcore:
+        print("Cloning nf-core/modules (shallow) …")
+        nfcore_manifest = fetch_nfcore(dest, fetched_at=fetched_at, runner=nfcore_runner)
+        print(f"  nf-core: commit {nfcore_manifest['commit'][:12]}…")
+
+    # Determine the modules path (used by both BioContainers and bio.tools steps).
+    if nfcore_manifest is not None:
+        modules_path = Path(nfcore_manifest["modules_path"])
+    else:
+        # Best-effort: look for an existing clone under dest.
+        modules_path = dest / "modules" / "modules" / "nf-core"
+
+    # --- BioContainers ---
+    if do_biocontainers:
+        if modules_path.exists():
+            pkg_names = bioconda_packages_from_nfcore(modules_path)
+            print(f"  Derived {len(pkg_names)} bioconda package names from nf-core modules.")
+        else:
+            pkg_names = []
+            _log.warning(
+                "No nf-core modules path found at %s; skipping BioContainers fetch.", modules_path
+            )
+
+        if pkg_names:
+            print(f"Fetching BioContainers records for {len(pkg_names)} tools …")
+            bc_dir = dest / "biocontainers"
+            try:
+                biocontainers_manifest = fetch_biocontainers(
+                    pkg_names, bc_dir, fetched_at=fetched_at, http_get_json=bc_http_get_json
+                )
+            except Exception as exc:
+                # Wholesale failure (e.g. network down before first iteration).
+                # Record partial progress so edam + nfcore are not lost.
+                _log.error("BioContainers fetch raised unexpectedly: %s", exc)
+                biocontainers_manifest = {
+                    "api": "https://api.biocontainers.pro/ga4gh/trs/v2/tools",
+                    "fetched_at": fetched_at,
+                    "tools": {},
+                    "failed": list(pkg_names),
+                    "n_failed": len(pkg_names),
+                    "error": str(exc),
+                }
+            n_ok = len(biocontainers_manifest.get("tools", {}))
+            n_fail = biocontainers_manifest.get("n_failed", 0)
+            print(f"  BioContainers: {n_ok} tools fetched, {n_fail} failed.")
+        else:
+            print("  BioContainers: no package names — skipping.")
+
+    # --- bio.tools ---
+    if do_biotools:
+        if modules_path.exists():
+            bt_ids = biotools_ids_from_nfcore(modules_path)
+            print(f"  Derived {len(bt_ids)} bio.tools IDs from nf-core modules.")
+        else:
+            bt_ids = []
+            _log.warning(
+                "No nf-core modules path found at %s; skipping bio.tools fetch.", modules_path
+            )
+
+        if bt_ids:
+            print(f"Fetching bio.tools records for {len(bt_ids)} tools …")
+            biotools_dir = dest / "biotools"
+            try:
+                biotools_manifest = fetch_biotools(
+                    bt_ids, biotools_dir, fetched_at=fetched_at, http_get_json=bt_http_get_json
+                )
+            except Exception as exc:
+                # Wholesale failure — record it so other sources are not lost.
+                _log.error("bio.tools fetch raised unexpectedly: %s", exc)
+                biotools_manifest = {
+                    "api": "https://bio.tools/api/tool",
+                    "fetched_at": fetched_at,
+                    "n_tools": 0,
+                    "failed": list(bt_ids),
+                    "n_failed": len(bt_ids),
+                    "error": str(exc),
+                }
+            n_bt_ok = biotools_manifest.get("n_tools", 0)
+            n_bt_fail = biotools_manifest.get("n_failed", 0)
+            print(f"  bio.tools: {n_bt_ok} tools fetched, {n_bt_fail} failed.")
+        else:
+            print("  bio.tools: no IDs — skipping.")
+
+    # --- STATO ---
+    if do_stato:
+        print("Fetching STATO OWL …")
+        try:
+            stato_manifest = fetch_stato(dest, fetched_at=fetched_at, http_get=stato_http_get)
+            ver = stato_manifest.get("version") or "?"
+            print(f"  STATO: sha256={stato_manifest['sha256'][:12]}… version={ver}")
+        except Exception as exc:
+            _log.error("STATO fetch raised unexpectedly: %s", exc)
+            stato_manifest = {
+                "url": "http://purl.obolibrary.org/obo/stato.owl",
+                "fetched_at": fetched_at,
+                "sha256": "",
+                "version": "",
+                "error": str(exc),
+            }
+
+    # --- OBI ---
+    if do_obi:
+        print("Fetching OBI OWL …")
+        try:
+            obi_manifest = fetch_obi(dest, fetched_at=fetched_at, http_get=obi_http_get)
+            ver = obi_manifest.get("version") or "?"
+            print(f"  OBI: sha256={obi_manifest['sha256'][:12]}… version={ver}")
+        except Exception as exc:
+            _log.error("OBI fetch raised unexpectedly: %s", exc)
+            obi_manifest = {
+                "url": "http://purl.obolibrary.org/obo/obi.owl",
+                "fetched_at": fetched_at,
+                "sha256": "",
+                "version": "",
+                "error": str(exc),
+            }
+
+    # --- Manifest (always written, even on partial failures) ---
+    manifest_path = write_manifest(
+        dest,
+        edam=edam_manifest,
+        nfcore=nfcore_manifest,
+        biocontainers=biocontainers_manifest,
+        biotools=biotools_manifest,
+        stato=stato_manifest,
+        obi=obi_manifest,
+        created_at=fetched_at,
+    )
+    print(f"Manifest written: {manifest_path}")
+
+
+def cmd_export_kgx(*, db_path: Path, out_dir: Path) -> None:
+    """Export the Kùzu graph to KGX TSV format (nodes.tsv + edges.tsv)."""
+    import kuzu
+
+    from methods_graph.kgx import export_kgx
+
+    db = None
+    conn = None
+    try:
+        db = kuzu.Database(str(db_path), read_only=True)
+        conn = kuzu.Connection(db)
+        node_count, edge_count = export_kgx(conn, out_dir)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    print(
+        f"Exported KGX: {node_count} nodes, {edge_count} edges"
+        f" -> {out_dir}/{{nodes,edges}}.tsv"
+    )
+
+
+def cmd_skills_coverage(*, db_path: Path) -> int:
+    """Print how many ingested skills are guardrail-evaluable vs honest gaps."""
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        conn = provider._conn
+        total = conn.execute("MATCH (s:Entity {kind:'Skill'}) RETURN count(*)").get_next()[0]
+        wired = conn.execute(
+            "MATCH (s:Entity {kind:'Skill'})-[:Rel {kind:'WRAPS'}]->(:Entity {kind:'Method'}) "
+            "RETURN count(DISTINCT s)").get_next()[0]
+        rows = conn.execute("MATCH (s:Entity {kind:'Skill'}) RETURN s.id")
+        sids = []
+        while rows.has_next():
+            sids.append(rows.get_next()[0])
+        evaluable = 0
+        for sid in sids:
+            if provider.skill_preconditions(sid)["assumptions"]:
+                evaluable += 1
+    print(json.dumps({"skills": total, "wired_to_method": wired,
+                      "guardrail_evaluable": evaluable,
+                      "honest_gaps": total - evaluable}, indent=2))
+    return 0
+
+
+_GUARDRAIL_EXIT = {guardrail.EVALUABLE: 0, guardrail.BLOCKED: 3,
+                   guardrail.NOT_EVALUABLE: 4, guardrail.FACTS_REQUIRED: 5}
+
+
+_BIOLEAN_EXIT = {"ACCEPTED": 0, "REJECTED": 3}
+_BIOLEAN_FILES = ("go-basic.obo", "gaf-eco-mapping.txt")
+
+
+_SINCE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _biolean_gaf_name(store_dir: Path) -> str:
+    from methods_graph.biolean.ledger.integrity import _path_is
+
+    return "goa_human.gaf.gz" if _path_is((store_dir / "goa_human.gaf.gz").exists) else "goa_human.gaf"
+
+
+def _require_store(store_dir: Path, parser: argparse.ArgumentParser) -> str:
+    """The GAF file name under --store, or exit 2 naming what is missing. A stat that raises
+    (Python 3.12's Path.exists on EACCES) reads as missing, as in `ledger.integrity._path_is`."""
+    from methods_graph.biolean.ledger.integrity import _path_is
+
+    gaf = _biolean_gaf_name(store_dir)
+    missing = [name for name in (*_BIOLEAN_FILES, gaf) if not _path_is((store_dir / name).exists)]
+    if missing:
+        parser.error(f"biolean: --store {store_dir} lacks {', '.join(missing)}; "
+                     f"run `mg biolean fetch --out {store_dir}`")
+    return gaf
+
+
+def _biolean_store(
+    store_dir: Path, parser: argparse.ArgumentParser, *, ledger_dir: Path | None = None,
+    signers_sha256: str | None = None, cache_dir: Path | None = None, use_cache: bool = True,
+):
+    """Load the Biolean store (base, or base plus a ledger). Raises LedgerIntegrityError; the
+    caller prints it as JSON and returns 2, never through parser.error (spec §3)."""
+    from methods_graph.biolean.store import load_store
+
+    gaf = _require_store(store_dir, parser)
+    if ledger_dir is None:
+        return load_store(store_dir, gaf=gaf)
+    return load_store(store_dir, gaf=gaf, ledger_dir=ledger_dir, expected_signers_sha256=signers_sha256,
+                      cache_dir=cache_dir, use_cache=use_cache)
+
+
+def _ledger_now() -> str:
+    """The clock, as one function so tests can inject a fixed ts (spec §1)."""
+    import datetime as _dt
+
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _ledger_body(raw: str, parser: argparse.ArgumentParser, *, field: str | None):
+    """A body flag's value: inline JSON text, or @<path> to read a file (plan refinement 3).
+
+    Returns ``(body, None)``, or ``(None, error)`` when the text is not JSON: that is the body's
+    fault (spec §2 ``LEDGER_BAD_BODY``, exit 3), which `append_entry` reports after the integrity,
+    signer and base checks so an exit-2 condition still wins. Not JSON includes a ``NaN`` or
+    ``Infinity`` literal (refused as `format.parse_line` refuses them) and nesting too deep for
+    the JSON scanner (RecursionError). An ``@path`` that cannot be read as UTF-8 text is a usage error.
+    """
+    from methods_graph.biolean.ledger.errors import LedgerCode, LedgerError
+    from methods_graph.biolean.ledger.format import _reject_constant
+
+    text = raw
+    if raw.startswith("@"):
+        try:
+            text = Path(raw[1:]).read_text(encoding="utf-8")
+        except (OSError, ValueError) as exc:           # ValueError: UnicodeDecodeError, an embedded NUL
+            parser.error(f"biolean ledger: cannot read {raw[1:]}: {exc}")
+    try:
+        return json.loads(text, parse_constant=_reject_constant), None
+    except (ValueError, RecursionError) as exc:        # ValueError: JSONDecodeError, NaN, a 4300-digit int
+        return None, LedgerError(LedgerCode.LEDGER_BAD_BODY, f"the body is not JSON: {exc}", field, got=text)
+
+
+def _ledger_reference(derivation: dict, store) -> None:
+    """`prove --ledger` (spec §7): when every row matching s1's conclusion is ledger-sourced, set
+    s1's reference to the smallest DOI:, else PMID:, else GO_REF: of the row with the smallest
+    annotation id. When any base row also matches, leave it unset: the kernel's reference filter
+    would otherwise drop the base rows from `axioms`."""
+    from methods_graph.biolean.props import Prop
+
+    steps = derivation.get("steps") or []
+    if not steps or steps[0].get("rule") != "axiom":
+        return
+    prop = Prop.from_dict(steps[0].get("conclusion"))
+    if prop is None:
+        return
+    rows = store.matching(prop)
+    if not rows or not all(r.assigned_by.startswith("biolean:") for r in rows):
+        return
+    first = min(rows, key=lambda r: r.id)
+    for prefix in ("DOI:", "PMID:", "GO_REF:"):
+        refs = [r for r in first.references if r.startswith(prefix)]
+        if refs:
+            steps[0]["reference"] = refs[0]            # references are stored sorted
+            return
+
+
+def _cmd_biolean_ledger(args, parser: argparse.ArgumentParser) -> int:
+    """`mg biolean ledger init|append|verify|show`. 0 ok/ACCEPTED, 3 REJECTED, 2 usage or
+    integrity (JSON on stdout for everything but argparse usage errors), or `--recheck` finding a
+    derived entry that fails on its own base (the report or rows still printed)."""
+    import subprocess
+
+    from methods_graph.biolean.ledger.append import append_entry, init_ledger
+    from methods_graph.biolean.ledger.errors import LedgerIntegrityError
+    from methods_graph.biolean.ledger.integrity import check_extends, integrity_report, verify_ledger
+    from methods_graph.biolean.ledger.load import load_with_ledger, own_base_failures, recheck_derived
+    from methods_graph.biolean.sshsig import fingerprint
+
+    def emit(obj) -> None:
+        print(json.dumps(obj, sort_keys=True, indent=2))
+
+    cmd = args.ledger_cmd
+    needs_store = cmd in ("init", "append") or (cmd in ("verify", "show") and args.store is not None)
+    if cmd == "verify" and args.recheck and args.store is None:
+        parser.error("biolean ledger verify: --recheck needs --store")
+    if cmd == "show" and args.store is None and (args.contested or args.stale or args.recheck):
+        parser.error("biolean ledger show: --contested, --stale and --recheck need --store")
+    if cmd == "show" and args.by is not None and not re.fullmatch(r"[0-9a-f]{16}", args.by):
+        parser.error(f"biolean ledger show: --by takes a key16 (16 lowercase hex, the ledger file's name), "
+                     f"got {args.by!r}")
+    gaf = _require_store(args.store, parser) if needs_store else None
+    try:
+        if cmd == "init":
+            emit(init_ledger(args.ledger, store_dir=args.store, key=args.key, principal=args.principal, gaf=gaf))
+            return 0
+        if cmd == "append":
+            kind, raw = next((k, v) for k, v in (("axiom", args.fact), ("derived", args.derivation),
+                                                 ("computed", args.computed)) if v is not None)
+            body, body_error = _ledger_body(raw, parser, field={"axiom": "/fact", "derived": "/derivation",
+                                                                "computed": None}[kind])
+            res = append_entry(args.ledger, kind=kind, body=body, key=args.key, ts=_ledger_now(),
+                               runner=subprocess.run, store_dir=args.store, gaf=gaf,
+                               cache_dir=args.cache_dir, use_cache=not args.no_cache, body_error=body_error)
+            emit(res.to_json())
+            return 0 if res.verdict == "ACCEPTED" else 3
+        # verify and show
+        if args.store is None:
+            state = verify_ledger(args.ledger, expected_signers_sha256=args.signers_sha256,
+                                  cache_dir=args.cache_dir, use_cache=False)   # verify never reads it (spec §3);
+            # show without --store does not use it either, so its cache flags have no effect there
+            block, loaded, store = integrity_report(state), None, None
+        else:
+            store, _report, loaded = load_with_ledger(
+                args.store, args.ledger, gaf=gaf, expected_signers_sha256=args.signers_sha256,
+                cache_dir=args.cache_dir, use_cache=(cmd == "show" and not args.no_cache))
+            state, block = loaded.state, dict(loaded.report)
+            if args.recheck:
+                block.update(recheck_derived(loaded, store))
+        if cmd == "verify":
+            if args.extends is not None:
+                try:
+                    rollback = check_extends(state, args.extends)
+                except ValueError as exc:
+                    parser.error(f"biolean ledger verify: --extends {exc}")
+                if rollback:
+                    emit({"errors": [e.to_dict() for e in rollback]})
+                    return 2
+            # refinement 24: --recheck lists every derived entry that fails; one that fails on the base
+            # its own `base` names makes `ok` false and the exit 2 (the CI gate), report still
+            # printed. A failure on another base is counted, with `ok` true and exit 0.
+            ok = own_base_failures(block) == 0
+            emit({"ok": ok, "ledger": block})
+            return 0 if ok else 2
+        # show
+        status = {(b.entry.file, b.entry.line): b for b in loaded.bound} if loaded is not None else {}
+        contested = set(block.get("contested_entries") or [])
+        failed = {(f["file"], f["line"]): f["errors"] for f in (block.get("derived_failed_entries") or [])}
+        fp_by_key16 = {s.key16: fingerprint(s.blob) for s in state.signers}   # integrity step 3 ties file to key
+        for e in state.entries():
+            if args.by is not None and e.key16 != args.by:
+                continue
+            if args.kind is not None and e.entry["kind"] != args.kind:
+                continue
+            b = status.get((e.file, e.line))
+            st = b.status if b is not None else None
+            is_axiom = e.entry["kind"] == "axiom"
+            contested_flag = None if (b is None or not is_axiom) else (
+                st == "admitted" and b.annotation is not None and b.annotation.id in contested)
+            if args.contested and not contested_flag:
+                continue
+            if args.stale and st != "stale":
+                continue
+            rechecked = bool(args.recheck) and e.entry["kind"] == "derived"
+            print(json.dumps({"file": e.file, "line": e.line, "hash": e.hash, "entry": e.entry,
+                              "fingerprint": fp_by_key16[e.key16], "status": st,
+                              "contested": contested_flag, "rechecked": rechecked,
+                              "recheck_errors": (failed.get((e.file, e.line), []) if rechecked else None)},
+                             sort_keys=True))
+        if state.cache_mark_failures:              # counted, never fatal: say so, off the stdout rows
+            print(f"cache: {state.cache_mark_failures} mark(s) could not be written", file=sys.stderr)
+        own = own_base_failures(block)
+        if own:                                    # refinement 24: the rows are printed, then exit 2
+            print(f"recheck: {own} derived entr{'y' if own == 1 else 'ies'} fail on the base they name",
+                  file=sys.stderr)
+            return 2
+        return 0
+    except LedgerIntegrityError as exc:
+        emit(exc.to_json())
+        return 2
+
+
+def _biolean_claim(text: str, taxon: str, parser: argparse.ArgumentParser) -> dict:
+    from methods_graph.biolean.props import normalize_taxon
+
+    parts = text.split()
+    if len(parts) != 3:
+        parser.error("biolean: claim must be 'SUBJECT QUALIFIER TERM', e.g. "
+                     "'UniProtKB:P04637 involved_in GO:0006915'")
+    normalized = normalize_taxon(taxon)
+    if normalized is None:
+        parser.error(f"biolean: --taxon must be an NCBI taxon id, got {taxon!r}")
+    return {"subject": parts[0], "qualifier": parts[1], "term": parts[2],
+            "taxon": normalized, "negated": False}
+
+
+def _biolean_subject(
+    subject: str, taxon: str, store, parser: argparse.ArgumentParser,
+) -> tuple[str, str, list[dict]]:
+    """Canonical (subject, taxon, elaboration) for `goals`, or exit 2 naming what is wrong."""
+    from methods_graph.biolean.props import normalize_taxon
+
+    if len(subject.split()) != 1:
+        parser.error(f"biolean: subject must be a single identifier or symbol, got {subject!r}")
+    normalized = normalize_taxon(taxon)
+    if normalized is None:
+        parser.error(f"biolean: --taxon must be an NCBI taxon id, got {taxon!r}")
+    elaboration: list[dict] = []
+    if not store.subject_exists(subject):
+        candidates = store.subject_for_symbol(subject)
+        if len(candidates) == 1:
+            elaboration.append({"path": "subject", "kind": "SYMBOL_RESOLVED", "before": subject, "after": candidates[0]})
+            subject = candidates[0]
+        elif len(candidates) > 1:
+            parser.error(f"biolean: symbol {subject!r} is ambiguous: {', '.join(candidates)}")
+    return subject, normalized, elaboration
+
+
+def _prove_reason(prop, store) -> str:
+    """Why `prove(prop, store)` returned None, in the order that matters most to an agent."""
+    from methods_graph.biolean.tactics import _starts
+
+    if prop.negated:
+        return "negated_goal"
+    term = store.term(prop.term)
+    if term is None:
+        return "unknown_term"
+    if term.obsolete:
+        return "obsolete_term"
+    if not _starts(prop.subject, prop.qualifier, prop.taxon, store):
+        return "no_direct_annotations"
+    return "no_path"
+
+
+def _biolean_resolver(db: Path, oracle_json: Path | None):
+    """`m:` resolution for hypothesize `method_resolves`, or None when no graph is available —
+    the field is then undefined (None), never False."""
+    if oracle_json is None and not db.exists():
+        return None
+    from methods_graph.bench.normalize import normalize_name
+    from methods_graph.bench.oracle import load_oracle
+
+    oracle = load_oracle(db_path=db if db.exists() else None, json_path=oracle_json)
+    return lambda name: normalize_name(name, oracle)
+
+
+def _biolean_resume_rows(
+    out: Path, model: str, manifest_now: dict, item_ids: set, parser: argparse.ArgumentParser,
+) -> tuple[list[dict], dict]:
+    """The rows of a previous ``--out`` worth keeping, plus counts of what was not kept.
+
+    Refuses a file written by another model or for another item set: pooling those would
+    silently average incompatible runs. ``items_manifest`` only records ``release`` and
+    ``since``, so two samples drawn from one store (another ``--seed`` or ``--per-track``)
+    agree on it; ``item_ids`` — every id in ``--items`` before ``--track``/``--limit`` — is
+    what tells them apart. A row outside the narrower selection is kept; a row outside the
+    item set is refused. Keeps the first error-free row per item; error rows are dropped so
+    their items are retried."""
+    try:
+        rows = [json.loads(line) for line in out.read_text().splitlines() if line.strip()]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        parser.error(f"biolean bench: --resume cannot read {out}: {exc}")
+    if any(not isinstance(row, dict) or not isinstance(row.get("item"), str) or "error" not in row
+           for row in rows):
+        parser.error(f"biolean bench: --resume: {out} holds a row that is not a results row")
+    models = sorted({repr(row.get("model")) for row in rows if row.get("model") != model})
+    if models:
+        parser.error(f"biolean bench: --resume: {out} was written by model {', '.join(models)}, "
+                     f"not --model {model!r}")
+    wanted = json.dumps(manifest_now, sort_keys=True)
+    manifests = sorted({json.dumps(row.get("items_manifest"), sort_keys=True) for row in rows} - {wanted})
+    if manifests:
+        parser.error(f"biolean bench: --resume: {out} rows carry items_manifest {'; '.join(manifests)}, "
+                     f"not the current --items' {wanted}")
+    foreign = sorted({row["item"] for row in rows} - item_ids)
+    if foreign:
+        shown = ", ".join(foreign[:5]) + (f" and {len(foreign) - 5} more" if len(foreign) > 5 else "")
+        parser.error(f"biolean bench: --resume: {out} holds rows for {len(foreign)} item(s) not in the "
+                     f"current --items ({shown}); it was run on another item set")
+    kept: list[dict] = []
+    seen: set = set()
+    dropped_errors = dropped_duplicates = 0
+    for row in rows:
+        if row["error"] is not None:
+            dropped_errors += 1
+        elif row["item"] in seen:
+            dropped_duplicates += 1
+        else:
+            seen.add(row["item"])
+            kept.append(row)
+    return kept, {"rows_read": len(rows), "kept": len(kept), "dropped_error_rows": dropped_errors,
+                  "dropped_duplicate_rows": dropped_duplicates}
+
+
+def _replace_atomically(path: Path, text: str) -> None:
+    """Write ``text`` to a temp file beside ``path``, then ``os.replace`` it over ``path``: a
+    crash mid-write leaves the previous file intact, never a truncated one. A symlink is
+    followed, as ``open`` follows it, so the link survives and its target is rewritten."""
+    import os
+    import tempfile
+    path = path.resolve()
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if path.exists():
+            os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _cmd_biolean_bench(args, parser: argparse.ArgumentParser) -> int:
+    """`mg biolean bench build|coverage|run|score`. Exit 0 when complete, 2 for usage."""
+    from methods_graph.biolean.bench.items import build_items, load_items
+    from methods_graph.biolean.bench.run import items_manifest, release_mismatch, rescore, run_items
+    from methods_graph.biolean.bench.score import summarize
+    from methods_graph.biolean.store import read_release
+
+    if args.bench_cmd == "coverage":
+        try:
+            _items, manifest = load_items(args.items)
+        except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+            parser.error(f"biolean bench: {exc}")
+        print(json.dumps(manifest, sort_keys=True, indent=2))
+        return 0
+
+    # Cheap argument validation before the (possibly large) store load: a typo'd flag must
+    # not pay for a build first.
+    if args.bench_cmd == "build" and args.per_track is not None and args.per_track < 1:
+        parser.error(f"biolean bench: --per-track must be >= 1, got {args.per_track}")
+    if args.bench_cmd == "run" and args.limit is not None and args.limit < 0:
+        parser.error(f"biolean bench: --limit must be >= 0, got {args.limit}")
+    if args.bench_cmd == "run" and args.workers < 1:
+        parser.error(f"biolean bench: --workers must be >= 1, got {args.workers}")
+    if args.bench_cmd == "run" and args.workers > 1 and args.model.partition(":")[0] == "static":
+        parser.error("biolean bench: --workers > 1 cannot replay a static: adapter (a list replays in "
+                     "call order, which parallel calls scramble); use --workers 1")
+
+    store, report = _biolean_store(args.store, parser)
+    print(json.dumps({"load_report": report}, sort_keys=True), file=sys.stderr)
+    release = read_release(args.store, gaf=_biolean_gaf_name(args.store))
+
+    if args.bench_cmd == "build":
+        if args.since is not None and not _SINCE_RE.match(args.since):
+            parser.error(f"biolean bench: --since must be YYYY-MM-DD, got {args.since!r}")
+        manifest = build_items(store, args.out, release=release, per_track=args.per_track,
+                               seed=args.seed, since=args.since)
+        print(json.dumps(manifest, sort_keys=True, indent=2))
+        return 0
+
+    try:
+        resolve = _biolean_resolver(args.db, args.oracle_json)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        parser.error(f"biolean bench: --oracle-json {args.oracle_json}: {exc}")
+
+    if args.bench_cmd == "run":
+        from methods_graph.bench.adapters import AdapterError, get_adapter
+        from methods_graph.biolean.bench.baselines import baseline_adapter, is_baseline_spec
+
+        try:
+            items, manifest = load_items(args.items)
+        except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+            parser.error(f"biolean bench: {exc}")
+        mismatch = release_mismatch(manifest.get("release"), release)
+        if mismatch:
+            parser.error("biolean bench: --store release differs from the items': " + "; ".join(mismatch))
+        all_ids = {item["id"] for item in items}          # before --track/--limit narrow it
+        if args.track:
+            items = [item for item in items if item["track"] == args.track]
+        if args.limit is not None:
+            items = items[:args.limit]
+        current = items_manifest(manifest)
+        kept: list[dict] = []
+        resuming = args.resume and args.out.exists()
+        if resuming:
+            kept, counts = _biolean_resume_rows(args.out, args.model, current, all_ids, parser)
+            kept_ids = {row["item"] for row in kept}
+            selected = {item["id"] for item in items}
+            counts["kept_outside_selection"] = len(kept_ids - selected)
+            items_to_run = [item for item in items if item["id"] not in kept_ids]
+            counts["to_run"] = len(items_to_run)
+            print(json.dumps({"resume": counts}, sort_keys=True), file=sys.stderr)
+        else:
+            items_to_run = items
+        try:
+            # Built over the whole selection, not just what is left: a seeded baseline answers
+            # a resumed item exactly as it would have in one uninterrupted run.
+            adapter = (baseline_adapter(args.model, items, store, modal_path=args.items / "modal.json")
+                       if is_baseline_spec(args.model) else get_adapter(args.model))
+        except AdapterError as exc:
+            parser.error(f"biolean bench: {exc}")
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        # Only a regular file (or a link to one) is rewritten: /dev/null or a FIFO cannot take
+        # a temp file staged beside it (its directory is not writable), and replacing it would
+        # destroy it.
+        if resuming and args.out.resolve().is_file():
+            _replace_atomically(args.out, "".join(json.dumps(row, sort_keys=True) + "\n" for row in kept))
+        # Streamed and flushed per row: an interrupted or killed paid run keeps every answer
+        # obtained. With --workers > 1 rows land in completion order (so none waits in memory
+        # behind a slower item) and are put back in item order once the run completes, making
+        # the file byte-identical to a --workers 1 run's.
+        with args.out.open("a" if resuming else "w") as handle:
+            def _write(row):
+                handle.write(json.dumps(row, sort_keys=True) + "\n")
+                handle.flush()
+
+            def _draining(n_in_flight):
+                print(f"biolean bench: stopping; waiting for {n_in_flight} call(s) still in "
+                      "flight, each written as it finishes (Ctrl-C discards the rest)",
+                      file=sys.stderr, flush=True)
+
+            rows = run_items(items_to_run, adapter, store, model=args.model, items_manifest=current,
+                             resolve=resolve, sink=_write, workers=args.workers, on_drain=_draining)
+        if args.workers > 1 and args.out.resolve().is_file():
+            # Every call is paid for by now and the streamed file is complete: a failed reorder
+            # must not cost the summary.
+            try:
+                _replace_atomically(args.out, "".join(json.dumps(row, sort_keys=True) + "\n"
+                                                      for row in kept + rows))
+            except OSError as exc:
+                print(f"biolean bench: rows in {args.out} left in completion order ({exc}); the "
+                      "file is complete and --resume reads it", file=sys.stderr)
+        print(json.dumps(summarize(kept + rows), sort_keys=True, indent=2))
+        return 0
+
+    if args.bench_cmd == "score":
+        try:
+            rows = [json.loads(line) for line in args.results.read_text().splitlines() if line.strip()]
+        except (OSError, json.JSONDecodeError) as exc:
+            parser.error(f"biolean bench: cannot read results {args.results}: {exc}")
+        if not rows:
+            parser.error(f"biolean bench: no rows in {args.results}")
+        # A pooled results file silently averages across incompatible runs (a different live
+        # cut, a different model) unless every row agrees; refuse rather than launder that.
+        manifests = sorted({json.dumps(row.get("items_manifest"), sort_keys=True) for row in rows})
+        if len(manifests) > 1:
+            parser.error("biolean bench: results mix distinct items_manifest values: "
+                        + "; ".join(manifests))
+        models = sorted({row.get("model") for row in rows}, key=lambda m: (m is None, m))
+        if len(models) > 1:
+            parser.error("biolean bench: results mix distinct model values: "
+                        + ", ".join(repr(m) for m in models))
+        recorded = {json.dumps((row.get("items_manifest") or {}).get("release"), sort_keys=True)
+                    for row in rows}
+        for blob in sorted(recorded):
+            mismatch = release_mismatch(json.loads(blob), release)
+            if mismatch:
+                parser.error("biolean bench: --store release differs from the results': " + "; ".join(mismatch))
+        rescored = rescore(rows, store, resolve=resolve)
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rescored))
+        print(json.dumps(summarize(rescored), sort_keys=True, indent=2))
+        return 0
+
+    raise ValueError(f"unknown biolean bench subcommand: {args.bench_cmd!r}")
+
+
+def cmd_biolean(args, parser: argparse.ArgumentParser) -> int:
+    """Dispatch `mg biolean` subcommands. Exit: 0 ok/ACCEPTED, 2 usage, 3 REJECTED/no proof."""
+    import datetime as _dt
+
+    if args.biolean_cmd == "fetch":
+        from methods_graph.fetch import fetch_biolean
+
+        now = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        manifest = fetch_biolean(args.out, fetched_at=now)
+        print(json.dumps(manifest, sort_keys=True, indent=2))
+        return 0
+
+    if args.biolean_cmd == "bench":
+        return _cmd_biolean_bench(args, parser)
+    if args.biolean_cmd == "ledger":
+        return _cmd_biolean_ledger(args, parser)
+
+    from methods_graph.biolean.elaborate import elaborate, elaborate_and_check
+    from methods_graph.biolean.ledger.errors import LedgerIntegrityError
+    from methods_graph.biolean.props import Prop
+    from methods_graph.biolean.render import render_verdict
+    from methods_graph.biolean.tactics import goals_for, prove
+
+    try:
+        store, report = _biolean_store(args.store, parser, ledger_dir=args.ledger, signers_sha256=args.signers_sha256,
+                                       cache_dir=args.cache_dir, use_cache=not args.no_cache)
+    except LedgerIntegrityError as exc:
+        print(json.dumps(exc.to_json(), sort_keys=True, indent=2))
+        return 2
+    print(json.dumps({"load_report": report}, sort_keys=True), file=sys.stderr)
+
+    if args.biolean_cmd == "check":
+        try:
+            derivation = json.loads(Path(args.derivation).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            parser.error(f"biolean: cannot read derivation {args.derivation}: {exc}")
+        verdict = elaborate_and_check(derivation, store)
+        print(render_verdict(verdict) if args.render else json.dumps(verdict, sort_keys=True, indent=2))
+        return _BIOLEAN_EXIT[verdict["verdict"]]
+
+    if args.biolean_cmd == "prove":
+        goal = _biolean_claim(args.claim, args.taxon, parser)
+        canonical, elaboration = elaborate({"goal": goal, "steps": [], "root": ""}, store)
+        target = Prop.from_dict(canonical["goal"])
+        derivation = prove(target, store) if target is not None else None
+        if derivation is None:
+            reason = _prove_reason(target, store) if target is not None else "unknown_term"
+            print(json.dumps({"derivation": None, "reason": reason,
+                              "goal": canonical["goal"], "elaboration": elaboration},
+                             sort_keys=True, indent=2))
+            return 3
+        if args.ledger is not None:
+            _ledger_reference(derivation, store)
+        print(json.dumps({"derivation": derivation, "elaboration": elaboration},
+                         sort_keys=True, indent=2))
+        return 0
+
+    if args.biolean_cmd == "goals":
+        subject, taxon, elaboration = _biolean_subject(args.subject, args.taxon, store, parser)
+        goals, report = goals_for(subject, store, aspect=args.aspect)
+        goals = [g for g in goals if g["prop"]["taxon"] == taxon]
+        print(json.dumps({"subject": subject, "taxon": taxon, "goals": goals, "report": report,
+                          "elaboration": elaboration}, sort_keys=True, indent=2))
+        return 0
+
+    raise ValueError(f"unknown biolean subcommand: {args.biolean_cmd!r}")
+
+
+def _parse_facts(raw: list[str] | None) -> dict[str, int]:
+    """Parse repeatable ``--fact key=value`` args into a fact dict of positive ints."""
+    facts: dict[str, int] = {}
+    for item in raw or []:
+        if "=" not in item:
+            raise SystemExit(f"guardrail: --fact must be KEY=VALUE, got {item!r}")
+        key, _, value = item.partition("=")
+        key = key.strip()
+        try:
+            n = int(value)
+        except ValueError:
+            raise SystemExit(f"guardrail: --fact {key} value must be an integer, got {value!r}")
+        if n < 1:
+            raise SystemExit(f"guardrail: --fact {key} must be a positive integer, got {n}")
+        facts[key] = n
+    return facts
+
+
+def _format_verdict(v: dict[str, Any]) -> str:
+    """Human-readable one-screen summary of a guardrail verdict."""
+    lines = [f"{v['status']}  ({v.get('method_id')})"]
+    if v.get("refusal_reason"):
+        lines.append(f"  refusal: {v['refusal_reason']}")
+    if v.get("required_facts"):
+        lines.append(f"  facts needed: {', '.join(v['required_facts'])} "
+                     f"(pass via --fact key=value)")
+    for g in v.get("gates", []):
+        if g["threshold_key"] is not None:
+            detail = f"{g['threshold_key']} supplied={g['supplied']} >= {g['threshold']}?"
+        else:
+            detail = "manual check"
+        lines.append(f"  [{g['result']}] {g['assumption']} — {detail}")
+    for c in v.get("post_run_checks", []):
+        lines.append(f"  [POST-RUN] {c['assumption']} — run: {', '.join(c['diagnostics'])}")
+    return "\n".join(lines)
+
+
+def cmd_guardrail(
+    *, db_path: Path, method: str | None, analysis: list[str] | None,
+    skill: str | None = None, facts: dict[str, int], as_json: bool,
+) -> int:
+    """Evaluate one analysis step's preconditions and print a verdict; return the exit code."""
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        verdict = guardrail.evaluate(provider, skill=skill, method=method,
+                                     analysis=analysis, facts=facts)
+    print(json.dumps(verdict, indent=2) if as_json else _format_verdict(verdict))
+    return _GUARDRAIL_EXIT.get(verdict["status"], 0)
+
+
+def _format_chain(v: dict[str, Any]) -> str:
+    """Human-readable summary of a pipeline-chain verdict."""
+    lines = [f"CHAIN: {v['status']}"]
+    handoffs = v.get("handoffs", [])
+    for i, s in enumerate(v.get("steps", [])):
+        lines.append(f"  [{s['status']}] step {i + 1}: {s['step']} ({s.get('method_id')})")
+        for g in s.get("gates", []):
+            if g["result"] == "FAIL":
+                lines.append(f"      FAIL: {g['assumption']} "
+                             f"({g['threshold_key']}={g['supplied']} < {g['threshold']})")
+        if i < len(handoffs):
+            h = handoffs[i]
+            shared = f" via {', '.join(h['shared'])}" if h["shared"] else ""
+            lines.append(f"    --handoff--> [{h['result']}]{shared}")
+    return "\n".join(lines)
+
+
+def cmd_guardrail_chain(
+    *, db_path: Path, steps: list[str], facts: dict[str, int], as_json: bool,
+) -> int:
+    """Evaluate a whole proposed pipeline (steps + data handoffs); return the exit code."""
+    with KuzuMethodsGraphProvider(db_path) as provider:
+        verdict = guardrail.evaluate_chain(provider, steps, facts)
+    print(json.dumps(verdict, indent=2) if as_json else _format_chain(verdict))
+    return _GUARDRAIL_EXIT.get(verdict["status"], 0)
+
+
+def cmd_bench(args) -> int:
+    """Dispatch the bench subcommands. Returns a process exit code."""
+    from methods_graph.bench.oracle import coverage, load_oracle
+    from methods_graph.bench.run import (
+        build_from_clones, load_items, load_pipeline_manifests, rescore, run_items, summarize)
+
+    if args.bench_cmd == "build":
+        manifests = load_pipeline_manifests(args.pipelines.parent / "snapshot.json")
+        if not manifests and any(args.pipelines.glob("*/")):
+            _log.warning(
+                "bench build: no fetch manifest found for any pipeline under %s "
+                "(looked in %s and ingest.lock.json) — every item will record "
+                "nxf_ver 'unknown' and fall back to the bare git sha",
+                args.pipelines, args.pipelines.parent / "snapshot.json")
+        goals = json.loads(args.goals.read_text()) if args.goals else {}
+        # The projection is optional: without it items are built exactly as before and
+        # the manifest records `n_next_step_skipped: null` rather than 0.
+        build_oracle = None
+        if args.oracle_json is not None or args.db.exists():
+            build_oracle = load_oracle(
+                db_path=args.db if args.db.exists() else None,
+                json_path=args.oracle_json)
+        else:
+            _log.warning(
+                "bench build: no graph at %s and no --oracle-json; next-step items "
+                "whose answer already appears in the prompt cannot be detected",
+                args.db)
+        manifest = build_from_clones(
+            args.pipelines, args.out, goals=goals, manifests=manifests,
+            oracle=build_oracle)
+        print(json.dumps(manifest, indent=2, sort_keys=True))
+        return 0
+
+    oracle = load_oracle(db_path=args.db, json_path=args.oracle_json)
+
+    if args.bench_cmd == "coverage":
+        from methods_graph.bench.score import equivalence_pairs
+
+        module_ids = [
+            module_id
+            for item in load_items(args.items) if item["task"] == "whole_pipeline"
+            for module_id in item["gold"]["sequence"]
+        ]
+        report = coverage(oracle, module_ids)
+        # Published next to the numbers, not left in a test: these are the substitutions
+        # the selection and next-step metrics silently credit as correct. Computed here
+        # rather than inside coverage() so oracle.py stays the one file that knows about
+        # the graph and score.py stays the one file that knows what a metric is.
+        pairs = equivalence_pairs(oracle)
+        report["n_equivalence_pairs"] = len(pairs)
+        report["equivalence_pairs"] = pairs
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+
+    if args.bench_cmd == "run":
+        from methods_graph.bench.adapters import get_adapter
+        from methods_graph.bench.baselines import baseline_adapter, is_baseline_spec
+
+        items = load_items(args.items)
+        if args.task:
+            items = [i for i in items if i["task"] == args.task]
+        # `is not None`, so `--limit 0` means zero items rather than "no limit".
+        if args.limit is not None:
+            items = items[:args.limit]
+        # Baselines need the item set and the oracle; contestants need neither.
+        adapter = (baseline_adapter(args.model, items, oracle)
+                   if is_baseline_spec(args.model) else get_adapter(args.model))
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        # Streamed and flushed per row, not buffered until the loop ends: a
+        # KeyboardInterrupt or an OOM partway through a paid run must leave every
+        # answer already obtained on disk.
+        with args.out.open("w") as handle:
+            def _write(row):
+                handle.write(json.dumps(row, sort_keys=True) + "\n")
+                handle.flush()
+
+            rows = run_items(items, adapter, oracle, model=args.model, sink=_write)
+        print(json.dumps(summarize(rows), indent=2, sort_keys=True))
+        return 0
+
+    if args.bench_cmd == "score":
+        rows = [json.loads(line) for line in
+                args.results.read_text().splitlines() if line.strip()]
+        rescored = rescore(rows, oracle)
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(
+                "".join(json.dumps(row, sort_keys=True) + "\n" for row in rescored))
+        print(json.dumps(summarize(rescored), indent=2, sort_keys=True))
+        return 0
+
+    raise ValueError(f"unknown bench subcommand: {args.bench_cmd!r}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="methods-graph",
+        description="Methods graph pipeline CLI",
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    q = sub.add_parser("query", help="seed a subgraph by keyword and print RAG text")
+    q.add_argument("--db", type=Path, default=Path("data/methods.kuzu"),
+                   help="path to the Kùzu database directory")
+    q.add_argument("--keyword", action="append", dest="keywords", required=True,
+                   metavar="KEYWORD",
+                   help="keyword to seed the subgraph (repeatable)")
+    q.add_argument("--hops", type=int, default=1,
+                   help="number of hops for neighbourhood expansion (default: 1)")
+
+    m = sub.add_parser("methods", help="dump all methods as AnalysisMethod-shaped JSON")
+    m.add_argument("--db", type=Path, default=Path("data/methods.kuzu"),
+                   help="path to the Kùzu database directory")
+
+    sg = sub.add_parser("suggest",
+                        help="suggest attestation-ranked next analysis steps from a frontier")
+    sg.add_argument("--db", type=Path, default=Path("data/methods.kuzu"),
+                    help="path to the Kùzu database directory")
+    sg.add_argument("--have", action="append", dest="have", required=True, metavar="ID",
+                    help="a node id you have: a Module step id or EDAM Format/Data id (repeatable)")
+    sg.add_argument("--limit", type=int, default=10, help="max suggestions (default: 10)")
+
+    b = sub.add_parser(
+        "build",
+        help="build the Kùzu DB from local source snapshots (connectors → resolver → loader)",
+    )
+    b.add_argument("--edam", type=Path, default=None,
+                   help="path to EDAM TSV snapshot (optional)")
+    b.add_argument("--nfcore-modules", type=Path, default=None, dest="nfcore_modules",
+                   help="path to directory of nf-core module subdirectories (optional)")
+    b.add_argument("--nfcore-pipelines", type=Path, default=None, dest="nfcore_pipelines",
+                   help="path to a directory tree of nf-core pipeline checkouts (optional)")
+    b.add_argument("--biocontainers", type=Path, default=None,
+                   help="path to directory of biocontainers JSON files (optional)")
+    b.add_argument("--biotools", type=Path, default=None,
+                   help="path to directory of bio.tools API JSON files for EDAM enrichment (optional)")
+    b.add_argument("--stato", type=Path, default=None,
+                   help="path to a STATO OWL file for StatisticalMethod nodes (optional)")
+    b.add_argument("--obi", type=Path, default=None,
+                   help="path to an OBI OWL file for Assay/Protocol/etc. nodes (optional)")
+    b.add_argument("--skills", type=Path, default=None,
+                   help="path to a snapshotted skill library dir (e.g. snapshots/skills/bioclaw)")
+    b.add_argument("--db", type=Path, required=True,
+                   help="path to output Kùzu database directory")
+    b.add_argument("--staging", type=Path, default=None,
+                   help="path to staging directory (default: <db>.staging)")
+    b.add_argument("--ingested-at", type=str, default=None, dest="ingested_at",
+                   help="ISO date string for provenance (default: today)")
+    b.add_argument("--no-wiring", action="store_true", dest="no_wiring",
+                   help="skip DOWNSTREAM_OF generation for pipelines (bulk catalog import)")
+
+    ing = sub.add_parser(
+        "ingest",
+        help="reproducible build from a declarative manifest "
+             "(fetch pipelines -> build -> audit gate -> lock)",
+    )
+    ing.add_argument("--manifest", type=Path, required=True, dest="manifest_path",
+                     help="path to the ingestion manifest (YAML)")
+    ing.add_argument("--dest", type=Path, required=True,
+                     help="work dir for pipeline clones + the ingest.lock.json")
+    ing.add_argument("--db", type=Path, required=True,
+                     help="path to output Kùzu database directory")
+    ing.add_argument("--staging", type=Path, default=None,
+                     help="path to staging directory (default: <db>.staging)")
+    ing.add_argument("--ingested-at", type=str, default=None, dest="ingested_at",
+                     help="ISO date string for provenance (default: today)")
+
+    au = sub.add_parser(
+        "audit",
+        help="run correctness checks against a built Kùzu DB; exits 1 if any check fails",
+    )
+    au.add_argument("--db", type=Path, required=True,
+                    help="path to the built Kùzu database directory")
+    au.add_argument("--snapshot", type=Path, default=None, dest="snapshot_dir",
+                    help="path to snapshot dir (EDAM.tsv, modules/, biocontainers/, biotools/) "
+                         "for reconciliation checks (optional)")
+    au.add_argument("--json", action="store_true", dest="as_json",
+                    help="emit JSON instead of human-readable text")
+
+    f = sub.add_parser(
+        "fetch",
+        help="download source snapshots (EDAM, nf-core/modules, BioContainers) and write a manifest",
+    )
+    f.add_argument(
+        "--dest", type=Path, required=True,
+        help="destination directory for downloaded snapshots and snapshot.json",
+    )
+    f.add_argument(
+        "--no-edam", action="store_false", dest="do_edam",
+        help="skip fetching the EDAM TSV",
+    )
+    f.add_argument(
+        "--no-nfcore", action="store_false", dest="do_nfcore",
+        help="skip cloning nf-core/modules",
+    )
+    f.add_argument(
+        "--no-biocontainers", action="store_false", dest="do_biocontainers",
+        help="skip fetching BioContainers tool records",
+    )
+    f.add_argument(
+        "--no-biotools", action="store_false", dest="do_biotools",
+        help="skip fetching bio.tools tool records",
+    )
+    f.add_argument(
+        "--no-stato", action="store_false", dest="do_stato",
+        help="skip fetching the STATO OWL ontology",
+    )
+    f.add_argument(
+        "--no-obi", action="store_false", dest="do_obi",
+        help="skip fetching the OBI OWL ontology",
+    )
+
+    kgx = sub.add_parser(
+        "export-kgx",
+        help="export the graph to KGX TSV format (nodes.tsv + edges.tsv)",
+    )
+    kgx.add_argument("--db", type=Path, required=True,
+                     help="path to the built Kùzu database directory")
+    kgx.add_argument("--out", type=Path, required=True, dest="out_dir",
+                     help="output directory for nodes.tsv and edges.tsv")
+
+    g = sub.add_parser(
+        "guardrail",
+        help="evaluate one analysis step's methodological preconditions -> verdict "
+             "(EVALUABLE / BLOCKED / NOT_EVALUABLE)",
+    )
+    g_target = g.add_mutually_exclusive_group(required=True)
+    g_target.add_argument("--method", help="precise method id, e.g. m:deseq2")
+    g_target.add_argument("--analysis", action="append", dest="analysis", metavar="KEYWORD",
+                          help="analysis-intent keyword to resolve a method (repeatable)")
+    g_target.add_argument("--skill", help="skill id, e.g. skill:bioclaw/differential-expression")
+    g.add_argument("--fact", action="append", dest="facts", default=[], metavar="KEY=VALUE",
+                   help="dataset fact for pre-run gates, e.g. replicates_per_group=3 (repeatable)")
+    g.add_argument("--db", type=Path, default=Path("data/methods.kuzu"),
+                   help="path to the built Kùzu database directory")
+    g.add_argument("--json", action="store_true", dest="as_json",
+                   help="emit the full verdict as JSON (default: human summary)")
+
+    gc = sub.add_parser(
+        "guardrail-chain",
+        help="evaluate a whole proposed analysis pipeline (steps + data handoffs) -> chain verdict",
+    )
+    gc.add_argument("--step", action="append", dest="steps", required=True,
+                    metavar="METHOD_OR_KEYWORDS",
+                    help="a pipeline step: a method id (m:deseq2) or intent keywords; "
+                         "repeat in pipeline order")
+    gc.add_argument("--fact", action="append", dest="facts", default=[], metavar="KEY=VALUE",
+                    help="dataset fact applied to EVERY step, e.g. replicates_per_group=3 (repeatable)")
+    gc.add_argument("--db", type=Path, default=Path("data/methods.kuzu"),
+                    help="path to the built Kùzu database directory")
+    gc.add_argument("--json", action="store_true", dest="as_json",
+                    help="emit the full chain verdict as JSON (default: human summary)")
+
+    sk = sub.add_parser(
+        "skills",
+        help="report skill coverage: how many skills are guardrail-evaluable vs honest gaps",
+    )
+    sk.add_argument("--coverage", action="store_true",
+                    help="print JSON coverage report (skills / wired / evaluable / gaps)")
+    sk.add_argument("--db", type=Path, default=Path("data/methods.kuzu"),
+                    help="path to the built Kùzu database directory")
+
+    rb = sub.add_parser(
+        "rebuild",
+        help="reproducible pipeline: verify snapshots -> build -> audit -> lock + coverage-diff",
+    )
+    rb.add_argument("--db", type=Path, default=Path("data/methods.kuzu"),
+                    help="output Kùzu database directory")
+    rb.add_argument("--snapshots", type=Path, default=Path("snapshots"),
+                    help="pinned source snapshot directory (default: snapshots)")
+    rb.add_argument("--ingested-at", default=None,
+                    help="ISO date for provenance (default: snapshot.json created_at); "
+                         "pin it for byte-identical rebuilds")
+    rb.add_argument("--no-verify", action="store_true",
+                    help="skip the snapshot checksum verification step")
+    rb.add_argument("--check", action="store_true",
+                    help="rebuild and assert the graph hash matches the committed lock; "
+                         "do NOT overwrite the lock (reproducibility gate)")
+    rb.add_argument("--diff-only", action="store_true",
+                    help="diff the working-tree lock against the committed lock; no rebuild")
+
+    ex = sub.add_parser(
+        "explain",
+        help="trace a method/skill's evaluability: assumption -> chain -> evidence DOI -> source YAML",
+    )
+    ex_target = ex.add_mutually_exclusive_group(required=True)
+    ex_target.add_argument("--method", help="method id, e.g. m:scanpy")
+    ex_target.add_argument("--skill", help="skill id, e.g. skill:bioclaw/scrna-preprocessing-clustering")
+    ex.add_argument("--db", type=Path, default=Path("data/methods.kuzu"),
+                    help="path to the built Kùzu database directory")
+    ex.add_argument("--json", action="store_true", dest="as_json",
+                    help="emit the full trace as JSON (default: human-readable)")
+
+    p_bench = sub.add_parser("bench", help="method-sequencing benchmark")
+    bench_sub = p_bench.add_subparsers(dest="bench_cmd", required=True)
+
+    b_build = bench_sub.add_parser("build", help="nf-core clones -> frozen item set")
+    b_build.add_argument("--pipelines", type=Path, default=Path("snapshots/pipelines"))
+    b_build.add_argument("--out", type=Path, default=Path("bench"))
+    b_build.add_argument("--goals", type=Path, default=None,
+                         help="JSON {pipeline: goal} map; the goal IS the prompt, so a "
+                              "pipeline without one is asked only by its bare name")
+    b_build.add_argument("--db", type=Path, default=Path("data/methods.kuzu"),
+                         help="graph used to drop next-step items that would print "
+                              "their own answer")
+    b_build.add_argument("--oracle-json", type=Path, default=None)
+
+    b_cov = bench_sub.add_parser(
+        "coverage", help="how much graph oracle backs the item set")
+    b_cov.add_argument("--items", type=Path, default=Path("bench/items"))
+    b_cov.add_argument("--db", type=Path, default=Path("data/methods.kuzu"))
+    b_cov.add_argument("--oracle-json", type=Path, default=None)
+
+    b_run = bench_sub.add_parser("run", help="run a model over the item set")
+    b_run.add_argument("--items", type=Path, default=Path("bench/items"))
+    b_run.add_argument("--db", type=Path, default=Path("data/methods.kuzu"))
+    b_run.add_argument("--oracle-json", type=Path, default=None)
+    b_run.add_argument("--model", required=True,
+                       help="claude:<model> | openai:<model> | static:<path> | "
+                            "gold: | modal: | random:<seed>[:<k>]")
+    b_run.add_argument("--out", type=Path, required=True)
+    b_run.add_argument("--limit", type=int, default=None)
+    b_run.add_argument("--task", choices=["whole_pipeline", "next_step"], default=None)
+
+    b_score = bench_sub.add_parser(
+        "score", help="re-derive scores from a results file's retained raw output")
+    b_score.add_argument("--results", type=Path, required=True)
+    b_score.add_argument("--db", type=Path, default=Path("data/methods.kuzu"))
+    b_score.add_argument("--oracle-json", type=Path, default=None)
+    b_score.add_argument("--out", type=Path, default=None)
+
+    p_bl = sub.add_parser("biolean", help="proof checker for GO claims")
+    bl_sub = p_bl.add_subparsers(dest="biolean_cmd", required=True)
+    bl_fetch = bl_sub.add_parser("fetch", help="download GOA, the GO release it names, the ECO mapping")
+    bl_fetch.add_argument("--out", type=Path, default=Path("snapshots/go"))
+    bl_check = bl_sub.add_parser("check", help="elaborate and check a derivation JSON file")
+    bl_check.add_argument("derivation", type=Path)
+    bl_check.add_argument("--store", type=Path, default=Path("snapshots/go"))
+    bl_check.add_argument("--render", action="store_true", help="print prose instead of JSON")
+    bl_prove = bl_sub.add_parser("prove", help="mechanical derivation of 'SUBJECT QUALIFIER TERM'")
+    bl_prove.add_argument("claim")
+    bl_prove.add_argument("--store", type=Path, default=Path("snapshots/go"))
+    bl_prove.add_argument("--taxon", default="NCBITaxon:9606")
+    bl_goals = bl_sub.add_parser("goals", help="derivable propositions for a subject")
+    bl_goals.add_argument("subject")
+    bl_goals.add_argument("--store", type=Path, default=Path("snapshots/go"))
+    bl_goals.add_argument("--taxon", default="NCBITaxon:9606")
+    bl_goals.add_argument("--aspect", choices=["F", "P", "C"], default=None)
+    for p in (bl_check, bl_prove, bl_goals):
+        p.add_argument("--ledger", type=Path, default=None,
+                       help="a ledger directory; the store is then base plus admitted ledger facts")
+        p.add_argument("--signers-sha256", default=None, help="pin: the sha256 of the ledger's allowed_signers")
+        p.add_argument("--no-cache", action="store_true", help="never read or write the verification cache")
+        p.add_argument("--cache-dir", type=Path, default=None, help="verification cache (default ~/.cache/biolean-ledger)")
+
+    bl_ledger = bl_sub.add_parser("ledger", help="signed, hash-chained, kernel-checked fact ledger")
+    bl_ledger_sub = bl_ledger.add_subparsers(dest="ledger_cmd", required=True)
+    l_init = bl_ledger_sub.add_parser("init", help="create a ledger: allowed_signers, base.json, ledger.json, ledger/")
+    l_init.add_argument("--ledger", type=Path, required=True)
+    l_init.add_argument("--store", type=Path, default=Path("snapshots/go"))
+    l_init.add_argument("--key", type=Path, required=True, help="the owner's ssh-ed25519 public key (.pub)")
+    l_init.add_argument("--principal", default=None, help="label for the allowed_signers line (default: the key comment)")
+    l_append = bl_ledger_sub.add_parser("append", help="check, sign and append one entry")
+    l_append.add_argument("--ledger", type=Path, required=True)
+    l_append.add_argument("--store", type=Path, default=Path("snapshots/go"))
+    l_append.add_argument("--key", type=Path, required=True,
+                          help="an unencrypted ssh-ed25519 private key, or its .pub when the key is in ssh-agent")
+    body = l_append.add_mutually_exclusive_group(required=True)
+    body.add_argument("--fact", metavar="JSON|@FILE", help="a 17-column GAF row (list, or object keyed by column name)")
+    body.add_argument("--derivation", metavar="JSON|@FILE", help='{"derivation": ..., "conclusion"?: ...}')
+    body.add_argument("--computed", metavar="JSON|@FILE", help="a Phase B computed body (schema-checked, then refused)")
+    l_append.add_argument("--no-cache", action="store_true")
+    l_append.add_argument("--cache-dir", type=Path, default=None)
+    l_verify = bl_ledger_sub.add_parser("verify", help="integrity; with --store also staleness and supersession")
+    l_verify.add_argument("--ledger", type=Path, required=True)
+    l_verify.add_argument("--store", type=Path, default=None)
+    l_verify.add_argument("--recheck", action="store_true", help="re-prove every derived entry (needs --store)")
+    l_verify.add_argument("--no-cache", action="store_true", help="accepted for CI symmetry; verify never reads the cache")
+    l_verify.add_argument("--cache-dir", type=Path, default=None)
+    l_verify.add_argument("--extends", type=Path, default=None, help="an older ledger directory or a heads.json")
+    l_verify.add_argument("--signers-sha256", default=None)
+    l_show = bl_ledger_sub.add_parser("show", help="print entries as JSON lines")
+    l_show.add_argument("--ledger", type=Path, required=True)
+    l_show.add_argument("--store", type=Path, default=None)
+    l_show.add_argument("--by", default=None, metavar="KEY16")
+    l_show.add_argument("--kind", choices=["axiom", "derived", "computed"], default=None)
+    l_show.add_argument("--contested", action="store_true", help="admitted axiom entries with kernel conflicts (needs --store)")
+    l_show.add_argument("--stale", action="store_true", help="entries excluded as stale (needs --store)")
+    l_show.add_argument("--recheck", action="store_true", help="re-prove derived entries (needs --store)")
+    l_show.add_argument("--signers-sha256", default=None)
+    l_show.add_argument("--no-cache", action="store_true")
+    l_show.add_argument("--cache-dir", type=Path, default=None)
+
+    bl_bench = bl_sub.add_parser("bench", help="two-track re-derivation benchmark (spec §6)")
+    bl_bench_sub = bl_bench.add_subparsers(dest="bench_cmd", required=True)
+    bb_build = bl_bench_sub.add_parser("build", help="store -> frozen items, manifest.json, modal.json")
+    bb_build.add_argument("--out", type=Path, default=Path("biolean-bench"))
+    bb_build.add_argument("--store", type=Path, default=Path("snapshots/go"))
+    bb_build.add_argument("--per-track", type=int, default=500,
+                          help="items sampled per track (every eligible item when larger)")
+    bb_build.add_argument("--seed", type=int, default=0)
+    bb_build.add_argument("--since", default=None,
+                          help="YYYY-MM-DD; keep items whose earliest hidden row is on or after it")
+    bb_cov = bl_bench_sub.add_parser("coverage", help="print the build manifest: denominators and drop reasons")
+    bb_cov.add_argument("--items", type=Path, default=Path("biolean-bench"))
+    bb_run = bl_bench_sub.add_parser("run", help="run a model or baseline over the items")
+    bb_run.add_argument("--model", required=True,
+                        help="claude:<model> | openai:<model> | static:<path> | gold: | random:<seed> | modal: | template:")
+    bb_run.add_argument("--items", type=Path, default=Path("biolean-bench"))
+    bb_run.add_argument("--store", type=Path, default=Path("snapshots/go"))
+    bb_run.add_argument("--out", type=Path, required=True)
+    bb_run.add_argument("--track", choices=["prove", "hypothesize"], default=None)
+    bb_run.add_argument("--limit", type=int, default=None)
+    bb_run.add_argument("--workers", type=int, default=1,
+                        help="adapter calls in flight at once (default 1); rows are written as they "
+                             "finish and put in item order when the run completes. Not with static:")
+    bb_run.add_argument("--resume", action="store_true",
+                        help="keep --out's error-free rows (same --model and --items required), retry its "
+                             "error rows, run only the rest; the summary covers the whole file")
+    bb_run.add_argument("--db", type=Path, default=Path("data/methods.kuzu"),
+                        help="graph for hypothesize method_resolves; without one the field is null")
+    bb_run.add_argument("--oracle-json", type=Path, default=None)
+    bb_score = bl_bench_sub.add_parser("score", help="re-derive scores from retained raw output")
+    bb_score.add_argument("--results", type=Path, required=True)
+    bb_score.add_argument("--store", type=Path, default=Path("snapshots/go"))
+    bb_score.add_argument("--out", type=Path, default=None)
+    bb_score.add_argument("--db", type=Path, default=Path("data/methods.kuzu"))
+    bb_score.add_argument("--oracle-json", type=Path, default=None)
+
+    args = parser.parse_args(argv)
+    if args.cmd == "audit":
+        return cmd_audit(
+            db_path=args.db,
+            snapshot_dir=args.snapshot_dir,
+            as_json=args.as_json,
+        )
+    elif args.cmd == "rebuild":
+        return cmd_rebuild(
+            db_path=args.db,
+            snapshots_dir=args.snapshots,
+            ingested_at=args.ingested_at,
+            verify=not args.no_verify,
+            check=args.check,
+            diff_only=args.diff_only,
+        )
+    elif args.cmd == "explain":
+        return cmd_explain(
+            db_path=args.db, method=args.method, skill=args.skill, as_json=args.as_json,
+        )
+    elif args.cmd == "query":
+        cmd_query(db_path=args.db, keywords=args.keywords, k_hops=args.hops)
+    elif args.cmd == "methods":
+        cmd_methods(db_path=args.db)
+    elif args.cmd == "suggest":
+        cmd_suggest(db_path=args.db, have=args.have, limit=args.limit)
+    elif args.cmd == "build":
+        ingested_at = args.ingested_at or datetime.date.today().isoformat()
+        staging_dir = args.staging if args.staging is not None else Path(str(args.db) + ".staging")
+        cmd_build(
+            edam=args.edam,
+            nfcore_modules=args.nfcore_modules,
+            biocontainers=args.biocontainers,
+            nfcore_pipelines=args.nfcore_pipelines,
+            biotools=args.biotools,
+            stato=args.stato,
+            obi=args.obi,
+            skills=args.skills,
+            db_path=args.db,
+            staging_dir=staging_dir,
+            ingested_at=ingested_at,
+            no_wiring=args.no_wiring,
+        )
+    elif args.cmd == "ingest":
+        ingested_at = args.ingested_at or datetime.date.today().isoformat()
+        staging_dir = args.staging if args.staging is not None else Path(str(args.db) + ".staging")
+        cmd_ingest(
+            manifest_path=args.manifest_path,
+            dest=args.dest,
+            db_path=args.db,
+            staging_dir=staging_dir,
+            ingested_at=ingested_at,
+        )
+    elif args.cmd == "fetch":
+        fetched_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        cmd_fetch(
+            dest=args.dest,
+            do_edam=args.do_edam,
+            do_nfcore=args.do_nfcore,
+            do_biocontainers=args.do_biocontainers,
+            do_biotools=args.do_biotools,
+            do_stato=args.do_stato,
+            do_obi=args.do_obi,
+            fetched_at=fetched_at,
+        )
+    elif args.cmd == "export-kgx":
+        cmd_export_kgx(db_path=args.db, out_dir=args.out_dir)
+    elif args.cmd == "guardrail":
+        return cmd_guardrail(
+            db_path=args.db,
+            method=args.method,
+            analysis=args.analysis,
+            skill=args.skill,
+            facts=_parse_facts(args.facts),
+            as_json=args.as_json,
+        )
+    elif args.cmd == "guardrail-chain":
+        return cmd_guardrail_chain(
+            db_path=args.db,
+            steps=args.steps,
+            facts=_parse_facts(args.facts),
+            as_json=args.as_json,
+        )
+    elif args.cmd == "skills":
+        if getattr(args, "coverage", False):
+            return cmd_skills_coverage(db_path=args.db)
+        parser.error("skills: pass --coverage")
+    elif args.cmd == "bench":
+        return cmd_bench(args)
+    elif args.cmd == "biolean":
+        return cmd_biolean(args, parser)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

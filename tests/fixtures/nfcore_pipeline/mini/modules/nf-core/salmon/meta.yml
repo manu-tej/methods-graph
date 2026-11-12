@@ -1,0 +1,14 @@
+name: salmon_pe
+description: Quantify expression with Salmon
+tools:
+  - salmon:
+      description: Selective alignment
+      identifier: biotools:salmon
+input:
+  - reads:
+      type: file
+      pattern: "*.fastq.gz"
+output:
+  - quant:
+      type: file
+      pattern: "*.sf"

@@ -1,0 +1,7 @@
+Class ID	Preferred Label	Parents	Obsolete
+http://edamontology.org/operation_3798	Read summarisation	http://edamontology.org/operation_2495	FALSE
+http://edamontology.org/operation_2495	Gene expression analysis		FALSE
+http://edamontology.org/topic_3170	RNA-Seq		FALSE
+http://edamontology.org/data_3494	DNA sequence		FALSE
+http://edamontology.org/format_1930	FASTQ		FALSE
+http://edamontology.org/operation_0000	Obsolete thing		TRUE

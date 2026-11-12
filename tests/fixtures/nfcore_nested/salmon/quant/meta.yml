@@ -1,0 +1,20 @@
+name: salmon_quant
+description: Quantify expression with Salmon (nested layout)
+tools:
+  - salmon:
+      description: Selective alignment and quantification
+      homepage: https://salmon.readthedocs.io
+      identifier: biotools:salmon
+      args_id: "$args"
+      edam_operations:
+        - "operation_3798"
+      edam_topics:
+        - "topic_3170"
+input:
+  - reads:
+      type: file
+      pattern: "*.fastq.gz"
+output:
+  - quant:
+      type: file
+      pattern: "*.sf"

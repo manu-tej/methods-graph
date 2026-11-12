@@ -1,0 +1,209 @@
+# Curated, literature-grounded Method -> StatisticalMethod cross-links.
+#
+# Each link asserts that a tool USES a specific statistical method, and MUST cite
+# the tool's primary publication (DOI/PMID) where that method is documented.  This
+# is not derivable from EDAM/nf-core/bio.tools/STATO — it lives in the literature —
+# so it is curated, but every entry is a *claim with a citation*, not an assertion.
+#
+# Invariants enforced downstream (see crosslinks/__init__.py and audit.py):
+#   * an ungrounded link (no DOI and no PMID) is rejected by the loader;
+#   * the build emits an edge ONLY when the source resolves to a Method node and
+#     the target to a StatisticalMethod node (no dangling/mistyped links);
+#   * the audit fails if any USES_STATISTICAL_METHOD edge is mistyped OR lacks
+#     evidence.
+#
+# `label` is the EXACT StatisticalMethod node name in the graph (a defense-in-
+# depth check: a mismatch warns that this entry has gone stale).  The `id` is
+# authoritative.  Each link was verified against primary literature and survived
+# an adversarial refutation pass.
+#
+# A method legitimately maps to MANY statistical methods (e.g. DESeq2 -> Wald
+# test + BH FDR; PLINK -> logistic + linear regression + Fisher's exact).
+version: 1
+links:
+  # ---- DESeq2 (Love, Huber & Anders 2014, Genome Biology) -------------------
+  - method: m:deseq2
+    statistical_method: obo:STATO_0000559
+    label: Wald test
+    evidence:
+      doi: 10.1186/s13059-014-0550-8
+      pmid: "25516281"
+      url: https://pmc.ncbi.nlm.nih.gov/articles/PMC4302049/
+    confidence: high
+    note: DESeq2's default significance test for GLM log2 fold-change coefficients.
+  - method: m:deseq2
+    statistical_method: obo:OBI_0200036
+    label: Benjamini and Hochberg false discovery rate correction method
+    evidence:
+      doi: 10.1186/s13059-014-0550-8
+      pmid: "25516281"
+      url: https://doi.org/10.1186/s13059-014-0550-8
+    confidence: high
+    note: DESeq2 adjusts p-values for multiple testing using Benjamini-Hochberg by default.
+  # ---- edgeR (Lun, Chen & Smyth 2016 — quasi-likelihood pipeline) -----------
+  - method: m:edger
+    statistical_method: obo:STATO_0000086
+    label: F-test
+    evidence:
+      doi: 10.1007/978-1-4939-3578-9_19
+      pmid: "27008025"
+      url: https://doi.org/10.1007/978-1-4939-3578-9_19
+    confidence: high
+    note: edgeR's quasi-likelihood pipeline (glmQLFit/glmQLFTest) tests DE with a QL F-test.
+  # ---- limma (Smyth 2004, SAGMB) -------------------------------------------
+  - method: m:limma
+    statistical_method: obo:STATO_0000108
+    label: linear regression for analysis of continuous dependent variable
+    evidence:
+      doi: 10.2202/1544-6115.1027
+      pmid: "16646809"
+      url: https://doi.org/10.2202/1544-6115.1027
+    confidence: high
+    note: limma fits a gene-wise linear model (lmFit) — i.e. linear regression.
+  # ---- GSEA (Subramanian et al. 2005, PNAS) --------------------------------
+  # Mapped to the curated GSEA-specific enrichment node, NOT the standard KS node:
+  # GSEA's statistic is a WEIGHTED running sum and its permutation null does not
+  # assume i.i.d. genes, so it must not inherit the standard KS independence assumption.
+  - method: m:gsea
+    statistical_method: stat:gsea_enrichment
+    label: GSEA weighted running-sum enrichment score
+    evidence:
+      doi: 10.1073/pnas.0506580102
+      pmid: "16199517"
+      url: https://pmc.ncbi.nlm.nih.gov/articles/PMC1239896/
+    confidence: high
+    note: GSEA's enrichment score is a weighted Kolmogorov-Smirnov-like running-sum statistic with a
+      phenotype-permutation null (curated node stat:gsea_enrichment).
+  # ---- Scanpy (Wolf, Angerer & Theis 2018, Genome Biology) -----------------
+  - method: m:scanpy
+    statistical_method: obo:OBI_0200051
+    label: principal components analysis dimensionality reduction
+    evidence:
+      doi: 10.1186/s13059-017-1382-0
+      pmid: "29409532"
+      url: https://doi.org/10.1186/s13059-017-1382-0
+    confidence: high
+    note: Scanpy performs PCA (pp.pca / tl.pca) as a standard dimensionality-reduction step.
+  # ---- PLINK 1.x (Purcell et al. 2007, Am J Hum Genet) ---------------------
+  - method: m:plink
+    statistical_method: obo:STATO_0000149
+    label: binomial logistic regression for analysis of dichotomous dependent variable
+    evidence:
+      doi: 10.1086/519795
+      pmid: "17701901"
+      url: https://pmc.ncbi.nlm.nih.gov/articles/PMC1950838/
+    confidence: high
+    note: PLINK tests case/control association using logistic regression (--logistic).
+  - method: m:plink
+    statistical_method: obo:STATO_0000108
+    label: linear regression for analysis of continuous dependent variable
+    evidence:
+      doi: 10.1086/519795
+      pmid: "17701901"
+      url: https://doi.org/10.1086/519795
+    confidence: high
+    note: PLINK tests quantitative-trait association using linear regression (--linear).
+  - method: m:plink
+    statistical_method: obo:STATO_0000073
+    label: Fisher's exact test
+    evidence:
+      doi: 10.1086/519795
+      pmid: "17701901"
+      url: https://pmc.ncbi.nlm.nih.gov/articles/PMC1950838/
+    confidence: high
+    note: PLINK can compute allelic/genotypic association significance with Fisher's exact test (--fisher).
+  # ---- PLINK 2.0 (Chang et al. 2015, GigaScience) --------------------------
+  - method: m:plink2
+    statistical_method: obo:STATO_0000149
+    label: binomial logistic regression for analysis of dichotomous dependent variable
+    evidence:
+      doi: 10.1186/s13742-015-0047-8
+      pmid: "25722852"
+      url: https://doi.org/10.1186/s13742-015-0047-8
+    confidence: high
+    note: PLINK2 tests case/control association using (Firth) logistic regression (--glm).
+  - method: m:plink2
+    statistical_method: obo:STATO_0000108
+    label: linear regression for analysis of continuous dependent variable
+    evidence:
+      doi: 10.1186/s13742-015-0047-8
+      pmid: "25722852"
+      url: https://doi.org/10.1186/s13742-015-0047-8
+    confidence: high
+    note: PLINK2 tests quantitative-trait association using linear regression (--glm).
+  # ---- Salmon (Patro et al. 2017, Nature Methods) --------------------------
+  - method: m:salmon
+    statistical_method: obo:STATO_0000428
+    label: maximum likelihood estimation
+    evidence:
+      doi: 10.1038/nmeth.4197
+      pmid: "28263959"
+      url: https://pmc.ncbi.nlm.nih.gov/articles/PMC5600148/
+    confidence: high
+    note: Salmon estimates transcript abundances by maximum-likelihood inference via an EM algorithm.
+  # ---- kallisto (Bray et al. 2016, Nature Biotechnology) -------------------
+  - method: m:kallisto
+    statistical_method: obo:STATO_0000428
+    label: maximum likelihood estimation
+    evidence:
+      doi: 10.1038/nbt.3519
+      pmid: "27043002"
+      url: https://doi.org/10.1038/nbt.3519
+    confidence: high
+    note: kallisto quantifies transcript abundances via the EM (maximum-likelihood) algorithm.
+  # ---- edgeR FDR (Robinson, McCarthy & Smyth 2010, Bioinformatics) ----------
+  # edgeR uses BH specifically (topTags default), so it maps to the BH node — which
+  # carries the independence/PRDS assumption — not the generic FDR node.
+  - method: m:edger
+    statistical_method: obo:OBI_0200036
+    label: Benjamini and Hochberg false discovery rate correction method
+    evidence:
+      doi: 10.1093/bioinformatics/btp616
+      pmid: "19910308"
+      url: https://pmc.ncbi.nlm.nih.gov/articles/PMC2796818/
+    confidence: high
+    note: edgeR adjusts per-gene p-values for multiple testing (topTags, default Benjamini-Hochberg FDR).
+  # ---- Scanpy DE test (Wolf, Angerer & Theis 2018, Genome Biology) ----------
+  - method: m:scanpy
+    statistical_method: obo:OBI_0000739
+    label: Student's t-test
+    evidence:
+      doi: 10.1186/s13059-017-1382-0
+      pmid: "29409532"
+      url: https://doi.org/10.1186/s13059-017-1382-0
+    confidence: high
+    note: Scanpy's rank_genes_groups marks differential genes per cluster with a t-test
+      (default method='t-test' since scanpy 1.6; 't-test_overestim_var' and Wilcoxon are alternatives).
+  # ---- anota2seq (Oertlin et al. 2019, Nucleic Acids Research) --------------
+  - method: m:anota2seq
+    statistical_method: obo:STATO_0000179
+    label: ANCOVA
+    evidence:
+      doi: 10.1093/nar/gkz223
+      pmid: "30926999"
+      url: https://pmc.ncbi.nlm.nih.gov/articles/PMC6614820/
+    confidence: high
+    note: anota2seq detects changed translation via analysis of partial variance (APV) — a per-gene ANCOVA
+      regressing translated mRNA on total mRNA and comparing groups — with a random variance model.
+  # ---- MaxQuant (Cox & Mann 2008, Nature Biotechnology) ---------------------
+  - method: m:maxquant
+    statistical_method: stat:target_decoy_fdr
+    label: Target-decoy false-discovery-rate / q-value estimation
+    evidence:
+      doi: 10.1038/nbt.1511
+      pmid: "19029910"
+      url: https://doi.org/10.1038/nbt.1511
+    confidence: high
+    note: MaxQuant controls peptide/protein identification error with a target-decoy false-discovery-rate
+      procedure (default 1% PSM/protein FDR).
+  # ---- Sage (Lazear 2023, J. Proteome Research) -----------------------------
+  - method: m:sageproteomics
+    statistical_method: stat:target_decoy_fdr
+    label: Target-decoy false-discovery-rate / q-value estimation
+    evidence:
+      doi: 10.1021/acs.jproteome.3c00486
+      pmid: "37819886"
+      url: https://doi.org/10.1021/acs.jproteome.3c00486
+    confidence: high
+    note: Sage assigns spectrum/peptide identifications and filters them with a target-decoy
+      false-discovery-rate procedure.

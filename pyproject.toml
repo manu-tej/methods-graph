@@ -1,0 +1,39 @@
+[project]
+name = "methods-graph"
+version = "0.1.0"
+description = "Bioinformatics methods master graph (EDAM + nf-core + BioContainers) on Kuzu"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    # Pinned to the validated runtime version. Kùzu 0.11.x has schema/COPY/Cypher
+    # behaviors the loader + extract layers were verified against; do not float.
+    "kuzu==0.11.3",
+    "polars>=1.0",
+    "pyyaml>=6.0",
+    "networkx>=3.0",
+]
+
+[project.optional-dependencies]
+# `linkml` is only needed to validate objects against the LinkML schema in tests;
+# the schema file itself and KGX export have no LinkML runtime dependency.
+schema = ["linkml>=1.7"]
+# `rdflib` is only needed for OWL ontology ingestion (parse_stato / parse_obi).
+ontology = ["rdflib>=7"]
+dev = ["pytest>=8.0", "linkml>=1.7", "rdflib>=7"]
+
+[project.scripts]
+methods-graph = "methods_graph.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+methods_graph = ["schema/*.yaml", "crosslinks/*.yaml"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

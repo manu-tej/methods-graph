@@ -1,0 +1,59 @@
+<?xml version="1.0"?>
+<rdf:RDF
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+    xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+    xmlns:owl="http://www.w3.org/2002/07/owl#"
+    xmlns:xsd="http://www.w3.org/2001/XMLSchema#">
+
+    <owl:Ontology rdf:about="http://purl.obolibrary.org/obo/obi.owl"/>
+
+    <!-- Root: OBI_0000070 assay -->
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/OBI_0000070">
+        <rdfs:label>assay</rdfs:label>
+    </owl:Class>
+
+    <!-- Descendant assay: OBI_0001234 DNA sequencing assay (with an alt-term synonym) -->
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/OBI_0001234">
+        <rdfs:label>DNA sequencing assay</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://purl.obolibrary.org/obo/OBI_0000070"/>
+        <obo:IAO_0000118 xmlns:obo="http://purl.obolibrary.org/obo/">DNA-seq assay</obo:IAO_0000118>
+    </owl:Class>
+
+    <!-- Root: OBI_0000272 protocol -->
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/OBI_0000272">
+        <rdfs:label>protocol</rdfs:label>
+    </owl:Class>
+
+    <!-- Descendant protocol: OBI_0001975 sample preparation protocol -->
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/OBI_0001975">
+        <rdfs:label>sample preparation protocol</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://purl.obolibrary.org/obo/OBI_0000272"/>
+    </owl:Class>
+
+    <!-- Root: COB_0001300 device -->
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/COB_0001300">
+        <rdfs:label>device</rdfs:label>
+    </owl:Class>
+
+    <!-- Descendant instrument: OBI_0001913 Illumina sequencing instrument -->
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/OBI_0001913">
+        <rdfs:label>Illumina sequencing instrument</rdfs:label>
+        <rdfs:subClassOf rdf:resource="http://purl.obolibrary.org/obo/COB_0001300"/>
+    </owl:Class>
+
+    <!-- Root: OBI_0500000 study design -->
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/OBI_0500000">
+        <rdfs:label>study design</rdfs:label>
+    </owl:Class>
+
+    <!-- Root: OBI_0100051 specimen (Material) -->
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/OBI_0100051">
+        <rdfs:label>specimen</rdfs:label>
+    </owl:Class>
+
+    <!-- Unrelated class NOT under any root — must NOT be ingested -->
+    <owl:Class rdf:about="http://purl.obolibrary.org/obo/OBI_9999999">
+        <rdfs:label>unrelated OBI concept</rdfs:label>
+    </owl:Class>
+
+</rdf:RDF>

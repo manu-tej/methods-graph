@@ -1,0 +1,12 @@
+name: multidep_quant
+description: Quantify expression with Salmon (multi-dep fixture)
+tools:
+  - salmon:
+      description: Selective alignment and quantification
+      homepage: https://salmon.readthedocs.io
+      identifier: biotools:salmon
+      args_id: "$args"
+      edam_operations:
+        - "operation_3798"
+      edam_topics:
+        - "topic_3170"

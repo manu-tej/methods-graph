@@ -1,0 +1,124 @@
+"""Gold sequences become frozen benchmark items."""
+from __future__ import annotations
+
+from typing import Any, Callable
+
+_REQUIRED_DERIVATION = "nextflow_dsl2"
+
+
+def make_items(
+    *,
+    pipeline: str,
+    revision: str,
+    nxf_ver: str,
+    dag_sha256: str,
+    goal: str,
+    sequence: list[str],
+    derivation: str,
+    edges: list[tuple[str, str]] | None = None,
+    method_for_module: Callable[[str], str | None] | None = None,
+) -> list[dict[str, Any]]:
+    """One whole-pipeline item plus one next-step item per answerable position.
+
+    Rejects anything not derived from a real Nextflow DAG: accepting inferred
+    wiring would make the answer key an artifact of the method under test.
+
+    *edges* is the DAG the sequence linearizes. When supplied it is frozen onto the
+    whole-pipeline item as ``gold["edges"]``, so the sequencing metric can score the
+    ordering the pipeline actually requires instead of penalizing a different — equally
+    correct — interleaving of parallel branches.
+
+    *method_for_module* projects a module onto the method it wraps. When supplied, a
+    next-step position whose gold module wraps a method ALREADY among the given
+    modules' methods is skipped, because the prompt would contain its own answer:
+    ``given`` is rendered in method space, so ``star_genomegenerate`` then
+    ``star_align`` shows the model "Completed so far: …, star" and asks it to name
+    star. The whole samtools/bwa/salmon index-then-use family is degenerate the same
+    way — 30–50% of the next-step set on real pipelines, free for every model and both
+    baselines. Omitted entirely (the default) items are built exactly as before, and
+    the caller records the skip count as ``null`` so "not checked" stays distinguishable
+    from "none skipped".
+    """
+    if derivation != _REQUIRED_DERIVATION:
+        raise ValueError(
+            f"derivation must be {_REQUIRED_DERIVATION!r}, got {derivation!r}")
+    if len(sequence) < 2:
+        raise ValueError("a gold sequence needs at least two steps to test ordering")
+
+    provenance = {
+        "source": f"nf-core/{pipeline}@{revision}",
+        "nxf_ver": nxf_ver,
+        "dag_sha256": dag_sha256,
+        "derivation": derivation,
+    }
+    # Lists, not tuples: the item set is round-tripped through JSON, and an "edges" key
+    # that compares unequal after a reload would make the frozen artifact untrustworthy.
+    constraint = {} if edges is None else {
+        "edges": [[source, target] for source, target in edges]}
+    items: list[dict[str, Any]] = [{
+        "id": f"{pipeline}/whole/001",
+        "task": "whole_pipeline",
+        "goal": goal,
+        "given": [],
+        "gold": {"sequence": list(sequence), **constraint, **provenance},
+    }]
+    for index in range(len(sequence)):
+        if _answer_is_already_given(sequence, index, method_for_module):
+            continue
+        items.append({
+            "id": f"{pipeline}/next/{index:03d}",
+            "task": "next_step",
+            "goal": goal,
+            "given": list(sequence[:index]),
+            "gold": {"next": sequence[index], **provenance},
+        })
+    return items
+
+
+def _answer_is_already_given(
+    sequence: list[str], index: int,
+    method_for_module: Callable[[str], str | None] | None,
+) -> bool:
+    """Would this next-step item's prompt contain its own answer?
+
+    An unresolvable gold module is kept: it has no method to have leaked, and the
+    scorer already reports it as ``gold_unresolved`` rather than dropping it.
+    """
+    if method_for_module is None:
+        return False
+    answer = method_for_module(sequence[index])
+    if answer is None:
+        return False
+    return any(method_for_module(m) == answer for m in sequence[:index])
+
+
+def build_manifest(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate per-pipeline outcomes, recording every exclusion with its reason.
+
+    A dropped pipeline without a reason is an error, not a permitted shortcut:
+    unexplained exclusions make the benchmark's coverage unauditable.
+    """
+    used, dropped = [], []
+    for outcome in outcomes:
+        status = outcome["status"]
+        if status == "dropped":
+            if not outcome.get("reason"):
+                raise ValueError(
+                    f"dropped pipeline {outcome['pipeline']!r} needs a reason")
+            dropped.append(outcome)
+        elif status == "used":
+            used.append(outcome)
+        else:
+            raise ValueError(
+                f"pipeline {outcome['pipeline']!r} has unrecognized status {status!r}")
+
+    by_name = lambda entry: entry["pipeline"]
+    return {
+        "schema": 1,
+        "n_pipelines": len(outcomes),
+        "n_used": len(used),
+        "n_dropped": len(dropped),
+        "n_items": sum(entry["n_items"] for entry in used),
+        "used": sorted(used, key=by_name),
+        "dropped": sorted(dropped, key=by_name),
+    }

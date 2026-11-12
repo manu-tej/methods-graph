@@ -1,0 +1,115 @@
+# Full nf-core catalog ingest manifest — reproducible one-command build.
+#
+#   mg fetch  --dest snapshots           # shared sources (EDAM/biotools/biocontainers/STATO/OBI)
+#   mg ingest --manifest catalog.ingest.yaml --dest .work --db data/catalog.kuzu
+#
+# wiring: false  => registry + execution-specs + modality only (no per-pipeline
+# Nextflow DAG, no io_inferred wiring). Each pipeline still contributes its tools,
+# pinned containers/commands/typed-I/O, and modality. Deep semantic layers
+# (EDAM operations, data-types, assumptions, diagnostics) apply where curated.
+
+snapshot_dir: snapshots
+wiring: false
+sources:
+  edam:
+  biocontainers:
+  biotools:
+  stato:
+  obi:
+pipelines:
+  - {name: airrflow, revision: "5.1.0"}
+  - {name: ampliseq, revision: "2.18.0"}
+  - {name: atacseq, revision: "2.1.2"}
+  - {name: bacass, revision: "2.6.0"}
+  - {name: bactmap, revision: "1.0.0"}
+  - {name: bamtofastq, revision: "2.2.1"}
+  - {name: cageseq, revision: "1.0.2"}
+  - {name: callingcards, revision: "1.0.0"}
+  - {name: chipseq, revision: "2.1.0"}
+  - {name: circdna, revision: "1.1.0"}
+  - {name: clipseq, revision: "1.0.0"}
+  - {name: coproid, revision: "2.0.1"}
+  - {name: createpanelrefs, revision: "1.0.0"}
+  - {name: createtaxdb, revision: "3.0.0"}
+  - {name: crisprseq, revision: "2.3.0"}
+  - {name: cutandrun, revision: "3.2.2"}
+  - {name: deepvariant, revision: "1.0"}
+  - {name: demo, revision: "1.1.0"}
+  - {name: demultiplex, revision: "1.7.1"}
+  - {name: denovotranscript, revision: "1.2.1"}
+  - {name: detaxizer, revision: "1.3.0"}
+  - {name: diaproteomics, revision: "1.2.4"}
+  - {name: differentialabundance, revision: "1.5.0"}
+  - {name: drop, revision: "1.0.0"}
+  - {name: drugresponseeval, revision: "1.2.1"}
+  - {name: dualrnaseq, revision: "1.0.0"}
+  - {name: eager, revision: "2.5.3"}
+  - {name: epitopeprediction, revision: "3.1.0"}
+  - {name: fastqrepair, revision: "1.0.0"}
+  - {name: fastquorum, revision: "1.2.0"}
+  - {name: fetchngs, revision: "1.12.0"}
+  - {name: funcscan, revision: "3.0.0"}
+  - {name: genomeassembler, revision: "1.1.0"}
+  - {name: hadge, revision: "0.2.0"}
+  - {name: hgtseq, revision: "1.1.0"}
+  - {name: hic, revision: "2.1.0"}
+  - {name: hicar, revision: "1.0.0"}
+  - {name: hlatyping, revision: "2.2.0"}
+  - {name: imcyto, revision: "1.0.0"}
+  - {name: isoseq, revision: "2.0.0"}
+  - {name: kmermaid, revision: "0.1.0-alpha"}
+  - {name: lsmquant, revision: "1.0.1"}
+  - {name: mag, revision: "5.4.2"}
+  - {name: magmap, revision: "1.1.0"}
+  - {name: marsseq, revision: "1.0.3"}
+  - {name: metaboigniter, revision: "2.0.1"}
+  - {name: metapep, revision: "1.0.0"}
+  - {name: metatdenovo, revision: "1.3.0"}
+  - {name: methylong, revision: "2.0.0"}
+  - {name: methylseq, revision: "4.2.0"}
+  - {name: mhcquant, revision: "3.2.0"}
+  - {name: mnaseseq, revision: "1.0.0"}
+  - {name: molkart, revision: "1.2.0"}
+  - {name: multiplesequencealign, revision: "1.1.1"}
+  - {name: nanoseq, revision: "3.1.0"}
+  - {name: nanostring, revision: "1.3.3"}
+  - {name: nascent, revision: "2.3.0"}
+  - {name: neutronstar, revision: "1.0.0"}
+  - {name: oncoanalyser, revision: "2.3.0"}
+  - {name: pacvar, revision: "1.0.1"}
+  - {name: pairgenomealign, revision: "2.3.0"}
+  - {name: pangenome, revision: "1.1.3"}
+  - {name: pathogensurveillance, revision: "1.1.0"}
+  - {name: phaseimpute, revision: "1.1.0"}
+  - {name: phyloplace, revision: "2.0.1"}
+  - {name: pixelator, revision: "4.1.2"}
+  - {name: proteinannotator, revision: "1.1.0"}
+  - {name: proteinfamilies, revision: "2.4.0"}
+  - {name: proteinfold, revision: "2.0.0"}
+  - {name: proteogenomicsdb, revision: "1.0.0"}
+  - {name: proteomicslfq, revision: "1.0.0"}
+  - {name: quantms, revision: "1.2.0"}
+  - {name: rangeland, revision: "1.0.0"}
+  - {name: raredisease, revision: "3.1.0"}
+  - {name: readsimulator, revision: "1.0.1"}
+  - {name: references, revision: "0.1"}
+  - {name: reportho, revision: "1.1.0"}
+  - {name: ribomsqc, revision: "1.0.0"}
+  - {name: riboseq, revision: "1.2.0"}
+  - {name: rnafusion, revision: "4.1.3"}
+  - {name: rnaseq, revision: "3.26.0"}
+  - {name: rnasplice, revision: "1.0.4"}
+  - {name: rnavar, revision: "1.3.0"}
+  - {name: sarek, revision: "3.8.1"}
+  - {name: scnanoseq, revision: "1.2.2"}
+  - {name: scrnaseq, revision: "4.1.0"}
+  - {name: seqinspector, revision: "1.0.1"}
+  - {name: slamseq, revision: "1.0.0"}
+  - {name: smrnaseq, revision: "2.4.1"}
+  - {name: spatialaxe, revision: "1.0.0"}
+  - {name: taxprofiler, revision: "2.0.1"}
+  - {name: variantbenchmarking, revision: "1.5.0"}
+  - {name: variantprioritization, revision: "1.0.0"}
+  - {name: viralintegration, revision: "0.1.1"}
+  - {name: viralmetagenome, revision: "1.1.2"}
+  - {name: viralrecon, revision: "3.0.0"}

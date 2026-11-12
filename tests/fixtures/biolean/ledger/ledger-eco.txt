@@ -1,0 +1,5 @@
+# ledger fixture mapping: four codes
+IDA	Default	ECO:0000314
+IMP	Default	ECO:0000315
+IPI	Default	ECO:0000353
+IEA	Default	ECO:0000501

@@ -1,0 +1,1162 @@
+"""Tests for src/methods_graph/audit.py (fixture-based, offline, no network)."""
+from __future__ import annotations
+
+import json
+import tempfile
+from pathlib import Path
+
+import kuzu
+import pytest
+
+from methods_graph.audit import AuditResult, Invariant, audit_graph
+from methods_graph.graph.loader import build_graph
+from methods_graph.types import (
+    EdgeKind,
+    EdgeRecord,
+    MethodRecord,
+    NodeKind,
+    NodeRecord,
+    Provenance,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+P = Provenance("test", "https://example.com/test", "2026-06-10")
+P_NULL = None  # used for missing-provenance tests
+
+
+def _make_db(tmp_path: Path, nodes: list, edges: list) -> Path:
+    """Build a Kùzu DB and return its path."""
+    db_path = tmp_path / "test.kuzu"
+    build_graph(nodes, edges, db_path, staging_dir=tmp_path / "stg")
+    return db_path
+
+
+def _open_conn(db_path: Path):
+    """Return (db, conn) — caller is responsible for closing both."""
+    db = kuzu.Database(str(db_path))
+    conn = kuzu.Connection(db)
+    return db, conn
+
+
+# ---------------------------------------------------------------------------
+# test_audit_clean_graph_passes
+# ---------------------------------------------------------------------------
+
+
+def test_audit_clean_graph_passes(tmp_path):
+    """A small, structurally valid graph should produce ok=True with correct counts."""
+    nodes = [
+        MethodRecord(
+            "m:salmon", "salmon", NodeKind.METHOD, {}, P,
+            bioconda_pkg="salmon", biotools_id="salmon",
+        ),
+        NodeRecord("op:operation_3798", "Read summarisation", NodeKind.OPERATION, {}, P),
+        NodeRecord("cnt:salmon_1.10.0", "salmon:1.10.0", NodeKind.CONTAINER, {}, P),
+        NodeRecord("fmt:data_2044", "Sequence", NodeKind.FORMAT, {}, P),
+    ]
+    edges = [
+        EdgeRecord("m:salmon", "op:operation_3798", EdgeKind.PERFORMS, {}, P),
+        EdgeRecord("m:salmon", "cnt:salmon_1.10.0", EdgeKind.PACKAGED_AS, {}, P),
+        EdgeRecord("m:salmon", "fmt:data_2044", EdgeKind.INPUT, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    assert result.ok is True
+    assert all(inv.ok for inv in result.invariants)
+    assert result.duplicate_ids_ok is True
+    assert result.provenance_missing == 0
+
+    # Coverage counts
+    cov = result.coverage
+    assert cov["methods_total"] == 1
+    assert cov["with_biotools_id"]["count"] == 1
+    assert cov["with_bioconda_pkg"]["count"] == 1
+    assert cov["with_container"]["count"] == 1
+    assert cov["with_edam_operation"]["count"] == 1
+    assert cov["with_io_contract"]["count"] == 1
+
+    # No SAME_AS edges
+    assert result.same_as["total"] == 0
+
+    # Reconciliation not requested
+    assert result.reconciliation is None
+
+
+# ---------------------------------------------------------------------------
+# test_audit_detects_invalid_edge_kind
+# ---------------------------------------------------------------------------
+
+
+def test_audit_detects_invalid_edge_kind(tmp_path):
+    """A PERFORMS edge from Method→Container violates the PERFORMS invariant."""
+    nodes = [
+        MethodRecord("m:salmon", "salmon", NodeKind.METHOD, {}, P),
+        NodeRecord("cnt:salmon_1.10.0", "salmon:1.10.0", NodeKind.CONTAINER, {}, P),
+    ]
+    # PERFORMS should only go Method→Operation; pointing it at a Container is invalid
+    edges = [
+        EdgeRecord("m:salmon", "cnt:salmon_1.10.0", EdgeKind.PERFORMS, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    assert result.ok is False
+    performs_inv = next(inv for inv in result.invariants if "PERFORMS" in inv.name and "IS_A" not in inv.name)
+    assert not performs_inv.ok
+    assert performs_inv.violations >= 1
+
+
+# ---------------------------------------------------------------------------
+# test_audit_detects_missing_provenance
+# ---------------------------------------------------------------------------
+
+
+def test_audit_detects_missing_provenance(tmp_path):
+    """A node with no provenance source should be flagged, making ok=False."""
+    # Build one node with provenance, one without
+    good_node = NodeRecord("op:operation_3798", "Read summarisation", NodeKind.OPERATION, {}, P)
+    bad_node = NodeRecord("op:operation_0001", "Unknown op", NodeKind.OPERATION, {}, P_NULL)
+    db_path = _make_db(tmp_path, [good_node, bad_node], [])
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    assert result.provenance_missing > 0
+    assert result.ok is False
+
+
+# ---------------------------------------------------------------------------
+# test_audit_counts_same_as
+# ---------------------------------------------------------------------------
+
+
+def test_audit_counts_same_as(tmp_path):
+    """A SAME_AS edge with basis='biotools_id' is counted in by_basis correctly."""
+    method_a = MethodRecord("m:salmon", "salmon", NodeKind.METHOD, {}, P, biotools_id="salmon")
+    method_b = MethodRecord("m:salmon_ng", "salmon-ng", NodeKind.METHOD, {}, P, biotools_id="salmon")
+    same_as_edge = EdgeRecord(
+        "m:salmon", "m:salmon_ng", EdgeKind.SAME_AS,
+        {"basis": "biotools_id"}, P,
+    )
+    db_path = _make_db(tmp_path, [method_a, method_b], [same_as_edge])
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    assert result.same_as["total"] == 1
+    assert result.same_as["by_basis"].get("biotools_id", 0) == 1
+
+
+# ---------------------------------------------------------------------------
+# test_audit_coverage_metrics
+# ---------------------------------------------------------------------------
+
+
+def test_audit_coverage_metrics(tmp_path):
+    """Two-method graph: one enriched, one bare. Coverage counts should reflect this."""
+    nodes = [
+        MethodRecord("m:salmon", "salmon", NodeKind.METHOD, {}, P, bioconda_pkg="salmon"),
+        MethodRecord("m:bare", "bare", NodeKind.METHOD, {}, P),
+        NodeRecord("op:operation_3798", "Read summarisation", NodeKind.OPERATION, {}, P),
+        NodeRecord("cnt:salmon_1.10.0", "salmon:1.10.0", NodeKind.CONTAINER, {}, P),
+    ]
+    edges = [
+        EdgeRecord("m:salmon", "op:operation_3798", EdgeKind.PERFORMS, {}, P),
+        EdgeRecord("m:salmon", "cnt:salmon_1.10.0", EdgeKind.PACKAGED_AS, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    cov = result.coverage
+    assert cov["methods_total"] == 2
+    assert cov["with_edam_operation"]["count"] == 1
+    assert cov["with_edam_operation"]["pct"] == 50.0
+    assert cov["with_container"]["count"] == 1
+    assert cov["with_container"]["pct"] == 50.0
+    assert cov["with_bioconda_pkg"]["count"] == 1
+    assert cov["with_bioconda_pkg"]["pct"] == 50.0
+    # bare method has nothing
+    assert cov["with_io_contract"]["count"] == 0
+
+
+def test_audit_reports_complete_assumption_diagnostic_chain(tmp_path):
+    """P6: a method with a full USES→REQUIRES→CHECKED_BY chain counts toward the
+    'complete chain' coverage; the used-method-set fraction is reported."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P, bioconda_pkg="deseq2"),
+        MethodRecord("m:halfway", "halfway", NodeKind.METHOD, {}, P),  # stat link but no diagnostic
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("obo:STATO_0000086", "F-test", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("assum:asymptotic_normality", "asymptotic normality", NodeKind.ASSUMPTION, {}, P),
+        NodeRecord("assum:lonely", "lonely", NodeKind.ASSUMPTION, {}, P),
+        NodeRecord("diag:ssc", "replicate adequacy", NodeKind.DIAGNOSTIC, {}, P),
+    ]
+    edges = [
+        EdgeRecord("m:deseq2", "obo:STATO_0000559", EdgeKind.USES_STATISTICAL_METHOD, {}, P),
+        EdgeRecord("obo:STATO_0000559", "assum:asymptotic_normality", EdgeKind.REQUIRES_ASSUMPTION, {}, P),
+        EdgeRecord("assum:asymptotic_normality", "diag:ssc", EdgeKind.CHECKED_BY, {}, P),
+        # halfway has a stat method + assumption but NO diagnostic on it
+        EdgeRecord("m:halfway", "obo:STATO_0000086", EdgeKind.USES_STATISTICAL_METHOD, {}, P),
+        EdgeRecord("obo:STATO_0000086", "assum:lonely", EdgeKind.REQUIRES_ASSUMPTION, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    cov = result.coverage
+    assert cov["with_statistical_method"]["count"] == 2
+    assert cov["with_checked_assumption"]["count"] == 1   # only deseq2 has the full chain
+    ums = cov["used_method_set"]
+    assert ums["count"] == 2 and ums["with_complete_chain"] == 1 and ums["pct"] == 50.0
+
+
+_CURATED_INTEGRITY = "curated links: every resolvable link is emitted (no silent drop)"
+
+
+def test_audit_flags_resolvable_curated_link_that_was_dropped(tmp_path):
+    """If both endpoints of a SHIPPED curated link exist but the edge is missing,
+    the integrity invariant fails (defense-in-depth against a silent builder drop).
+    Uses the real shipped crosslink m:deseq2 -> Wald test (obo:STATO_0000559)."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P, bioconda_pkg="deseq2"),
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, [])   # both endpoints present, NO USES edge
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+    inv = [i for i in result.invariants if i.name == _CURATED_INTEGRITY][0]
+    assert inv.violations >= 1 and not inv.ok
+
+
+def test_audit_curated_integrity_passes_when_edge_present(tmp_path):
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P, bioconda_pkg="deseq2"),
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+    ]
+    edges = [EdgeRecord("m:deseq2", "obo:STATO_0000559", EdgeKind.USES_STATISTICAL_METHOD,
+                        {"evidence": "doi:10.1/x"}, P)]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+    inv = [i for i in result.invariants if i.name == _CURATED_INTEGRITY][0]
+    assert inv.ok
+
+
+def test_audit_integrity_check_fails_loud_on_malformed_curated_yaml(tmp_path, monkeypatch):
+    """A loader raising (malformed YAML / renamed module) must FAIL the integrity
+    invariant, not silently drop it so the gate passes as if the check had run."""
+    import methods_graph.crosslinks as xl
+
+    def _boom(*a, **k):
+        raise ValueError("malformed curated YAML")
+
+    monkeypatch.setattr(xl, "load_crosslinks", _boom)
+    nodes = [MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P, bioconda_pkg="deseq2"),
+             NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P)]
+    edges = [EdgeRecord("m:deseq2", "obo:STATO_0000559", EdgeKind.USES_STATISTICAL_METHOD,
+                        {"evidence": "doi:10.1/x"}, P)]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+    inv = [i for i in result.invariants if i.name == _CURATED_INTEGRITY][0]
+    assert not inv.ok and inv.violations >= 1   # recorded as failed, not vanished
+    assert result.ok is False                    # and it fails the overall gate
+
+
+def test_audit_counts_complete_chain_via_operation_path(tmp_path):
+    """The scalable path: a method with NO USES link still counts as complete-chain
+    when it PERFORMS an operation whose amenable stat carries an assumption+diagnostic."""
+    nodes = [
+        MethodRecord("m:bcftools", "bcftools", NodeKind.METHOD, {}, P, bioconda_pkg="bcftools"),
+        NodeRecord("op:operation_3227", "Variant calling", NodeKind.OPERATION, {}, P),
+        NodeRecord("obo:STATO_0000073", "Fisher's exact test", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("assum:independence", "independence", NodeKind.ASSUMPTION, {}, P),
+        NodeRecord("diag:design_batch_review", "batch review", NodeKind.DIAGNOSTIC, {}, P),
+    ]
+    edges = [
+        EdgeRecord("m:bcftools", "op:operation_3227", EdgeKind.PERFORMS, {}, P),
+        EdgeRecord("op:operation_3227", "obo:STATO_0000073", EdgeKind.AMENABLE_TO,
+                   {"evidence": "doi:10.1086/519795"}, P),
+        EdgeRecord("obo:STATO_0000073", "assum:independence", EdgeKind.REQUIRES_ASSUMPTION,
+                   {"evidence": "isbn:x"}, P),
+        EdgeRecord("assum:independence", "diag:design_batch_review", EdgeKind.CHECKED_BY,
+                   {"evidence": "doi:10.1038/nrg2825"}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+    cov = result.coverage
+    assert cov["with_statistical_method"]["count"] == 0     # no USES link at all
+    assert cov["with_checked_assumption"]["count"] == 1      # but complete via operation path
+    assert cov["with_checked_via_operation"]["count"] == 1
+    # used_method_set denominator counts the operation path too, so the fraction is a
+    # real subset ratio (<=100%) — guards against the 808% numerator/denominator bug.
+    ums = cov["used_method_set"]
+    assert ums["count"] == 1 and ums["with_complete_chain"] == 1
+    assert 0.0 <= ums["pct"] <= 100.0 and ums["pct"] == 100.0
+
+
+# ---------------------------------------------------------------------------
+# test_audit_reconciliation_edam  (two variants: match=True and mismatch)
+# ---------------------------------------------------------------------------
+
+
+def _write_edam_tsv(path: Path, rows: list[dict]) -> None:
+    """Write a minimal EDAM TSV fixture."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        f.write("Class ID\tPreferred Label\tParents\tObsolete\n")
+        for r in rows:
+            f.write(
+                f"http://edamontology.org/{r['local']}\t"
+                f"{r.get('label', r['local'])}\t\t"
+                f"{r.get('obsolete', 'FALSE')}\n"
+            )
+
+
+def test_audit_reconciliation_reports_connector_fetch_failures(tmp_path):
+    """The reconciliation section surfaces biocontainers/bio.tools fetch failures from
+    snapshot.json (a non-gating diagnostic counter), with a sorted 10-id sample, and
+    falls back to len(failed) when n_failed is absent."""
+    import json
+    snap = tmp_path / "snap"
+    snap.mkdir(parents=True, exist_ok=True)
+    (snap / "snapshot.json").write_text(json.dumps({"sources": {
+        "biocontainers": {"failed": ["pkgB", "pkgA"], "n_failed": 2},
+        "biotools": {"failed": ["x", "y", "z"]},   # n_failed omitted -> len(failed)
+    }}))
+    db_path = _make_db(tmp_path, [NodeRecord("op:operation_0001", "Op1", NodeKind.OPERATION, {}, P)], [])
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn, snapshot_dir=snap)
+    finally:
+        conn.close()
+        db.close()
+    ff = result.reconciliation["fetch_failures"]
+    assert ff["biocontainers"]["n_failed"] == 2
+    assert ff["biocontainers"]["sample"] == ["pkgA", "pkgB"]   # sorted
+    assert ff["biotools"]["n_failed"] == 3                      # fell back to len(failed)
+    # rendered in the human-readable report, and never flips the gate
+    assert "Connector fetch failures" in result.to_text()
+
+
+def test_audit_reconciliation_malformed_snapshot_json_is_safe(tmp_path):
+    """A corrupt snapshot.json must not crash the audit — fetch_failures stays empty."""
+    snap = tmp_path / "snap"
+    snap.mkdir(parents=True, exist_ok=True)
+    (snap / "snapshot.json").write_text("{ this is not valid json …")
+    db_path = _make_db(tmp_path, [NodeRecord("op:operation_0001", "Op1", NodeKind.OPERATION, {}, P)], [])
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn, snapshot_dir=snap)
+    finally:
+        conn.close()
+        db.close()
+    assert result.reconciliation["fetch_failures"] == {}
+
+
+def test_audit_reconciliation_edam_match(tmp_path):
+    """Graph nodes match TSV counts → reconciliation match=True for loaded kinds."""
+    snap = tmp_path / "snap"
+    # Two operations + one topic; one obsolete operation (should be excluded from count).
+    # The topic_0001 row is present in the TSV but must be IGNORED by reconciliation
+    # (the Topic layer was removed — topics are no longer ingested or reconciled).
+    _write_edam_tsv(snap / "EDAM.tsv", [
+        {"local": "operation_0001", "label": "Op1"},
+        {"local": "operation_0002", "label": "Op2"},
+        {"local": "operation_0003", "label": "ObsoleteOp", "obsolete": "TRUE"},
+        {"local": "topic_0001", "label": "Topic1"},
+    ])
+    # Build graph with exactly 2 Operation nodes (no Topic node — topics not ingested).
+    nodes = [
+        NodeRecord("op:operation_0001", "Op1", NodeKind.OPERATION, {}, P),
+        NodeRecord("op:operation_0002", "Op2", NodeKind.OPERATION, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, [])
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn, snapshot_dir=snap)
+    finally:
+        conn.close()
+        db.close()
+
+    assert result.reconciliation is not None
+    edam = result.reconciliation["edam"]
+    assert edam["operation"]["tsv"] == 2
+    assert edam["operation"]["graph"] == 2
+    assert edam["operation"]["match"] is True
+    # topic is NOT reconciled (layer removed) — the TSV topic row must not cause a mismatch
+    assert "topic" not in edam
+    # data/format: tsv=0, graph=0 → match
+    assert edam["data"]["match"] is True
+    assert edam["format"]["match"] is True
+    # ok should still be True (all pass)
+    assert result.ok is True
+
+
+def test_audit_reconciliation_edam_mismatch(tmp_path):
+    """TSV has 2 operations but graph has only 1 → match=False and ok=False."""
+    snap = tmp_path / "snap"
+    _write_edam_tsv(snap / "EDAM.tsv", [
+        {"local": "operation_0001", "label": "Op1"},
+        {"local": "operation_0002", "label": "Op2"},
+    ])
+    # Graph has only ONE operation (missing operation_0002)
+    nodes = [
+        NodeRecord("op:operation_0001", "Op1", NodeKind.OPERATION, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, [])
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn, snapshot_dir=snap)
+    finally:
+        conn.close()
+        db.close()
+
+    assert result.reconciliation is not None
+    edam = result.reconciliation["edam"]
+    assert edam["operation"]["match"] is False
+    assert result.ok is False
+
+
+# ---------------------------------------------------------------------------
+# test_audit_isa_cross_kind_edam_is_valid
+# ---------------------------------------------------------------------------
+
+
+def test_audit_isa_cross_kind_edam_is_valid(tmp_path):
+    """IS_A edge from an Operation to a Topic (cross-kind EDAM) must NOT be a violation.
+
+    EDAM itself carries cross-branch subClassOf edges (e.g. operation_3923 →
+    topic_3168).  Our graph faithfully represents that, so the IS_A invariant
+    must accept any IS_A where both endpoints are EDAM classes.
+    """
+    nodes = [
+        NodeRecord("op:operation_3923", "Genome resequencing", NodeKind.OPERATION, {}, P),
+        NodeRecord("topic:topic_3168", "Sequencing", NodeKind.TOPIC, {}, P),
+    ]
+    edges = [
+        EdgeRecord("op:operation_3923", "topic:topic_3168", EdgeKind.IS_A, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    isa_inv = next(inv for inv in result.invariants if "IS_A" in inv.name)
+    assert isa_inv.ok is True, (
+        f"Cross-kind EDAM IS_A should not be a violation, got {isa_inv.violations}"
+    )
+    assert result.ok is True
+
+
+def test_audit_isa_non_edam_endpoint_is_violation(tmp_path):
+    """IS_A edge whose source is a Method (not an EDAM class) must be a violation."""
+    nodes = [
+        MethodRecord("m:salmon", "salmon", NodeKind.METHOD, {}, P),
+        NodeRecord("op:operation_3798", "Read summarisation", NodeKind.OPERATION, {}, P),
+    ]
+    edges = [
+        # A Method as IS_A source is structurally wrong — only EDAM hierarchy edges
+        # should use IS_A.
+        EdgeRecord("m:salmon", "op:operation_3798", EdgeKind.IS_A, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    isa_inv = next(inv for inv in result.invariants if "IS_A" in inv.name)
+    assert not isa_inv.ok, "Method→Operation IS_A should be a violation"
+    assert isa_inv.violations >= 1
+    assert result.ok is False
+
+
+# ---------------------------------------------------------------------------
+# test_audit_to_json_roundtrips
+# ---------------------------------------------------------------------------
+
+
+def test_audit_to_json_roundtrips(tmp_path):
+    """to_dict() must be JSON-serialisable and contain the expected top-level keys."""
+    nodes = [
+        MethodRecord("m:salmon", "salmon", NodeKind.METHOD, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, [])
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    d = result.to_dict()
+    # Must serialise without error
+    serialised = json.dumps(d)
+    parsed = json.loads(serialised)
+
+    expected_keys = {
+        "node_count", "distinct_ids", "duplicate_ids_ok", "provenance_missing",
+        "invariants", "same_as", "coverage", "reconciliation", "ok",
+    }
+    assert expected_keys <= set(parsed.keys()), (
+        f"Missing keys: {expected_keys - set(parsed.keys())}"
+    )
+    assert isinstance(parsed["invariants"], list)
+    assert isinstance(parsed["coverage"], dict)
+    assert "methods_total" in parsed["coverage"]
+
+
+# ---------------------------------------------------------------------------
+# test_audit_to_text_format
+# ---------------------------------------------------------------------------
+
+
+def test_audit_to_text_format(tmp_path):
+    """to_text() should include expected section headers and final AUDIT RESULT line."""
+    nodes = [
+        MethodRecord("m:salmon", "salmon", NodeKind.METHOD, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, [])
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    text = result.to_text()
+    assert "SCHEMA INVARIANTS" in text
+    assert "PROVENANCE" in text
+    assert "AUDIT RESULT:" in text
+    # With no issues except missing provenance on the method (provenance IS set)
+    # so we expect PASS or FAILED in the result line
+    assert "ALL CHECKS PASSED" in text or "CHECK(S) FAILED" in text
+
+
+# ---------------------------------------------------------------------------
+# STATO/OBI ontology-term IS_A invariant tests
+# ---------------------------------------------------------------------------
+
+
+def test_audit_isa_accepts_ontology_term_kinds(tmp_path):
+    """IS_A edge where both endpoints are StatisticalMethod must NOT be a violation."""
+    nodes = [
+        NodeRecord("obo:OBI_0200000", "data transformation", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("obo:STATO_0000304", "Student's t-test", NodeKind.STATISTICAL_METHOD, {}, P),
+    ]
+    edges = [
+        EdgeRecord("obo:STATO_0000304", "obo:OBI_0200000", EdgeKind.IS_A, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    isa_inv = next(inv for inv in result.invariants if "IS_A" in inv.name)
+    assert isa_inv.ok is True, (
+        f"StatisticalMethod→StatisticalMethod IS_A must not be a violation; "
+        f"got {isa_inv.violations} violation(s)"
+    )
+    assert result.ok is True
+
+
+def test_audit_isa_accepts_assay_kind(tmp_path):
+    """IS_A edge where both endpoints are Assay must NOT be a violation."""
+    nodes = [
+        NodeRecord("obo:OBI_0000070", "assay", NodeKind.ASSAY, {}, P),
+        NodeRecord("obo:OBI_0001234", "DNA sequencing assay", NodeKind.ASSAY, {}, P),
+    ]
+    edges = [
+        EdgeRecord("obo:OBI_0001234", "obo:OBI_0000070", EdgeKind.IS_A, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    isa_inv = next(inv for inv in result.invariants if "IS_A" in inv.name)
+    assert isa_inv.ok is True, (
+        f"Assay→Assay IS_A must not be a violation; got {isa_inv.violations} violation(s)"
+    )
+
+
+def test_audit_isa_method_to_statistical_method_is_violation(tmp_path):
+    """IS_A edge from Method (non-ontology kind) to StatisticalMethod must be a violation."""
+    nodes = [
+        MethodRecord("m:deseq2", "DESeq2", NodeKind.METHOD, {}, P),
+        NodeRecord("obo:OBI_0200000", "data transformation", NodeKind.STATISTICAL_METHOD, {}, P),
+    ]
+    edges = [
+        # Method IS_A StatisticalMethod is a modelling error — Method is not an ontology class
+        EdgeRecord("m:deseq2", "obo:OBI_0200000", EdgeKind.IS_A, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    isa_inv = next(inv for inv in result.invariants if "IS_A" in inv.name)
+    assert not isa_inv.ok, (
+        "Method→StatisticalMethod IS_A should be a violation (Method is not an ontology kind)"
+    )
+    assert isa_inv.violations >= 1
+    assert result.ok is False
+
+
+# ---------------------------------------------------------------------------
+# ontology_nodes informational coverage
+# ---------------------------------------------------------------------------
+
+
+def test_audit_ontology_coverage_informational(tmp_path):
+    """Ontology nodes (StatisticalMethod, Assay) appear in coverage.ontology_nodes; no gate fail."""
+    nodes = [
+        NodeRecord("obo:OBI_0200000", "data transformation", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("obo:STATO_0000304", "t-test", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("obo:OBI_0000070", "assay", NodeKind.ASSAY, {}, P),
+        # Also include a regular method — must not affect ontology_nodes
+        MethodRecord("m:salmon", "salmon", NodeKind.METHOD, {}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, [])
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    # Result must still be ok (ontology_nodes is informational only)
+    assert result.ok is True
+
+    # ontology_nodes dict must be present in coverage
+    cov = result.coverage
+    assert "ontology_nodes" in cov, (
+        f"coverage must contain 'ontology_nodes'; got keys: {list(cov.keys())}"
+    )
+    ont = cov["ontology_nodes"]
+    assert isinstance(ont, dict), f"ontology_nodes must be a dict; got {type(ont)}"
+
+    # StatisticalMethod count must be 2
+    assert ont.get("StatisticalMethod", 0) == 2, (
+        f"Expected StatisticalMethod=2 in ontology_nodes; got {ont}"
+    )
+
+    # Assay count must be 1
+    assert ont.get("Assay", 0) == 1, (
+        f"Expected Assay=1 in ontology_nodes; got {ont}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# USES_STATISTICAL_METHOD invariants (typed-endpoint + grounding) and coverage
+# ---------------------------------------------------------------------------
+
+_GROUNDED = {"confidence": 1.0, "basis": "curated", "evidence": "doi:10.1/x"}
+
+
+def _usm_invariants(result):
+    return [inv for inv in result.invariants if "USES_STATISTICAL_METHOD" in inv.name]
+
+
+def test_audit_uses_statistical_method_grounded_passes(tmp_path):
+    """A well-typed, grounded USES_STATISTICAL_METHOD edge passes both invariants and is counted."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P),
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+    ]
+    edges = [
+        EdgeRecord("m:deseq2", "obo:STATO_0000559",
+                   EdgeKind.USES_STATISTICAL_METHOD, dict(_GROUNDED), P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    usm = _usm_invariants(result)
+    assert len(usm) == 2, "expected typed-endpoint AND grounding invariants"
+    assert all(inv.ok for inv in usm)
+    assert result.ok is True
+    assert result.coverage["with_statistical_method"]["count"] == 1
+    assert result.coverage["with_statistical_method"]["pct"] == 100.0
+
+
+def test_audit_uses_statistical_method_wrong_endpoint_is_violation(tmp_path):
+    """USES_STATISTICAL_METHOD whose target is NOT a StatisticalMethod must be a violation."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P),
+        # target exists but is an Operation, not a StatisticalMethod
+        NodeRecord("op:operation_3223", "DGE analysis", NodeKind.OPERATION, {}, P),
+    ]
+    edges = [
+        EdgeRecord("m:deseq2", "op:operation_3223",
+                   EdgeKind.USES_STATISTICAL_METHOD, dict(_GROUNDED), P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    typed = next(i for i in _usm_invariants(result) if "Method→StatisticalMethod" in i.name)
+    assert not typed.ok and typed.violations >= 1
+    assert result.ok is False
+
+
+def test_audit_uses_statistical_method_ungrounded_is_violation(tmp_path):
+    """A correctly-typed but EVIDENCE-LESS cross-link must fail the grounding invariant."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P),
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+    ]
+    edges = [
+        # well-typed, but evidence is empty -> grounding violation
+        EdgeRecord("m:deseq2", "obo:STATO_0000559", EdgeKind.USES_STATISTICAL_METHOD,
+                   {"confidence": 1.0, "basis": "curated", "evidence": ""}, P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    typed = next(i for i in _usm_invariants(result) if "Method→StatisticalMethod" in i.name)
+    grounded = next(i for i in _usm_invariants(result) if "grounded" in i.name)
+    assert typed.ok, "endpoint typing is correct here"
+    assert not grounded.ok and grounded.violations == 1
+    assert result.ok is False
+
+
+# ---------------------------------------------------------------------------
+# REQUIRES_ASSUMPTION invariants (typed-endpoint + grounding) and inheritance
+# ---------------------------------------------------------------------------
+
+
+def _ra_invariants(result):
+    return [inv for inv in result.invariants if "REQUIRES_ASSUMPTION" in inv.name]
+
+
+def test_audit_requires_assumption_grounded_passes(tmp_path):
+    """StatisticalMethod→Assumption grounded edge passes both invariants; inheritance counted."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P),
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("assum:asymptotic_normality", "asymptotic normality", NodeKind.ASSUMPTION, {}, P),
+    ]
+    edges = [
+        EdgeRecord("m:deseq2", "obo:STATO_0000559", EdgeKind.USES_STATISTICAL_METHOD,
+                   dict(_GROUNDED), P),
+        EdgeRecord("obo:STATO_0000559", "assum:asymptotic_normality",
+                   EdgeKind.REQUIRES_ASSUMPTION, {"basis": "curated", "evidence": "url:https://x"}, P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    ra = _ra_invariants(result)
+    assert len(ra) == 2 and all(inv.ok for inv in ra)
+    assert result.ok is True
+    # m:deseq2 inherits the assumption transitively via the Wald test
+    assert result.coverage["with_inherited_assumption"]["count"] == 1
+
+
+def test_audit_requires_assumption_wrong_endpoint_is_violation(tmp_path):
+    """REQUIRES_ASSUMPTION from a Method (not a StatisticalMethod) must be a violation."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P),
+        NodeRecord("assum:normality", "normality", NodeKind.ASSUMPTION, {}, P),
+    ]
+    edges = [
+        # source must be StatisticalMethod, not Method
+        EdgeRecord("m:deseq2", "assum:normality", EdgeKind.REQUIRES_ASSUMPTION,
+                   {"basis": "curated", "evidence": "url:https://x"}, P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    typed = next(i for i in _ra_invariants(result) if "StatisticalMethod→Assumption" in i.name)
+    assert not typed.ok and typed.violations >= 1
+    assert result.ok is False
+
+
+def test_audit_requires_assumption_ungrounded_is_violation(tmp_path):
+    """A correctly-typed but evidence-less assumption edge fails the grounding invariant."""
+    nodes = [
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("assum:normality", "normality", NodeKind.ASSUMPTION, {}, P),
+    ]
+    edges = [
+        EdgeRecord("obo:STATO_0000559", "assum:normality", EdgeKind.REQUIRES_ASSUMPTION,
+                   {"basis": "curated", "evidence": ""}, P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    typed = next(i for i in _ra_invariants(result) if "StatisticalMethod→Assumption" in i.name)
+    grounded = next(i for i in _ra_invariants(result) if "grounded" in i.name)
+    assert typed.ok
+    assert not grounded.ok and grounded.violations == 1
+    assert result.ok is False
+
+
+# ---------------------------------------------------------------------------
+# Evidence-token PREFIX validation (tightened grounding)
+#   USES_STATISTICAL_METHOD : evidence must start with doi: or pmid:
+#   REQUIRES_ASSUMPTION     : evidence must start with doi:/pmid:/url:/isbn:/stato:
+# ---------------------------------------------------------------------------
+
+
+def test_audit_uses_statistical_method_non_doi_pmid_evidence_is_violation(tmp_path):
+    """A USES edge whose evidence is well-formed but uses a url:/isbn: token (not
+    doi:/pmid:) must FAIL the USES grounding invariant."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P),
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+    ]
+    edges = [
+        EdgeRecord("m:deseq2", "obo:STATO_0000559", EdgeKind.USES_STATISTICAL_METHOD,
+                   {"basis": "curated", "evidence": "url:https://example.org"}, P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    grounded = next(i for i in _usm_invariants(result) if "grounded" in i.name)
+    assert not grounded.ok and grounded.violations == 1
+    assert result.ok is False
+
+
+def test_audit_uses_statistical_method_pmid_evidence_passes(tmp_path):
+    """A USES edge grounded with a pmid: token passes the grounding invariant."""
+    nodes = [
+        MethodRecord("m:deseq2", "deseq2", NodeKind.METHOD, {}, P),
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+    ]
+    edges = [
+        EdgeRecord("m:deseq2", "obo:STATO_0000559", EdgeKind.USES_STATISTICAL_METHOD,
+                   {"basis": "curated", "evidence": "pmid:25516281"}, P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    assert all(inv.ok for inv in _usm_invariants(result))
+    assert result.ok is True
+
+
+def test_audit_requires_assumption_disallowed_prefix_is_violation(tmp_path):
+    """A REQUIRES edge with an out-of-policy evidence prefix (e.g. 'foo:') must FAIL."""
+    nodes = [
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("assum:normality", "normality", NodeKind.ASSUMPTION, {}, P),
+    ]
+    edges = [
+        EdgeRecord("obo:STATO_0000559", "assum:normality", EdgeKind.REQUIRES_ASSUMPTION,
+                   {"basis": "curated", "evidence": "foo:bar"}, P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    grounded = next(i for i in _ra_invariants(result) if "grounded" in i.name)
+    assert not grounded.ok and grounded.violations == 1
+    assert result.ok is False
+
+
+def test_audit_requires_assumption_stato_evidence_passes(tmp_path):
+    """REQUIRES grounded with a stato: token (an allowed prefix) passes."""
+    nodes = [
+        NodeRecord("obo:STATO_0000559", "Wald test", NodeKind.STATISTICAL_METHOD, {}, P),
+        NodeRecord("assum:normality", "normality", NodeKind.ASSUMPTION, {}, P),
+    ]
+    edges = [
+        EdgeRecord("obo:STATO_0000559", "assum:normality", EdgeKind.REQUIRES_ASSUMPTION,
+                   {"basis": "curated", "evidence": "stato:OBI_0000739"}, P),
+    ]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    assert all(inv.ok for inv in _ra_invariants(result))
+    assert result.ok is True
+
+
+# ---------------------------------------------------------------------------
+# Pipeline-graph invariants (HAS_MODULE, DOWNSTREAM_OF, attestation)
+# ---------------------------------------------------------------------------
+
+
+def test_audit_passes_with_pipeline_graph(tmp_path):
+    from methods_graph.cli import cmd_build
+    from methods_graph.audit import audit_graph
+    import kuzu
+    from pathlib import Path
+
+    fix = Path(__file__).parent / "fixtures"
+    db = tmp_path / "m.kuzu"
+    cmd_build(
+        edam=None,
+        nfcore_modules=fix / "nfcore_pipeline" / "mini" / "modules" / "nf-core",
+        biocontainers=None,
+        nfcore_pipelines=fix / "nfcore_pipeline",
+        db_path=db, staging_dir=tmp_path / "s", ingested_at="2026-06-13",
+    )
+    conn = kuzu.Connection(kuzu.Database(str(db), read_only=True))
+    result = audit_graph(conn)
+    names = {i.name for i in result.invariants}
+    assert any("HAS_MODULE" in n for n in names)
+    assert any("DOWNSTREAM_OF" in n for n in names)
+    assert result.ok  # all invariants pass on a well-formed build
+
+
+def test_audit_catches_inconsistent_attestation(tmp_path):
+    """A DOWNSTREAM_OF edge whose attestations (1) != len(pipelines) (2) must fail."""
+    # Two Module nodes + a DOWNSTREAM_OF edge whose attestations (1) != len(pipelines) (2).
+    nodes = [
+        NodeRecord("mod:a", "a", NodeKind.MODULE, {}, P),
+        NodeRecord("mod:b", "b", NodeKind.MODULE, {}, P),
+    ]
+    edges = [
+        EdgeRecord("mod:a", "mod:b", EdgeKind.DOWNSTREAM_OF,
+                   {"pipelines": ["x", "y"], "attestations": 1,
+                    "derivation": "io_inferred", "confidence": 0.5}, P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    att = next(i for i in result.invariants if "attestation consistent" in i.name)
+    assert att.ok is False
+    assert result.ok is False
+
+
+def test_audit_catches_downstream_cycle(tmp_path):
+    """A nextflow_dsl2 (ground-truth) DOWNSTREAM_OF cycle must fail acyclicity."""
+    nodes = [
+        NodeRecord("mod:a", "a", NodeKind.MODULE, {}, P),
+        NodeRecord("mod:b", "b", NodeKind.MODULE, {}, P),
+    ]
+    props = {"pipelines": ["x"], "attestations": 1,
+             "derivation": "nextflow_dsl2", "confidence": 0.95}
+    edges = [
+        EdgeRecord("mod:a", "mod:b", EdgeKind.DOWNSTREAM_OF, dict(props), P),
+        EdgeRecord("mod:b", "mod:a", EdgeKind.DOWNSTREAM_OF, dict(props), P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    inv = next(i for i in result.invariants if "acyclic" in i.name)
+    assert inv.ok is False
+    assert result.ok is False
+
+
+def test_audit_io_inferred_cycle_is_allowed(tmp_path):
+    """io_inferred is a permissive candidate graph (bidirectional by design);
+    its cycles must NOT trip the acyclicity invariant — only ground-truth does."""
+    nodes = [
+        NodeRecord("mod:a", "a", NodeKind.MODULE, {}, P),
+        NodeRecord("mod:b", "b", NodeKind.MODULE, {}, P),
+    ]
+    props = {"pipelines": ["x"], "attestations": 1,
+             "derivation": "io_inferred", "confidence": 0.5}
+    edges = [
+        EdgeRecord("mod:a", "mod:b", EdgeKind.DOWNSTREAM_OF, dict(props), P),
+        EdgeRecord("mod:b", "mod:a", EdgeKind.DOWNSTREAM_OF, dict(props), P),
+    ]
+    db_path = _make_db(tmp_path, nodes, edges)
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    inv = next(i for i in result.invariants if "acyclic" in i.name)
+    assert inv.ok is True
+
+
+def test_audit_catches_pipeline_without_modules(tmp_path):
+    """A Pipeline node with no HAS_MODULE edge must fail the HAS_MODULE invariant."""
+    nodes = [NodeRecord("pipe:lonely", "lonely", NodeKind.PIPELINE,
+                        {"n_modules": 0}, P)]
+    db_path = _make_db(tmp_path, nodes, [])
+    db, conn = _open_conn(db_path)
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close()
+        db.close()
+
+    inv = next(i for i in result.invariants if "has >=1 HAS_MODULE" in i.name)
+    assert inv.ok is False
+    assert result.ok is False
+
+
+# ---------------------------------------------------------------------------
+# New-layer invariants (session: RUNS_AS, HAS_MODALITY, CHECKED_BY, ExecutionSpec)
+# ---------------------------------------------------------------------------
+
+def _inv(result, substr):
+    return next(i for i in result.invariants if substr in i.name)
+
+
+def test_audit_runs_as_wrong_endpoint_is_violation(tmp_path):
+    nodes = [NodeRecord("mod:x", "x", NodeKind.MODULE, {}, P),
+             NodeRecord("op:operation_1", "o", NodeKind.OPERATION, {}, P)]  # not ExecutionSpec
+    edges = [EdgeRecord("mod:x", "op:operation_1", EdgeKind.RUNS_AS, {"basis": "x"}, P)]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close(); db.close()
+    inv = _inv(result, "RUNS_AS:")
+    assert not inv.ok and inv.violations >= 1
+
+
+def test_audit_has_modality_wrong_endpoint_is_violation(tmp_path):
+    nodes = [NodeRecord("pipe:x", "x", NodeKind.PIPELINE, {}, P),
+             NodeRecord("op:operation_1", "o", NodeKind.OPERATION, {}, P)]  # not Modality
+    edges = [EdgeRecord("pipe:x", "op:operation_1", EdgeKind.HAS_MODALITY, {"basis": "x"}, P)]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close(); db.close()
+    inv = _inv(result, "HAS_MODALITY:")
+    assert not inv.ok and inv.violations >= 1
+
+
+def test_audit_checked_by_wrong_endpoint_is_violation(tmp_path):
+    nodes = [NodeRecord("assum:x", "x", NodeKind.ASSUMPTION, {}, P),
+             NodeRecord("op:operation_1", "o", NodeKind.OPERATION, {}, P)]  # not Diagnostic
+    edges = [EdgeRecord("assum:x", "op:operation_1", EdgeKind.CHECKED_BY,
+                        {"evidence": "doi:10.1/x"}, P)]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, edges))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close(); db.close()
+    inv = _inv(result, "CHECKED_BY: Assumption")
+    assert not inv.ok and inv.violations >= 1
+
+
+def test_audit_execution_spec_without_container_is_violation(tmp_path):
+    nodes = [NodeRecord("exec:x", "x", NodeKind.EXECUTION_SPEC,
+                        {"command": {"kind": "script"}}, P)]  # no container of either flavor
+    db, conn = _open_conn(_make_db(tmp_path, nodes, []))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close(); db.close()
+    inv = _inv(result, "ExecutionSpec: has a container")
+    assert not inv.ok and inv.violations >= 1
+
+
+def test_audit_execution_spec_with_only_singularity_is_ok(tmp_path):
+    """A spec pinning ONLY a singularity image is runnable — not a violation."""
+    nodes = [NodeRecord("exec:x", "x", NodeKind.EXECUTION_SPEC,
+                        {"command": {"kind": "script"}, "container": None,
+                         "container_singularity": "https://community-cr-prod.seqera.io/x/data"}, P)]
+    db, conn = _open_conn(_make_db(tmp_path, nodes, []))
+    try:
+        result = audit_graph(conn)
+    finally:
+        conn.close(); db.close()
+    assert _inv(result, "ExecutionSpec: has a container").ok

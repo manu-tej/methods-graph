@@ -1,0 +1,75 @@
+format-version: 1.2
+data-version: releases/2026-02-02
+ontology: go-ledger
+
+[Term]
+id: GO:0000001
+name: root process
+namespace: biological_process
+
+[Term]
+id: GO:0000002
+name: process child
+namespace: biological_process
+alt_id: GO:0000102
+is_a: GO:0000001 ! root process
+
+[Term]
+id: GO:0000003
+name: process grandchild
+namespace: biological_process
+is_a: GO:0000002 ! process child
+
+[Term]
+id: GO:0000010
+name: obsolete old child
+namespace: biological_process
+alt_id: GO:0000110
+is_obsolete: true
+replaced_by: GO:0000002
+
+[Term]
+id: GO:0000011
+name: obsolete moved to function
+namespace: biological_process
+is_obsolete: true
+replaced_by: GO:0000021
+
+[Term]
+id: GO:0000012
+name: obsolete with considers
+namespace: biological_process
+alt_id: GO:0000112
+is_obsolete: true
+consider: GO:0000002
+consider: GO:0000003
+consider: GO:0000999
+
+[Term]
+id: GO:0000013
+name: obsolete orphan
+namespace: biological_process
+is_obsolete: true
+
+[Term]
+id: GO:0000014
+name: obsolete with two replacements
+namespace: biological_process
+is_obsolete: true
+replaced_by: GO:0000002
+replaced_by: GO:0000003
+
+[Term]
+id: GO:0000020
+name: root function
+namespace: molecular_function
+
+[Term]
+id: GO:0000021
+name: function child
+namespace: molecular_function
+is_a: GO:0000020 ! root function
+
+[Typedef]
+id: part_of
+name: part of

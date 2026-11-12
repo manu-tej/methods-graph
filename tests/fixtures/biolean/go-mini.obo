@@ -1,0 +1,116 @@
+format-version: 1.2
+data-version: releases/2026-01-01
+ontology: go-mini
+
+[Term]
+id: GO:0000005
+name: B
+namespace: biological_process
+is_a: GO:0000010 ! C
+
+[Term]
+id: GO:0000010
+name: C
+namespace: biological_process
+alt_id: GO:0000011
+
+[Term]
+id: GO:0000020
+name: D
+namespace: biological_process
+is_a: GO:0000010 ! C
+
+[Term]
+id: GO:0000030
+name: A
+namespace: biological_process
+is_a: GO:0000005 ! B
+relationship: part_of GO:0000010 ! C
+relationship: part_of GO:0000020 ! D
+
+[Term]
+id: GO:0000040
+name: X
+namespace: biological_process
+is_a: GO:0000050 ! Y
+
+[Term]
+id: GO:0000050
+name: Y
+namespace: biological_process
+is_a: GO:0000060 ! T
+
+[Term]
+id: GO:0000060
+name: T
+namespace: biological_process
+
+[Term]
+id: GO:0000070
+name: T0
+namespace: biological_process
+
+[Term]
+id: GO:0000080
+name: C1
+namespace: biological_process
+relationship: part_of GO:0000070 ! T0
+
+[Term]
+id: GO:0000090
+name: C2
+namespace: biological_process
+is_a: GO:0000080 ! C1
+
+[Term]
+id: GO:0000100
+name: R
+namespace: biological_process
+relationship: regulates GO:0000010 ! C
+
+[Term]
+id: GO:0000110
+name: obsolete old C
+namespace: biological_process
+is_obsolete: true
+replaced_by: GO:0000010
+consider: GO:0000020
+
+[Term]
+id: GO:0000120
+name: obsolete orphan
+namespace: biological_process
+is_obsolete: true
+
+[Term]
+id: GO:0000200
+name: MF1
+namespace: molecular_function
+
+[Term]
+id: GO:0000210
+name: MF2
+namespace: molecular_function
+is_a: GO:0000200 ! MF1
+relationship: part_of GO:0000010 ! C
+
+[Term]
+id: GO:0000300
+name: CC1
+namespace: cellular_component
+
+[Term]
+id: GO:0000310
+name: CC2
+namespace: cellular_component
+relationship: part_of GO:0000300 ! CC1
+relationship: has_part GO:0000300 ! CC1
+
+[Typedef]
+id: part_of
+name: part of
+is_transitive: true
+
+[Typedef]
+id: regulates
+name: regulates

@@ -1,0 +1,109 @@
+{
+  "axioms": [
+    {
+      "annotation": "gaf:7ea54f5ed7659218",
+      "code": "IDA",
+      "eco": "ECO:0000314",
+      "references": [
+        "PMID:9"
+      ],
+      "step": "s9"
+    },
+    {
+      "annotation": "gaf:8cf4bf2dba0e4073",
+      "code": "IPI",
+      "eco": "ECO:0000353",
+      "references": [
+        "PMID:2"
+      ],
+      "step": "s6"
+    },
+    {
+      "annotation": "gaf:90130f022d31e7ca",
+      "code": "IDA",
+      "eco": "ECO:0000314",
+      "references": [
+        "PMID:1"
+      ],
+      "step": "s6"
+    },
+    {
+      "annotation": "gaf:f071098f829dcd7d",
+      "code": "IDA",
+      "eco": "ECO:0000314",
+      "references": [
+        "PMID:11",
+        "PMID:12"
+      ],
+      "step": "s3"
+    }
+  ],
+  "conflicts": [
+    {
+      "annotation": "gaf:6097b6f3c27374ec",
+      "at": "ancestor",
+      "code": "IDA",
+      "negated": true,
+      "step": "s6",
+      "via": "GO:0000010"
+    }
+  ],
+  "elaboration": [],
+  "errors": [
+    {
+      "actual": null,
+      "code": "AXIOM_NOT_FOUND",
+      "expected": {
+        "negated": false,
+        "qualifier": "involved_in",
+        "subject": "UniProtKB:P00001",
+        "taxon": "NCBITaxon:9606",
+        "term": "GO:0000040"
+      },
+      "message": "no annotation matches",
+      "step": "s2",
+      "suggestions": []
+    }
+  ],
+  "goal": {
+    "negated": false,
+    "qualifier": "involved_in",
+    "subject": "UniProtKB:P00002",
+    "taxon": "NCBITaxon:9606",
+    "term": "GO:0000060"
+  },
+  "premise_failed": [
+    "s1"
+  ],
+  "sorries": [
+    {
+      "inputs": [
+        "GEO:GSE1"
+      ],
+      "method": "m:deseq2",
+      "step": "s7",
+      "used": false
+    },
+    {
+      "inputs": [
+        "GEO:GSE1"
+      ],
+      "method": "m:deseq2",
+      "step": "s4",
+      "used": false
+    }
+  ],
+  "sorry_count": 0,
+  "steps_checked": 9,
+  "unused_sorries": 2,
+  "unused_steps": [
+    "s1",
+    "s2",
+    "s3",
+    "s4",
+    "s5",
+    "s6",
+    "s7"
+  ],
+  "verdict": "REJECTED"
+}

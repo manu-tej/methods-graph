@@ -1,0 +1,15 @@
+# Tool-name (as written in a SKILL.md) -> Method node id. Lowercased on lookup.
+# Honest gaps are fine: a tool with no alias and no name match just yields no WRAPS edge.
+pydeseq2: m:deseq2
+deseq2: m:deseq2
+edger: m:edger
+limma: m:limma
+pyopenms: m:openms
+openms: m:openms
+scanpy: m:scanpy
+kraken2: m:kraken2
+salmon: m:salmon
+kallisto: m:kallisto
+star: m:star
+samtools: m:samtools
+bcftools: m:bcftools

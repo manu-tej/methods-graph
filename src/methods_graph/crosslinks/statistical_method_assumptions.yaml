@@ -1,0 +1,550 @@
+# Curated, grounded statistical-method assumptions (StatisticalMethod -> Assumption).
+#
+# STATO describes assumptions only in free-text definitions (no Assumption classes,
+# no has_assumption relation), so they cannot be harvested and are authored here as
+# grounded claims. Each 'requires' edge cites an authoritative source (evidence token:
+# doi:|pmid:|url:|isbn:|stato:), and was verified against the literature and survived
+# an adversarial refutation pass. Assumptions attach to the statistical METHOD; a
+# Method inherits them via USES_STATISTICAL_METHOD.
+#
+# Enforced downstream: load rejects an ungrounded/unknown-id/duplicate edge; the build
+# emits an edge only StatisticalMethod->Assumption (mints the Assumption node); the
+# audit fails on any mistyped or evidence-less REQUIRES_ASSUMPTION edge.
+version: 1
+# Curated StatisticalMethod nodes for statistics that STATO/OBI does NOT model as a
+# clean class.  Minted as StatisticalMethod nodes (id 'stat:<slug>') so a method can
+# USE / be AMENABLE_TO them and inherit their (correct) assumptions, instead of being
+# force-fitted onto a near-but-wrong ontology term whose assumptions would then leak.
+statistical_methods:
+- id: stat:gsea_enrichment
+  name: GSEA weighted running-sum enrichment score
+  definition: GSEA's enrichment statistic — a weighted Kolmogorov-Smirnov-like running sum over a ranked
+    gene list, with significance from a phenotype-permutation empirical null. Unlike the standard KS test
+    it is weighted and does NOT assume i.i.d. genes; the permutation preserves gene-gene correlation.
+  reference: doi:10.1073/pnas.0506580102
+- id: stat:target_decoy_fdr
+  name: Target-decoy false-discovery-rate / q-value estimation
+  definition: Estimates the false-discovery rate of peptide/protein identifications by searching
+    a decoy database of incorrect sequences; decoy hits estimate the count of incorrect target
+    hits above a score threshold, giving a q-value (and, with a mixture model, a posterior error
+    probability). Distinct from BH p-value adjustment and from permutation FDR.
+  reference: doi:10.1038/nmeth1019
+- id: stat:protein_lfq_de
+  name: Label-free / quantitative protein differential-abundance test
+  definition: Per-protein differential-abundance testing on (log-transformed, normalized) protein
+    intensities, typically a moderated/empirical-Bayes linear model (limma-trend) with BH FDR across
+    proteins. Distinct from the RNA-seq count models; carries proteomics-specific assumptions
+    (abundance-dependent missingness, quantification linearity, peptide support per protein).
+  reference: doi:10.1016/j.euprot.2015.02.002
+- id: stat:sc_clustering_workflow
+  name: Single-cell unsupervised clustering workflow
+  definition: The standard single-cell RNA-seq preprocessing-to-clustering pipeline (QC filtering,
+    depth normalization/variance stabilization, highly-variable-gene selection, PCA, neighbor-graph
+    construction, and Leiden/Louvain community detection). It is UNSUPERVISED and operates on the
+    cell-cell graph of a single dataset, so — unlike bulk negative-binomial DE — it carries NO
+    per-group biological-replicate assumption. Its preconditions are about input type (raw UMI
+    counts), adaptive quality control, count-appropriate normalization, and cluster stability.
+  reference: doi:10.15252/msb.20188746
+assumptions:
+- id: assum:asymptotic_normality
+  name: asymptotic (large-sample) normality
+  definition: Inference relies on the large-sample (asymptotic) normal distribution of the estimator or
+    test statistic; valid only for sufficiently large samples.
+  reference: url:https://www.statlect.com/fundamentals-of-statistics/Wald-test
+- id: assum:independence
+  name: independence of observations
+  definition: The observations (or model errors) are statistically independent of one another.
+  reference: url:https://www.itl.nist.gov/div898/handbook/prc/section4/prc422.htm
+- id: assum:normality
+  name: normality
+  definition: The model residuals (or the sampled variable) are drawn from a normal distribution.
+  reference: url:https://www.itl.nist.gov/div898/handbook/pmd/section2/pmd214.htm
+- id: assum:homoscedasticity
+  name: homoscedasticity (homogeneity of variance)
+  definition: The error variance (or the variance across compared groups) is constant.
+  reference: doi:10.1136/gpsych-2019-100148
+- id: assum:linearity
+  name: linearity
+  definition: The mean response is a linear function of the predictors, or the structure of interest lies
+    in linear combinations of the variables.
+  reference: url:https://online.stat.psu.edu/stat501/lesson/1/1.3
+- id: assum:linearity_of_logit
+  name: linearity of the logit
+  definition: The log-odds (logit) of the outcome is a linear function of the continuous predictors.
+  reference: doi:10.1136/fmch-2021-001290
+- id: assum:no_multicollinearity
+  name: absence of perfect multicollinearity
+  definition: Predictors are not perfectly (or near-perfectly) linearly dependent.
+  reference: doi:10.1002/0471722146
+- id: assum:continuous_distribution
+  name: continuous underlying distribution
+  definition: The underlying/reference distribution is continuous (e.g. for the Kolmogorov-Smirnov test).
+  reference: url:https://www.itl.nist.gov/div898/handbook/eda/section3/eda35g.htm
+- id: assum:fixed_margins
+  name: fixed marginal totals
+  definition: Inference conditions on fixed marginal totals of the contingency table.
+  reference: url:https://stats.libretexts.org/Bookshelves/Introductory_Statistics
+- id: assum:correct_model_specification
+  name: correct model specification
+  definition: The assumed parametric model / likelihood is correctly specified for the data-generating
+    process.
+  reference: url:https://www.statlect.com/fundamentals-of-statistics/maximum-likelihood
+- id: assum:regularity_conditions
+  name: regularity conditions
+  definition: The likelihood satisfies regularity conditions (differentiability, interior parameter, etc.)
+    underpinning MLE's asymptotic properties.
+  reference: url:https://www.statlect.com/fundamentals-of-statistics/maximum-likelihood
+- id: assum:variance_is_structure
+  name: large variance corresponds to structure
+  definition: Directions of largest variance are assumed to carry the most informative structure (PCA).
+  reference: doi:10.48550/arXiv.1404.1100
+- id: assum:independence_or_prds
+  name: independence or positive regression dependence (PRDS)
+  definition: FDR control holds when the test statistics are independent or satisfy positive regression
+    dependence on a subset (PRDS).
+  reference: doi:10.1214/aos/1013699998
+- id: assum:bivariate_normality
+  name: bivariate normality
+  definition: For inference on Pearson's correlation, the two variables are assumed to follow a joint
+    (bivariate) normal distribution.
+  reference: url:https://online.stat.psu.edu/stat500/lesson/9/9.4
+- id: assum:monotonic_relationship
+  name: monotonic relationship
+  definition: The association between the two variables is monotonic (consistently increasing or decreasing),
+    the structure a rank correlation such as Spearman's is designed to detect.
+  reference: url:https://www.statstutor.ac.uk/resources/uploaded/spearmans.pdf
+- id: assum:adequate_expected_cell_counts
+  name: adequate expected cell counts
+  definition: The chi-square approximation is reliable only when the contingency table's EXPECTED cell
+    counts are large enough (Cochran's rule of thumb - all expected counts >=1 and at least 80% >=5);
+    below that, use an exact test (e.g. Fisher's).
+  reference: url:https://www.itl.nist.gov/div898/handbook/prc/section4/prc45.htm
+- id: assum:homogeneity_of_regression_slopes
+  name: homogeneity of regression slopes (parallel slopes)
+  definition: ANCOVA assumes the slope of the covariate-response relationship is equal across groups
+    (no covariate-by-group interaction); a different slope per group invalidates a single adjusted
+    comparison.  This is the assumption that distinguishes ANCOVA from ordinary regression/ANOVA.
+  reference: url:https://online.stat.psu.edu/stat502/lesson/9
+- id: assum:sample_exchangeability
+  name: sample exchangeability under the null
+  definition: A permutation test assumes the sample labels (e.g. phenotype assignments) are exchangeable
+    under the null hypothesis — i.e. samples are independent and identically distributed at the SAMPLE
+    level so permuting labels yields a valid null.  Crucially this does NOT require the measured features
+    (genes) to be independent; gene-gene correlation is preserved by sample permutation.
+  reference: doi:10.1073/pnas.0506580102
+- id: assum:decoy_faithfulness
+  name: decoy faithfully models the incorrect-match score distribution
+  definition: The decoy database produces matches whose score distribution faithfully represents
+    that of incorrect (random) target matches; if it does not, the target-decoy FDR/q-value is
+    mis-estimated.
+  reference: doi:10.1038/nmeth1019
+- id: assum:equal_chance_random_match
+  name: equal probability of a random match to target or decoy
+  definition: A spectrum that does not arise from a database peptide is equally likely to match a
+    target or a decoy entry; this symmetry is what lets decoy counts estimate target false positives.
+  reference: doi:10.1038/nmeth1019
+- id: assum:missing_not_at_random
+  name: missingness mechanism is correctly handled (MNAR vs MCAR)
+  definition: Missing intensities in label-free proteomics are often abundance-dependent
+    (left-censored, MNAR); naive complete-case analysis or mean imputation biases differential
+    abundance unless the missingness mechanism is modeled.
+  reference: doi:10.1021/acs.jproteome.5b00981
+- id: assum:quantification_linearity
+  name: measured intensity is linear in true abundance
+  definition: The reported intensity is approximately linear in true protein abundance over the
+    measured range; severe ratio compression (common in DIA/isobaric workflows) attenuates
+    fold-changes and biases the test.
+  reference: doi:10.1016/j.euprot.2015.02.002
+- id: assum:sufficient_peptides_per_protein
+  name: sufficient peptide support per protein
+  definition: Protein-level inference assumes enough quantified peptides per protein for a stable
+    roll-up; single-peptide proteins give high-variance, unreliable abundance estimates.
+  reference: doi:10.1016/j.euprot.2015.02.002
+# ---- single-cell unsupervised clustering (stat:sc_clustering_workflow) ----
+- id: assum:raw_umi_counts_input
+  name: input is raw UMI counts
+  definition: The preprocessing/clustering pipeline assumes its input is the raw integer
+    UMI count matrix (not pre-normalized or log-transformed values); normalization and
+    variance stabilization must be applied within the workflow, not upstream.
+  reference: doi:10.15252/msb.20188746
+- id: assum:adaptive_qc_filtering
+  name: low-quality cells removed by adaptive (MAD) thresholds
+  definition: Empty droplets, dying cells, and doublets are removed using adaptive thresholds
+    (median ± k MAD on QC metrics) rather than fixed univariate cutoffs, which bias against
+    small or low-RNA-content cell populations.
+  reference: doi:10.1038/s41576-023-00586-w
+- id: assum:normalization_appropriate_for_counts
+  name: normalization is appropriate for count data
+  definition: Depth/library-size normalization and variance stabilization suited to UMI count
+    data are applied (e.g. shifted-log of size-factor-normalized counts, or analytic Pearson
+    residuals); the transform should stabilize the mean-variance relationship of the counts.
+  reference: doi:10.1186/s13059-021-02451-7
+- id: assum:hvg_captures_biological_variation
+  name: selected features capture biological variation
+  definition: Highly-variable-gene selection assumes the chosen features reflect biological
+    heterogeneity rather than purely technical noise, as judged against the fitted
+    mean-variance (dispersion) trend.
+  reference: doi:10.15252/msb.20188746
+- id: assum:clustering_unsupervised_no_replicate_floor
+  name: clustering is unsupervised with no per-group replicate requirement
+  definition: Community-detection clustering (Leiden/Louvain) is an unsupervised procedure on a
+    single dataset's cell-cell neighbor graph (OSCA, doi:10.1038/s41592-019-0654-x); it imposes NO
+    biological-replicate floor. A per-group replicate requirement is a property of cross-condition
+    (pseudobulk) differential expression at the SAMPLE level — where treating cells as replicates
+    inflates false discoveries (Squair et al. 2021) — never of clustering.
+  reference: doi:10.1038/s41467-021-25960-2
+- id: assum:cluster_resolution_stability
+  name: reported clusters are stable across resolution
+  definition: The reported clustering is not an artifact of an arbitrary resolution; clusters
+    should be stable under resolution perturbation / subsampling and separable on the embedding
+    (not over- or under-clustered).
+  reference: doi:10.15252/msb.20188746
+requires:
+- statistical_method: obo:STATO_0000559
+  assumption: assum:asymptotic_normality
+  evidence: url:https://www.statlect.com/fundamentals-of-statistics/Wald-test
+  source_url: https://www.statlect.com/fundamentals-of-statistics/Wald-test
+  note: 'The Wald test relies on the asymptotic normality of the maximum-likelihood estimator: the statistic
+    is compared to a normal/chi-square distribution, valid only in large samples.'
+  confidence: high
+- statistical_method: obo:STATO_0000559
+  assumption: assum:independence
+  evidence: url:https://www.statlect.com/fundamentals-of-statistics/maximum-likelihood
+  source_url: https://www.statlect.com/fundamentals-of-statistics/Wald-test
+  note: The Wald test assumes the observations are independent.
+  confidence: high
+- statistical_method: obo:STATO_0000086
+  assumption: assum:normality
+  evidence: url:https://www.itl.nist.gov/div898/handbook/pmd/section2/pmd214.htm
+  source_url: https://www.itl.nist.gov/div898/handbook/pmd/section2/pmd214.htm
+  note: The classical F-test (ANOVA / linear model) assumes the residuals are normally distributed.
+  confidence: high
+- statistical_method: obo:STATO_0000086
+  assumption: assum:homoscedasticity
+  evidence: url:https://en.wikipedia.org/wiki/F-test
+  source_url: https://en.wikipedia.org/wiki/F-test
+  note: The F-test assumes homogeneity of variance (equal variances across groups).
+  confidence: high
+- statistical_method: obo:STATO_0000086
+  assumption: assum:independence
+  evidence: url:https://www.itl.nist.gov/div898/handbook/prc/section4/prc422.htm
+  source_url: https://www.itl.nist.gov/div898/handbook/prc/section4/prc422.htm
+  note: The F-test assumes the observations/residuals are independent.
+  confidence: high
+- statistical_method: obo:STATO_0000108
+  assumption: assum:linearity
+  evidence: url:https://online.stat.psu.edu/stat501/lesson/1/1.3
+  source_url: https://online.stat.psu.edu/stat501/lesson/1/1.3
+  note: Linear regression assumes the relationship between predictors and the mean response is linear.
+  confidence: high
+- statistical_method: obo:STATO_0000108
+  assumption: assum:independence
+  evidence: url:https://online.stat.psu.edu/stat501/lesson/4
+  source_url: https://online.stat.psu.edu/stat501/lesson/4
+  note: Linear regression assumes the errors are independent.
+  confidence: high
+- statistical_method: obo:STATO_0000108
+  assumption: assum:homoscedasticity
+  evidence: doi:10.1136/gpsych-2019-100148
+  source_url: https://pmc.ncbi.nlm.nih.gov/articles/PMC6802968/
+  note: Linear regression assumes constant error variance (homoscedasticity).
+  confidence: high
+- statistical_method: obo:STATO_0000108
+  assumption: assum:normality
+  evidence: url:https://www.itl.nist.gov/div898/handbook/pmd/section2/pmd214.htm
+  source_url: https://www.itl.nist.gov/div898/handbook/pmd/section2/pmd214.htm
+  note: Linear regression inference assumes the errors are normally distributed.
+  confidence: high
+- statistical_method: obo:STATO_0000149
+  assumption: assum:independence
+  evidence: url:https://www.statology.org/assumptions-of-logistic-regression/
+  source_url: https://www.statology.org/assumptions-of-logistic-regression/
+  note: Logistic regression assumes the observations are independent.
+  confidence: high
+- statistical_method: obo:STATO_0000149
+  assumption: assum:linearity_of_logit
+  evidence: doi:10.1136/fmch-2021-001290
+  source_url: https://pmc.ncbi.nlm.nih.gov/articles/PMC8710907/
+  note: Logistic regression assumes linearity between continuous predictors and the log-odds (logit) of
+    the outcome.
+  confidence: high
+- statistical_method: obo:STATO_0000149
+  assumption: assum:no_multicollinearity
+  evidence: doi:10.1002/0471722146
+  source_url: https://doi.org/10.1002/0471722146
+  note: Logistic regression assumes the absence of perfect multicollinearity among predictors.
+  confidence: high
+- statistical_method: obo:STATO_0000083
+  assumption: assum:continuous_distribution
+  evidence: url:https://www.itl.nist.gov/div898/handbook/prc/section2/prc212.htm
+  source_url: https://www.itl.nist.gov/div898/handbook/prc/section2/prc212.htm
+  note: The Kolmogorov-Smirnov test assumes the underlying distribution is continuous.
+  confidence: high
+- statistical_method: obo:STATO_0000083
+  assumption: assum:independence
+  evidence: url:https://online.stat.psu.edu/stat415/lesson/22/22.1
+  source_url: https://online.stat.psu.edu/stat415/lesson/22/22.1
+  note: The KS test assumes the observations are independent and identically distributed.
+  confidence: high
+- statistical_method: obo:STATO_0000073
+  assumption: assum:independence
+  evidence: isbn:9781481417686
+  source_url: http://www.biostathandbook.com/fishers.html
+  note: Fisher's exact test assumes the observations are independent.
+  confidence: high
+- statistical_method: obo:STATO_0000073
+  assumption: assum:fixed_margins
+  evidence: url:https://stats.libretexts.org/Bookshelves/Applied_Statistics/Biological_Statistics_(McDonald)/02:_Tests_for_Nominal_Variables/2.07:_Fisher's_Exact_Test
+  source_url: https://stats.libretexts.org/Bookshelves/Applied_Statistics/Biological_Statistics_(McDonald)/02:_Tests_for_Nominal_Variables/2.07:_Fisher's_Exact_Test
+  note: Fisher's exact test conditions on fixed marginal totals of the contingency table.
+  confidence: high
+- statistical_method: obo:OBI_0200051
+  assumption: assum:linearity
+  evidence: doi:10.48550/arXiv.1404.1100
+  source_url: https://arxiv.org/abs/1404.1100
+  note: PCA assumes the structure of interest is captured by linear combinations of the variables.
+  confidence: high
+- statistical_method: obo:OBI_0200051
+  assumption: assum:variance_is_structure
+  evidence: url:https://arxiv.org/abs/1404.1100
+  source_url: https://arxiv.org/abs/1404.1100
+  note: PCA assumes that directions of largest variance carry the most informative structure.
+  confidence: high
+- statistical_method: obo:STATO_0000428
+  assumption: assum:correct_model_specification
+  evidence: url:https://www.statlect.com/fundamentals-of-statistics/maximum-likelihood
+  source_url: https://www.statlect.com/fundamentals-of-statistics/maximum-likelihood
+  note: Maximum likelihood estimation assumes the parametric model (likelihood) is correctly specified.
+  confidence: high
+- statistical_method: obo:STATO_0000428
+  assumption: assum:independence
+  evidence: url:https://web.stanford.edu/class/archive/cs/cs109/cs109.1208/lectureNotes/LN20_parameters_mle.pdf
+  source_url: https://web.stanford.edu/class/archive/cs/cs109/cs109.1208/lectureNotes/LN20_parameters_mle.pdf
+  note: Standard maximum likelihood estimation assumes the observations are independent (iid).
+  confidence: high
+- statistical_method: obo:STATO_0000428
+  assumption: assum:regularity_conditions
+  evidence: url:https://www.statlect.com/fundamentals-of-statistics/maximum-likelihood
+  source_url: https://www.statlect.com/fundamentals-of-statistics/maximum-likelihood
+  note: MLE's asymptotic properties (consistency, asymptotic normality) rely on regularity conditions
+    on the likelihood.
+  confidence: high
+- statistical_method: obo:OBI_0200036
+  assumption: assum:independence_or_prds
+  evidence: doi:10.1214/aos/1013699998
+  source_url: https://projecteuclid.org/journals/annals-of-statistics/volume-29/issue-4/The-control-of-the-false-discovery-rate-in-multiple-testing/10.1214/aos/1013699998.full
+  note: The Benjamini-Hochberg FDR procedure controls FDR under independence or positive regression dependence
+    (PRDS) of the test statistics.
+  confidence: high
+# ---- Student's t-test (obo:OBI_0000739) — scanpy rank_genes_groups default --
+- statistical_method: obo:OBI_0000739
+  assumption: assum:normality
+  evidence: url:https://www.itl.nist.gov/div898/handbook/eda/section3/eda353.htm
+  source_url: https://www.itl.nist.gov/div898/handbook/eda/section3/eda353.htm
+  note: The two-sample t-test assumes the sampled populations (or residuals) are normally distributed.
+  confidence: high
+- statistical_method: obo:OBI_0000739
+  assumption: assum:homoscedasticity
+  evidence: url:https://www.itl.nist.gov/div898/handbook/eda/section3/eda353.htm
+  source_url: https://www.itl.nist.gov/div898/handbook/eda/section3/eda353.htm
+  note: The pooled-variance two-sample t-test assumes equal variance across the two groups (homoscedasticity).
+  confidence: high
+- statistical_method: obo:OBI_0000739
+  assumption: assum:independence
+  evidence: url:https://www.itl.nist.gov/div898/handbook/eda/section3/eda353.htm
+  source_url: https://www.itl.nist.gov/div898/handbook/eda/section3/eda353.htm
+  note: The two-sample t-test assumes the observations are independent.
+  confidence: high
+# ---- ANCOVA (obo:STATO_0000179) — anota2seq analysis of partial variance ----
+- statistical_method: obo:STATO_0000179
+  assumption: assum:linearity
+  evidence: url:https://online.stat.psu.edu/stat502/lesson/9
+  source_url: https://online.stat.psu.edu/stat502/lesson/9
+  note: ANCOVA assumes a linear relationship between the covariate and the response within each group.
+  confidence: high
+- statistical_method: obo:STATO_0000179
+  assumption: assum:normality
+  evidence: url:https://online.stat.psu.edu/stat502/lesson/9
+  source_url: https://online.stat.psu.edu/stat502/lesson/9
+  note: ANCOVA, as a linear model, assumes the residuals are normally distributed.
+  confidence: high
+- statistical_method: obo:STATO_0000179
+  assumption: assum:homoscedasticity
+  evidence: url:https://online.stat.psu.edu/stat502/lesson/9
+  source_url: https://online.stat.psu.edu/stat502/lesson/9
+  note: ANCOVA assumes homogeneity of (residual) variance across groups.
+  confidence: high
+- statistical_method: obo:STATO_0000179
+  assumption: assum:independence
+  evidence: url:https://online.stat.psu.edu/stat502/lesson/9
+  source_url: https://online.stat.psu.edu/stat502/lesson/9
+  note: ANCOVA assumes the observations/errors are independent.
+  confidence: high
+- statistical_method: obo:STATO_0000179
+  assumption: assum:homogeneity_of_regression_slopes
+  evidence: doi:10.1093/nar/gkz223
+  source_url: https://pmc.ncbi.nlm.nih.gov/articles/PMC6614820/
+  note: ANCOVA (anota2seq's analysis of partial variance) assumes equal covariate-response slopes across
+    groups; anota2seq's own QC checks "common slopes of sample classes" via the covariate-by-group
+    interaction p-value distribution.
+  confidence: high
+# ---- generic false discovery rate correction (obo:OBI_0200163) -------------
+# This is the GENERIC FDR node. Mechanism-specific FDR methods that need their own
+# assumptions/diagnostics get a curated node instead (target-decoy -> stat:target_decoy_fdr,
+# GSEA permutation enrichment -> stat:gsea_enrichment). The one assumption left on this node
+# is that the null distribution of the scores/statistics is correctly characterized; the
+# BH-specific independence/PRDS assumption lives on the BH node (obo:OBI_0200036).
+- statistical_method: obo:OBI_0200163
+  assumption: assum:correct_model_specification
+  evidence: doi:10.1073/pnas.1530509100
+  source_url: https://www.pnas.org/doi/10.1073/pnas.1530509100
+  note: FDR control requires the null distribution of the scores/test-statistics to be correctly
+    characterized; a mis-specified null (invalid p-values, an unfaithful decoy, or a wrong permutation
+    scheme) breaks the q-value calibration.
+  confidence: high
+# ---- Pearson's correlation coefficient (obo:STATO_0000280) -----------------
+- statistical_method: obo:STATO_0000280
+  assumption: assum:linearity
+  evidence: url:https://online.stat.psu.edu/stat500/lesson/9/9.1
+  source_url: https://online.stat.psu.edu/stat500/lesson/9/9.1
+  note: Pearson's correlation measures the strength of a LINEAR association; a strong nonlinear relationship
+    can yield a near-zero coefficient.
+  confidence: high
+- statistical_method: obo:STATO_0000280
+  assumption: assum:bivariate_normality
+  evidence: url:https://online.stat.psu.edu/stat500/lesson/9/9.4
+  source_url: https://online.stat.psu.edu/stat500/lesson/9/9.4
+  note: Hypothesis tests / confidence intervals for Pearson's r assume the two variables are jointly
+    (bivariate) normally distributed.
+  confidence: high
+- statistical_method: obo:STATO_0000280
+  assumption: assum:independence
+  evidence: url:https://online.stat.psu.edu/stat500/lesson/9/9.1
+  source_url: https://online.stat.psu.edu/stat500/lesson/9/9.1
+  note: Pearson's correlation assumes the paired observations are independent.
+  confidence: high
+# ---- Spearman's rank correlation coefficient (obo:STATO_0000201) -----------
+- statistical_method: obo:STATO_0000201
+  assumption: assum:monotonic_relationship
+  evidence: url:https://www.statstutor.ac.uk/resources/uploaded/spearmans.pdf
+  source_url: https://www.statstutor.ac.uk/resources/uploaded/spearmans.pdf
+  note: Spearman's rank correlation tests for a monotonic (not necessarily linear) association between
+    the two variables.
+  confidence: high
+- statistical_method: obo:STATO_0000201
+  assumption: assum:independence
+  evidence: url:https://www.statstutor.ac.uk/resources/uploaded/spearmans.pdf
+  source_url: https://www.statstutor.ac.uk/resources/uploaded/spearmans.pdf
+  note: Spearman's rank correlation assumes the paired observations are independent.
+  confidence: high
+# ---- Pearson's Chi-square test of independence (obo:STATO_0000081) ----------
+# GWAS allelic/genotypic association on variant calls.
+- statistical_method: obo:STATO_0000081
+  assumption: assum:independence
+  evidence: url:https://www.itl.nist.gov/div898/handbook/prc/section4/prc45.htm
+  source_url: https://www.itl.nist.gov/div898/handbook/prc/section4/prc45.htm
+  note: The chi-square test of independence assumes the observations (sampled individuals) are independent.
+  confidence: high
+- statistical_method: obo:STATO_0000081
+  assumption: assum:adequate_expected_cell_counts
+  evidence: url:https://www.itl.nist.gov/div898/handbook/prc/section4/prc45.htm
+  source_url: https://www.itl.nist.gov/div898/handbook/prc/section4/prc45.htm
+  note: The chi-square approximation is unreliable when expected cell counts are too small (Cochran's rule);
+    a low-MAF variant's contingency table often violates this - prefer Fisher's exact test there.
+  confidence: high
+# ---- Hardy-Weinberg equilibrium test (obo:STATO_0000181) -------------------
+# Run on genotype calls as a per-variant QC / population-structure check.
+- statistical_method: obo:STATO_0000181
+  assumption: assum:independence
+  evidence: url:https://www.ncbi.nlm.nih.gov/books/NBK580290/
+  source_url: https://www.ncbi.nlm.nih.gov/books/NBK580290/
+  note: The Hardy-Weinberg equilibrium test assumes a sample of independent, randomly-sampled individuals
+    from one population (relatedness or population stratification inflates departures).
+  confidence: high
+# ---- GSEA weighted enrichment score (stat:gsea_enrichment, curated node) ----
+- statistical_method: stat:gsea_enrichment
+  assumption: assum:continuous_distribution
+  evidence: doi:10.1073/pnas.0506580102
+  source_url: https://pmc.ncbi.nlm.nih.gov/articles/PMC1239896/
+  note: The weighted running-sum enrichment statistic assumes a continuous gene-level ranking metric;
+    heavy ties distort the running sum and its permutation null.
+  confidence: high
+- statistical_method: stat:gsea_enrichment
+  assumption: assum:sample_exchangeability
+  evidence: doi:10.1073/pnas.0506580102
+  source_url: https://pmc.ncbi.nlm.nih.gov/articles/PMC1239896/
+  note: GSEA's significance comes from a phenotype-permutation null, which assumes sample labels are
+    exchangeable under the null — NOT that genes are independent (sample permutation preserves gene-gene
+    correlation, which is why GSEA does not carry the standard KS i.i.d. assumption).
+  confidence: high
+# ---- Target-decoy FDR / q-value (stat:target_decoy_fdr, curated node) ------
+- statistical_method: stat:target_decoy_fdr
+  assumption: assum:decoy_faithfulness
+  evidence: doi:10.1038/nmeth1019
+  source_url: https://doi.org/10.1038/nmeth1019
+  note: Target-decoy FDR is only valid when the decoy models the incorrect-match score distribution.
+  confidence: high
+- statistical_method: stat:target_decoy_fdr
+  assumption: assum:equal_chance_random_match
+  evidence: doi:10.1038/nmeth1019
+  source_url: https://doi.org/10.1038/nmeth1019
+  note: Decoy counts estimate target false positives only under target/decoy match symmetry.
+  confidence: high
+# ---- Label-free protein differential-abundance test (stat:protein_lfq_de, curated node) ----
+- statistical_method: stat:protein_lfq_de
+  assumption: assum:missing_not_at_random
+  evidence: doi:10.1021/acs.jproteome.5b00981
+  source_url: https://doi.org/10.1021/acs.jproteome.5b00981
+  note: Abundance-dependent missingness must be handled or protein DE is biased.
+  confidence: high
+- statistical_method: stat:protein_lfq_de
+  assumption: assum:quantification_linearity
+  evidence: doi:10.1016/j.euprot.2015.02.002
+  source_url: https://doi.org/10.1016/j.euprot.2015.02.002
+  note: Ratio compression attenuates fold-changes; linearity over the measured range is assumed.
+  confidence: high
+- statistical_method: stat:protein_lfq_de
+  assumption: assum:sufficient_peptides_per_protein
+  evidence: doi:10.1016/j.euprot.2015.02.002
+  source_url: https://doi.org/10.1016/j.euprot.2015.02.002
+  note: Single-peptide proteins give unreliable abundance estimates.
+  confidence: high
+# ---- Single-cell unsupervised clustering (stat:sc_clustering_workflow, curated node) ----
+- statistical_method: stat:sc_clustering_workflow
+  assumption: assum:raw_umi_counts_input
+  evidence: doi:10.15252/msb.20188746
+  source_url: https://doi.org/10.15252/msb.20188746
+  note: The pipeline normalizes/stabilizes within itself; it assumes raw UMI counts as input.
+  confidence: high
+- statistical_method: stat:sc_clustering_workflow
+  assumption: assum:adaptive_qc_filtering
+  evidence: doi:10.1038/s41576-023-00586-w
+  source_url: https://doi.org/10.1038/s41576-023-00586-w
+  note: Fixed univariate QC cutoffs bias against small populations; use adaptive MAD thresholds.
+  confidence: high
+- statistical_method: stat:sc_clustering_workflow
+  assumption: assum:normalization_appropriate_for_counts
+  evidence: doi:10.1186/s13059-021-02451-7
+  source_url: https://doi.org/10.1186/s13059-021-02451-7
+  note: Count-appropriate normalization / variance stabilization (e.g. Pearson residuals) is required.
+  confidence: high
+- statistical_method: stat:sc_clustering_workflow
+  assumption: assum:hvg_captures_biological_variation
+  evidence: doi:10.15252/msb.20188746
+  source_url: https://doi.org/10.15252/msb.20188746
+  note: HVG selection assumes the chosen features track biological, not purely technical, variance.
+  confidence: medium
+- statistical_method: stat:sc_clustering_workflow
+  assumption: assum:clustering_unsupervised_no_replicate_floor
+  evidence: doi:10.1038/s41467-021-25960-2
+  source_url: https://doi.org/10.1038/s41467-021-25960-2
+  note: The per-group replicate floor is a cross-condition pseudobulk-DE requirement (Squair et al.
+    2021 — treating cells as replicates inflates false discoveries), not a clustering one; clustering
+    itself is unsupervised (OSCA, doi:10.1038/s41592-019-0654-x).
+  confidence: high
+- statistical_method: stat:sc_clustering_workflow
+  assumption: assum:cluster_resolution_stability
+  evidence: doi:10.15252/msb.20188746
+  source_url: https://doi.org/10.15252/msb.20188746
+  note: Reported clusters should be stable across resolution / subsampling, not an arbitrary-resolution artifact.
+  confidence: medium

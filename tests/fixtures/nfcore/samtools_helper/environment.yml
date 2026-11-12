@@ -1,0 +1,6 @@
+name: samtools_helper
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - "bioconda::samtools=1.19"
